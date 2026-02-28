@@ -1,0 +1,1 @@
+id,barcode_alias_8digit,barcode_structured,design_no,product_group,size,color,vendor,payout_code,cost_actual,cost_encoded,mrp,gst_logic,total_quantity,available_quantity,floor,discount_type,discount_value,discount_start_date,discount_end_date,status,po_id,photos,description,created_by,modified_by,created_at,updated_at,mrp_markup_percent,order_number,print_quantity,hsn_code

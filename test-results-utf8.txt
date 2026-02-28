@@ -1,0 +1,53 @@
+???? Starting Comprehensive Backend API Integration Tests...
+
+--- AUTHENTICATION & SECURITY ---
+Testing POST /auth/login............................................ ??? PASSED
+Testing GET /auth/me................................................ ??? PASSED
+Testing POST /roles (Create)........................................ ??? PASSED
+Testing GET /roles (List)........................................... ??? PASSED
+Testing POST /users (Create)........................................ ??? PASSED
+Testing GET /users (List)........................................... ??? PASSED
+
+--- MASTER DATA ---
+Testing POST /masters/cities........................................ ??? PASSED
+Testing POST /masters/vendors....................................... ??? FAILED (duplicate key value violates unique constraint "UQ_6c20a7a81f96af980d5219cf463")
+Testing POST /masters/product-groups................................ ??? FAILED (duplicate key value violates unique constraint "UQ_72591686e871f9ce3d74c6ef174")
+Testing POST /masters/sizes......................................... ??? FAILED (duplicate key value violates unique constraint "UQ_6a48c04658878883df7b6df6a98")
+Testing POST /masters/colors........................................ ??? FAILED (duplicate key value violates unique constraint "UQ_eef95571ee2a9f0b62a2e98a872")
+Testing POST /masters/floors........................................ ??? FAILED (duplicate key value violates unique constraint "UQ_2a5e6bb2e024d18af87a7df15b4")
+Testing POST /masters/product-masters............................... ??? FAILED (null value in column "design_no" of relation "product_masters" violates not-null constraint)
+
+--- CORE ENTITIES (Inventory/Customers) ---
+Testing POST /customers............................................. ??? PASSED
+Testing POST /inventory............................................. ??? PASSED
+Testing GET /inventory.............................................. ??? PASSED
+Testing GET /inventory/search (by barcode).......................... ??? PASSED
+Testing PUT /inventory/:id/floor.................................... ??? PASSED
+Testing PUT /inventory/:id/adjust-quantity.......................... ??? FAILED (Returned false or empty data)
+
+--- SALES PROCESSING ---
+Testing POST /sales-orders.......................................... ??? PASSED
+Testing POST /sales/invoices........................................ ??? PASSED
+Testing POST /sales-returns......................................... ??? PASSED
+
+--- PURCHASE PROCESSING ---
+Testing POST /purchases/orders...................................... ??? FAILED (null value in column "vendor" of relation "purchase_orders" violates not-null constraint)
+Testing POST /purchases/invoices.................................... ??? FAILED (null value in column "vendor_id" of relation "purchase_invoices" violates not-null constraint)
+Testing POST /purchase-returns...................................... ??? FAILED (null value in column "vendor_id" of relation "purchase_returns" violates not-null constraint)
+
+--- BOOKINGS & PAYMENTS ---
+Testing POST /bookings.............................................. ??? FAILED (null value in column "customer_mobile" of relation "e_bookings" violates not-null constraint)
+Testing POST /payments.............................................. ??? FAILED (null value in column "invoice_id" of relation "payment_receipts" violates not-null constraint)
+
+--- COMMISSIONS & DISCOUNTS ---
+Testing POST /discounts............................................. ??? FAILED (null value in column "flag_name" of relation "discount_masters" violates not-null constraint)
+Testing POST /commission/payout-codes............................... ??? FAILED (duplicate key value violates unique constraint "UQ_80b11c3e44a79a05eea7f442e10")
+Testing POST /commission/slabs...................................... ??? PASSED
+
+--- DASHBOARD & REPORTS ---
+Testing GET /dashboard.............................................. ??? FAILED (Route not found)
+Testing GET /reports/sales.......................................... ??? FAILED (Returned false or empty data)
+Testing GET /reports/inventory...................................... ??? FAILED (Returned false or empty data)
+Testing GET /tally/unsynced-sales................................... ??? FAILED (Route not found)
+
+???? Finished comprehensive API testing sweep!

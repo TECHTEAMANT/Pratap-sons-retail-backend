@@ -1,0 +1,79 @@
+﻿[
+  {
+    "barcode": "00000679",
+    "size": "XXL",
+    "vendor": "AARI",
+    "pg": "Readymade",
+    "color": "Blue",
+    "status": "active",
+    "vendor_id": "a4361295-9b77-443c-b999-f079acf504c1",
+    "pg_id": "4ea76c0d-81fe-41df-b108-4262183b73c8",
+    "color_id": "1af5120a-55fc-4864-a490-d8abab3f3643"
+  },
+  {
+    "barcode": "00000678",
+    "size": "Extra Large",
+    "vendor": "AARI",
+    "pg": "Readymade",
+    "color": "Blue",
+    "status": "active",
+    "vendor_id": "a4361295-9b77-443c-b999-f079acf504c1",
+    "pg_id": "4ea76c0d-81fe-41df-b108-4262183b73c8",
+    "color_id": "1af5120a-55fc-4864-a490-d8abab3f3643"
+  },
+  {
+    "barcode": "00000680",
+    "size": "FIVE XL",
+    "vendor": "AARI",
+    "pg": "Readymade",
+    "color": "Blue",
+    "status": "active",
+    "vendor_id": "a4361295-9b77-443c-b999-f079acf504c1",
+    "pg_id": "4ea76c0d-81fe-41df-b108-4262183b73c8",
+    "color_id": "1af5120a-55fc-4864-a490-d8abab3f3643"
+  },
+  {
+    "barcode": "00000682",
+    "size": "4XL",
+    "vendor": "AARI",
+    "pg": "Readymade",
+    "color": "Blue",
+    "status": "active",
+    "vendor_id": "a4361295-9b77-443c-b999-f079acf504c1",
+    "pg_id": "4ea76c0d-81fe-41df-b108-4262183b73c8",
+    "color_id": "1af5120a-55fc-4864-a490-d8abab3f3643"
+  },
+  {
+    "barcode": "00000681",
+    "size": "3XL",
+    "vendor": "AARI",
+    "pg": "Readymade",
+    "color": "Blue",
+    "status": "active",
+    "vendor_id": "a4361295-9b77-443c-b999-f079acf504c1",
+    "pg_id": "4ea76c0d-81fe-41df-b108-4262183b73c8",
+    "color_id": "1af5120a-55fc-4864-a490-d8abab3f3643"
+  },
+  {
+    "barcode": "00000676",
+    "size": "Medium",
+    "vendor": "AARI",
+    "pg": "Readymade",
+    "color": "Blue",
+    "status": "active",
+    "vendor_id": "a4361295-9b77-443c-b999-f079acf504c1",
+    "pg_id": "4ea76c0d-81fe-41df-b108-4262183b73c8",
+    "color_id": "1af5120a-55fc-4864-a490-d8abab3f3643"
+  },
+  {
+    "barcode": "00000677",
+    "size": "Large",
+    "vendor": "AARI",
+    "pg": "Readymade",
+    "color": "Blue",
+    "status": "active",
+    "vendor_id": "a4361295-9b77-443c-b999-f079acf504c1",
+    "pg_id": "4ea76c0d-81fe-41df-b108-4262183b73c8",
+    "color_id": "1af5120a-55fc-4864-a490-d8abab3f3643"
+  }
+]

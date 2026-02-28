@@ -1,0 +1,51 @@
+???? Starting Comprehensive Backend API Integration Tests...
+
+--- AUTHENTICATION & SECURITY ---
+Testing POST /auth/login............................................ ??? PASSED
+Testing GET /auth/me................................................ ??? PASSED
+Testing POST /roles (Create)........................................ ??? PASSED
+Testing GET /roles (List)........................................... ??? PASSED
+Testing POST /users (Create)........................................ ??? PASSED
+Testing GET /users (List)........................................... ??? PASSED
+
+--- MASTER DATA ---
+Testing POST /masters/cities........................................ ??? PASSED
+Testing POST /masters/vendors....................................... ??? PASSED
+Testing POST /masters/product-groups................................ ??? PASSED
+Testing POST /masters/sizes......................................... ??? PASSED
+Testing POST /masters/colors........................................ ??? PASSED
+Testing POST /masters/floors........................................ ??? PASSED
+Testing POST /masters/product-masters............................... ??? PASSED
+
+--- CORE ENTITIES (Inventory/Customers) ---
+Testing POST /customers............................................. ??? PASSED
+Testing POST /inventory............................................. ??? PASSED
+Testing GET /inventory.............................................. ??? PASSED
+Testing GET /inventory/search (by barcode).......................... ??? PASSED
+Testing PUT /inventory/:id/floor.................................... ??? FAILED (Assertion returned false or undefined. Result: false)
+Testing PUT /inventory/:id/adjust-quantity.......................... ??? FAILED (Assertion returned false or undefined. Result: false)
+
+--- SALES PROCESSING ---
+Testing POST /sales-orders.......................................... ??? PASSED
+Testing POST /sales/invoices........................................ ??? PASSED
+Testing POST /sales-returns......................................... ??? PASSED
+
+--- PURCHASE PROCESSING ---
+Testing POST /purchases/orders...................................... ??? PASSED
+Testing POST /purchases/invoices.................................... ??? PASSED
+Testing POST /purchase-returns...................................... ??? PASSED
+
+--- BOOKINGS & PAYMENTS ---
+Testing POST /bookings.............................................. ??? FAILED (Assertion returned false or undefined. Result: false)
+Testing POST /payments.............................................. ??? FAILED (Assertion returned false or undefined. Result: false)
+
+--- COMMISSIONS & DISCOUNTS ---
+Testing POST /discounts............................................. ??? FAILED (Assertion returned false or undefined. Result: false)
+Testing POST /commission/payout-codes............................... ??? FAILED (Assertion returned false or undefined. Result: false)
+Testing POST /commission/slabs...................................... ??? FAILED (Assertion returned false or undefined. Result: false)
+
+--- DASHBOARD & REPORTS ---
+Testing GET /reports/sales.......................................... ??? FAILED (Assertion returned false or undefined. Result: false)
+Testing GET /reports/inventory...................................... ??? FAILED (Assertion returned false or undefined. Result: false)
+
+???? Finished comprehensive API testing sweep!

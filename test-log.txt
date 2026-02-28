@@ -1,0 +1,51 @@
+???? Starting Comprehensive Backend API Integration Tests...
+
+--- AUTHENTICATION & SECURITY ---
+Testing POST /auth/login............................................ ??? PASSED
+Testing GET /auth/me................................................ ??? PASSED
+Testing POST /roles (Create)........................................ ??? PASSED
+Testing GET /roles (List)........................................... ??? PASSED
+Testing POST /users (Create)........................................ ??? PASSED
+Testing GET /users (List)........................................... ??? PASSED
+
+--- MASTER DATA ---
+Testing POST /masters/cities........................................ ??? PASSED
+Testing POST /masters/vendors....................................... ??? PASSED
+Testing POST /masters/product-groups................................ ??? PASSED
+Testing POST /masters/sizes......................................... ??? PASSED
+Testing POST /masters/colors........................................ ??? PASSED
+Testing POST /masters/floors........................................ ??? PASSED
+Testing POST /masters/product-masters............................... ??? PASSED
+
+--- CORE ENTITIES (Inventory/Customers) ---
+Testing POST /customers............................................. ??? PASSED
+Testing POST /inventory............................................. ??? PASSED
+Testing GET /inventory.............................................. ??? PASSED
+Testing GET /inventory/search (by barcode).......................... ??? PASSED
+Testing PUT /inventory/:id/floor.................................... ??? FAILED (Returned false or empty data)
+Testing PUT /inventory/:id/adjust-quantity.......................... ??? FAILED (Returned false or empty data)
+
+--- SALES PROCESSING ---
+Testing POST /sales-orders.......................................... ??? PASSED
+Testing POST /sales/invoices........................................ ??? PASSED
+Testing POST /sales-returns......................................... ??? PASSED
+
+--- PURCHASE PROCESSING ---
+Testing POST /purchases/orders...................................... ??? PASSED
+Testing POST /purchases/invoices.................................... ??? PASSED
+Testing POST /purchase-returns...................................... ??? PASSED
+
+--- BOOKINGS & PAYMENTS ---
+Testing POST /bookings.............................................. ??? FAILED (null value in column "barcode_8digit" of relation "e_bookings" violates not-null constraint)
+Testing POST /payments.............................................. ??? FAILED (null value in column "invoice_number" of relation "payment_receipts" violates not-null constraint)
+
+--- COMMISSIONS & DISCOUNTS ---
+Testing POST /discounts............................................. ??? FAILED (Returned false or empty data)
+Testing POST /commission/payout-codes............................... ??? FAILED (Returned false or empty data)
+Testing POST /commission/slabs...................................... ??? FAILED (Returned false or empty data)
+
+--- DASHBOARD & REPORTS ---
+Testing GET /reports/sales.......................................... ??? FAILED (Returned false or empty data)
+Testing GET /reports/inventory...................................... ??? FAILED (Returned false or empty data)
+
+???? Finished comprehensive API testing sweep!

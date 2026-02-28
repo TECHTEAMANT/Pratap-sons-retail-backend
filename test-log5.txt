@@ -1,0 +1,51 @@
+???? Starting Comprehensive Backend API Integration Tests...
+
+--- AUTHENTICATION & SECURITY ---
+Testing POST /auth/login............................................ ??? PASSED
+Testing GET /auth/me................................................ ??? PASSED
+Testing POST /roles (Create)........................................ ??? PASSED
+Testing GET /roles (List)........................................... ??? PASSED
+Testing POST /users (Create)........................................ ??? PASSED
+Testing GET /users (List)........................................... ??? PASSED
+
+--- MASTER DATA ---
+Testing POST /masters/cities........................................ ??? PASSED
+Testing POST /masters/vendors....................................... ??? PASSED
+Testing POST /masters/product-groups................................ ??? PASSED
+Testing POST /masters/sizes......................................... ??? PASSED
+Testing POST /masters/colors........................................ ??? PASSED
+Testing POST /masters/floors........................................ ??? PASSED
+Testing POST /masters/product-masters............................... ??? PASSED
+
+--- CORE ENTITIES (Inventory/Customers) ---
+Testing POST /customers............................................. ??? PASSED
+Testing POST /inventory............................................. ??? PASSED
+Testing GET /inventory.............................................. ??? PASSED
+Testing GET /inventory/search (by barcode).......................... ??? PASSED
+Testing PUT /inventory/:id/floor.................................... ??? PASSED
+Testing PUT /inventory/:id/adjust-quantity.......................... ??? PASSED
+
+--- SALES PROCESSING ---
+Testing POST /sales-orders.......................................... ??? PASSED
+Testing POST /sales/invoices........................................ ??? PASSED
+Testing POST /sales-returns......................................... ??? PASSED
+
+--- PURCHASE PROCESSING ---
+Testing POST /purchases/orders...................................... ??? PASSED
+Testing POST /purchases/invoices.................................... ??? PASSED
+Testing POST /purchase-returns...................................... ??? PASSED
+
+--- BOOKINGS & PAYMENTS ---
+Testing POST /bookings.............................................. ??? PASSED
+Testing POST /payments.............................................. ??? PASSED
+
+--- COMMISSIONS & DISCOUNTS ---
+Testing POST /discounts............................................. ??? PASSED
+Testing POST /commission/payout-codes............................... ??? PASSED
+Testing POST /commission/slabs...................................... ??? PASSED
+
+--- DASHBOARD & REPORTS ---
+Testing GET /reports/sales.......................................... ??? PASSED
+Testing GET /reports/inventory...................................... ??? PASSED
+
+???? Finished comprehensive API testing sweep!

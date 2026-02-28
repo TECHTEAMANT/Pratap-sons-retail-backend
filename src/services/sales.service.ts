@@ -1,0 +1,149 @@
+import { AppDataSource } from '../config/data-source';
+import { SalesInvoice } from '../entities/SalesInvoice';
+import { SalesInvoiceItem } from '../entities/SalesInvoiceItem';
+import { BarcodeBatch } from '../entities/BarcodeBatch';
+import { Customer } from '../entities/Customer';
+import { EBooking } from '../entities/EBooking';
+import { ILike } from 'typeorm';
+import logger from '../utils/logger';
+
+export class SalesService {
+  private invoiceRepo = AppDataSource.getRepository(SalesInvoice);
+
+  async getInvoices(filters: { start_date?: string; end_date?: string; search?: string; payment_status?: string; page?: number; limit?: number }) {
+    const page = filters.page || 1;
+    const limit = filters.limit || 50;
+    const skip = (page - 1) * limit;
+
+    const qb = this.invoiceRepo.createQueryBuilder('si');
+
+    if (filters.start_date) qb.andWhere('si.invoice_date >= :start', { start: filters.start_date });
+    if (filters.end_date) qb.andWhere('si.invoice_date <= :end', { end: filters.end_date });
+    if (filters.payment_status) qb.andWhere('si.payment_status = :ps', { ps: filters.payment_status });
+    if (filters.search) {
+      qb.andWhere('(si.invoice_number ILIKE :search OR si.customer_name ILIKE :search OR si.customer_mobile ILIKE :search)', { search: `%${filters.search}%` });
+    }
+
+    qb.orderBy('si.created_at', 'DESC').skip(skip).take(limit);
+
+    const [data, total] = await qb.getManyAndCount();
+    return { data, total, page, limit };
+  }
+
+  async getInvoiceById(id: string) {
+    return this.invoiceRepo.findOne({ where: { id }, relations: ['items'] });
+  }
+
+  async createInvoice(data: any, userId: string) {
+    return AppDataSource.transaction(async (manager) => {
+      // Generate invoice number
+      const count = await manager.count(SalesInvoice);
+      const invoiceNumber = `INV${new Date().getFullYear()}${(count + 1).toString().padStart(6, '0')}`;
+
+      // Create invoice
+      const invoice = manager.create(SalesInvoice, {
+        invoice_number: invoiceNumber,
+        invoice_date: data.invoice_date || new Date(),
+        customer_mobile: data.customer_mobile,
+        customer_name: data.customer_name,
+        customer_id: data.customer_id || null,
+        total_mrp: data.total_mrp || 0,
+        total_discount: data.total_discount || 0,
+        taxable_value: data.taxable_value || 0,
+        total_gst: data.total_gst || 0,
+        gst_type: data.gst_type || 'CGST_SGST',
+        cgst_5: data.cgst_5 || 0,
+        sgst_5: data.sgst_5 || 0,
+        cgst_18: data.cgst_18 || 0,
+        sgst_18: data.sgst_18 || 0,
+        igst_5: data.igst_5 || 0,
+        igst_18: data.igst_18 || 0,
+        net_payable: data.net_payable || 0,
+        payment_mode: data.payment_mode,
+        amount_paid: data.amount_paid || 0,
+        amount_pending: data.amount_pending || data.net_payable || 0,
+        payment_status: data.amount_paid >= data.net_payable ? 'paid' : data.amount_paid > 0 ? 'partial' : 'pending',
+        sales_order_id: data.sales_order_id || null,
+        created_by: userId,
+      });
+
+      const savedInvoice = await manager.save(invoice);
+
+      // Create line items & deduct inventory
+      if (data.items && data.items.length > 0) {
+        for (const item of data.items) {
+          // Deduct inventory
+          if (item.barcode_8digit) {
+            const batch = await manager.findOne(BarcodeBatch, { where: { barcode_alias_8digit: item.barcode_8digit } });
+            if (batch) {
+              const qty = item.quantity || 1;
+              if (batch.available_quantity < qty) {
+                throw new Error(`Insufficient stock for barcode ${item.barcode_8digit}. Available: ${batch.available_quantity}`);
+              }
+              batch.available_quantity -= qty;
+              await manager.save(batch);
+            }
+          }
+
+          const invoiceItem = manager.create(SalesInvoiceItem, {
+            invoice_id: savedInvoice.id,
+            sr_no: item.sr_no,
+            barcode_8digit: item.barcode_8digit,
+            design_no: item.design_no,
+            product_description: item.product_description || '',
+            hsn_code: item.hsn_code || null,
+            quantity: item.quantity || 1,
+            mrp: item.mrp || 0,
+            discount: item.discount || 0,
+            taxable_value: item.taxable_value || 0,
+            gst_percentage: item.gst_percentage || 0,
+            gst_type: item.gst_type || 'CGST_SGST',
+            cgst_percentage: item.cgst_percentage || 0,
+            cgst_amount: item.cgst_amount || 0,
+            sgst_percentage: item.sgst_percentage || 0,
+            sgst_amount: item.sgst_amount || 0,
+            igst_percentage: item.igst_percentage || 0,
+            igst_amount: item.igst_amount || 0,
+            total_value: item.total_value || 0,
+            selling_price: item.selling_price || item.mrp || 0,
+            salesman_id: item.salesman_id || null,
+          });
+          await manager.save(invoiceItem);
+        }
+      }
+
+      // Update customer data
+      if (data.customer_mobile) {
+        let customer = await manager.findOne(Customer, { where: { mobile: data.customer_mobile } });
+        if (customer) {
+          customer.last_purchase_date = new Date();
+          await manager.save(customer);
+        }
+      }
+
+      // Mark bookings as invoiced
+      if (data.booking_ids && data.booking_ids.length > 0) {
+        for (const bookingId of data.booking_ids) {
+          const booking = await manager.findOne(EBooking, { where: { id: bookingId } });
+          if (booking) {
+            booking.status = 'invoiced';
+            booking.invoice_number = invoiceNumber;
+            await manager.save(booking);
+          }
+        }
+      }
+
+      logger.info(`Invoice created: ${invoiceNumber}`, { items: data.items?.length || 0, total: data.net_payable });
+
+      return savedInvoice;
+    });
+  }
+  async getInvoiceItems(filters: any) {
+    const qb = AppDataSource.getRepository(SalesInvoiceItem).createQueryBuilder('sii');
+    if (filters.invoice_id) qb.andWhere('sii.invoice_id = :id', { id: filters.invoice_id });
+    if (filters.barcode_8digit) qb.andWhere('sii.barcode_8digit = :barcode', { barcode: filters.barcode_8digit });
+    return qb.getMany();
+  }
+}
+
+export const salesService = new SalesService();
