@@ -65,7 +65,7 @@ export class MasterService {
     if (filters?.search_vendor_code) {
       where.vendor_code = ILike(`${filters.search_vendor_code}%`);
     }
-    return repo.find({ where, order: { vendor_code: 'ASC' } });
+    return repo.find({ where, relations: ['city'], order: { vendor_code: 'ASC' } });
   }
   async createVendor(data: Partial<Vendor>) {
     const repo = AppDataSource.getRepository(Vendor);
@@ -97,10 +97,20 @@ export class MasterService {
 
   // ===== Cities =====
   async getCities() {
-    return AppDataSource.getRepository(City).find({ 
-      where: { active: true },
-      order: { name: 'ASC' } 
-    });
+    const repo = AppDataSource.getRepository(City);
+    try {
+      return await repo.find({ 
+        where: { active: true },
+        order: { name: 'ASC' } 
+      });
+    } catch {
+      // Fallback: city_code column may not exist in production DB yet
+      // Use raw query selecting only the guaranteed base columns
+      const rows = await AppDataSource.query(
+        `SELECT id, name, state, active, created_at FROM cities WHERE active = true ORDER BY name ASC`
+      );
+      return rows;
+    }
   }
   async createCity(data: Partial<City>) {
     const repo = AppDataSource.getRepository(City);
