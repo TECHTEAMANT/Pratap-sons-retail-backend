@@ -24,7 +24,7 @@ export class MasterController {
   async createFloor(req: Request, res: Response) { try { sendCreated(res, await masterService.createFloor(req.body)); } catch (e: any) { sendError(res, e.message, 400); } }
   async updateFloor(req: Request, res: Response) { try { const r = await masterService.updateFloor(req.params.id, req.body); r ? sendSuccess(res, r) : sendNotFound(res, 'Floor'); } catch (e: any) { sendError(res, e.message, 400); } }
   // Cities
-  async getCities(_r: Request, res: Response) { try { sendSuccess(res, await masterService.getCities()); } catch (e: any) { sendError(res, e.message); } }
+  async getCities(req: Request, res: Response) { try { sendSuccess(res, await masterService.getCities(req.query as any)); } catch (e: any) { sendError(res, e.message); } }
   async createCity(req: Request, res: Response) { try { sendCreated(res, await masterService.createCity(req.body)); } catch (e: any) { sendError(res, e.message, 400); } }
   async updateCity(req: Request, res: Response) { try { const r = await masterService.updateCity(req.params.id, req.body); r ? sendSuccess(res, r) : sendNotFound(res, 'City'); } catch (e: any) { sendError(res, e.message, 400); } }
   // Product Masters

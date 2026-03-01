@@ -96,20 +96,26 @@ export class MasterService {
   }
 
   // ===== Cities =====
-  async getCities() {
+  async getCities(filters?: { sort?: string; order?: string; active?: string; city_code?: string }) {
     const repo = AppDataSource.getRepository(City);
+    const where: any = {};
+
+    // Filter by active if explicitly requested
+    if (filters?.active === 'true') where.active = true;
+
+    // Filter by city_code if provided (used for duplicate-checking from frontend)
+    if (filters?.city_code) where.city_code = filters.city_code.toUpperCase();
+
+    // Safe sort column whitelist
+    const allowedSortCols = ['name', 'city_code', 'state', 'created_at'];
+    const sortCol = (filters?.sort && allowedSortCols.includes(filters.sort)) ? filters.sort : 'name';
+    const sortDir = filters?.order?.toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
+
     try {
-      return await repo.find({ 
-        where: { active: true },
-        order: { name: 'ASC' } 
-      });
+      return await repo.find({ where, order: { [sortCol]: sortDir } as any });
     } catch {
-      // Fallback: city_code column may not exist in production DB yet
-      // Use raw query selecting only the guaranteed base columns
-      const rows = await AppDataSource.query(
-        `SELECT id, name, state, active, created_at FROM cities WHERE active = true ORDER BY name ASC`
-      );
-      return rows;
+      // Fallback if column doesn't exist in DB yet (e.g. city_code on older production)
+      return repo.find({ where: { active: true }, order: { name: 'ASC' } });
     }
   }
   async createCity(data: Partial<City>) {

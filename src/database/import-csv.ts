@@ -247,7 +247,24 @@ async function main() {
       }
     }
 
-    // 3. Vendors
+    // 3. Cities (must be before vendors due to city_id FK)
+    const citiesPath = path.join(DATA_DIR, 'cities_rows (2).csv');
+    if (fs.existsSync(citiesPath)) {
+      const data = parseCSVFull(fs.readFileSync(citiesPath, 'utf8'));
+      const repo = ds.getRepository(City);
+      console.log(`🌱 Importing ${data.length} cities...`);
+      for (const row of data) {
+        await repo.save(repo.create({
+          id: row.id,
+          name: row.name,
+          state: row.state,
+          city_code: row.city_code || null,
+          active: mapBoolean(row.active, true),
+        }));
+      }
+    }
+
+    // 4. Vendors
     const vendorsPath = path.join(DATA_DIR, 'vendors_rows (1).csv');
     if (fs.existsSync(vendorsPath)) {
       const data = parseCSVFull(fs.readFileSync(vendorsPath, 'utf8'));
@@ -264,23 +281,6 @@ async function main() {
           st_number: row.st_number || null,
           active: mapBoolean(row.active, true),
           city_id: row.city_id || null,
-        }));
-      }
-    }
-
-    // 4. Cities
-    const citiesPath = path.join(DATA_DIR, 'cities_rows (2).csv');
-    if (fs.existsSync(citiesPath)) {
-      const data = parseCSVFull(fs.readFileSync(citiesPath, 'utf8'));
-      const repo = ds.getRepository(City);
-      console.log(`🌱 Importing ${data.length} cities...`);
-      for (const row of data) {
-        await repo.save(repo.create({
-          id: row.id,
-          name: row.name,
-          state: row.state,
-          city_code: row.city_code || null,
-          active: mapBoolean(row.active, true),
         }));
       }
     }
