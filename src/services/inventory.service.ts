@@ -9,10 +9,17 @@ export class InventoryService {
   private batchRepo = AppDataSource.getRepository(BarcodeBatch);
   private seqRepo = AppDataSource.getRepository(BarcodeSequence);
 
-  async findAll(filters: { status?: string; vendor?: string; product_group?: string; floor?: string; search?: string; page?: number; limit?: number; po_id?: string; design_no?: string; size?: string; color?: string; is_color?: string }) {
+  async findAll(filters: {
+    status?: string; vendor?: string; product_group?: string; floor?: string;
+    search?: string; page?: number; limit?: number; offset?: number;
+    po_id?: string; design_no?: string; size?: string; color?: string; is_color?: string;
+    search_barcode_alias_8digit?: string; search_design_no?: string;
+    sort?: string; order?: string;
+  }) {
     const page = filters.page || 1;
-    const limit = filters.limit || 1000;
-    const skip = (page - 1) * limit;
+    const limit = Math.min(filters.limit || 1000, 5000);
+    // Support both offset (from range()) and page-based pagination
+    const skip = filters.offset !== undefined ? filters.offset : (page - 1) * limit;
 
     const qb = this.batchRepo.createQueryBuilder('bb')
       .leftJoinAndSelect('bb.product_group', 'pg')
@@ -26,18 +33,40 @@ export class InventoryService {
     if (filters.vendor) qb.andWhere('bb.vendor_id = :vendor', { vendor: filters.vendor });
     if (filters.product_group) qb.andWhere('bb.product_group_id = :pg', { pg: filters.product_group });
     if (filters.floor) qb.andWhere('bb.floor_id = :floor', { floor: filters.floor });
-    
-    // Support exact batch matching for Purchase Invoices 
     if (filters.design_no) qb.andWhere('bb.design_no = :design_no', { design_no: filters.design_no });
     if (filters.size) qb.andWhere('bb.size_id = :size', { size: filters.size });
     if (filters.color) qb.andWhere('bb.color_id = :color', { color: filters.color });
     if (filters.is_color === 'null') qb.andWhere('bb.color_id IS NULL');
 
+    // General search (design_no + barcode + vendor name)
     if (filters.search) {
-      qb.andWhere('(bb.barcode_alias_8digit ILIKE :search OR bb.design_no ILIKE :search OR vd.name ILIKE :search)', { search: `%${filters.search}%` });
+      qb.andWhere(
+        '(bb.barcode_alias_8digit ILIKE :search OR bb.design_no ILIKE :search OR vd.name ILIKE :search)',
+        { search: `%${filters.search}%` }
+      );
     }
 
-    qb.orderBy('bb.created_at', 'DESC').skip(skip).take(limit);
+    // Specific barcode search from BarcodeManagement .ilike() shim call
+    if (filters.search_barcode_alias_8digit) {
+      const term = filters.search_barcode_alias_8digit.replace(/%/g, '');
+      qb.andWhere(
+        '(bb.barcode_alias_8digit ILIKE :bc_search OR bb.design_no ILIKE :bc_search OR vd.name ILIKE :bc_search)',
+        { bc_search: `%${term}%` }
+      );
+    }
+
+    // Dynamic sort: whitelist allowed sort columns to prevent SQL injection
+    const SORT_COLS: Record<string, string> = {
+      'barcode_alias_8digit': 'bb.barcode_alias_8digit',
+      'created_at': 'bb.created_at',
+      'design_no': 'bb.design_no',
+      'mrp': 'bb.mrp',
+    };
+    const sortCol = (filters.sort && SORT_COLS[filters.sort]) ? SORT_COLS[filters.sort] : 'bb.created_at';
+    const sortDir = filters.order?.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+    qb.orderBy(sortCol, sortDir);
+
+    qb.skip(skip).take(limit);
 
     const [data, total] = await qb.getManyAndCount();
     return { data, total, page, limit };
@@ -138,7 +167,10 @@ export class InventoryService {
   }
 
   async findById(id: string) {
-    return this.batchRepo.findOne({ where: { id }, relations: ['printLogs'] });
+    return this.batchRepo.findOne({
+      where: { id },
+      relations: ['product_group', 'size', 'color', 'vendor', 'floor', 'printLogs'],
+    });
   }
 
   async searchByBarcode(barcode: string) {
@@ -148,6 +180,7 @@ export class InventoryService {
         { barcode_alias_8digit: ILike(`%${barcode}%`) },
         { barcode_structured: ILike(`%${barcode}%`) },
       ],
+      relations: ['product_group', 'size', 'color', 'vendor'],
       take: 20,
     });
   }
@@ -157,7 +190,15 @@ export class InventoryService {
       // Get and increment barcode sequence
       let seq = await manager.findOne(BarcodeSequence, { where: { id: 1 } });
       if (!seq) {
-        seq = manager.create(BarcodeSequence, { id: 1, last_number: 10000000 });
+        // Find the actual max barcode in DB to continue from correct sequence
+        const maxRes = await manager.query(
+          `SELECT MAX(CAST(barcode_alias_8digit AS INTEGER)) AS max_num
+           FROM barcode_batches
+           WHERE barcode_alias_8digit ~ '^[0-9]+$'
+             AND CAST(barcode_alias_8digit AS INTEGER) < 10000000`
+        );
+        const maxNum = maxRes[0]?.max_num ? parseInt(maxRes[0].max_num, 10) : 0;
+        seq = manager.create(BarcodeSequence, { id: 1, last_number: maxNum });
       }
       const nextNumber = Number(seq.last_number) + 1;
       seq.last_number = nextNumber;

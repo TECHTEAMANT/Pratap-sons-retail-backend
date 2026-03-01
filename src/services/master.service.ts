@@ -59,8 +59,13 @@ export class MasterService {
   }
 
   // ===== Vendors =====
-  async getVendors() {
-    return AppDataSource.getRepository(Vendor).find({ order: { name: 'ASC' } });
+  async getVendors(filters?: { search_vendor_code?: string }) {
+    const repo = AppDataSource.getRepository(Vendor);
+    const where: any = {};
+    if (filters?.search_vendor_code) {
+      where.vendor_code = ILike(`${filters.search_vendor_code}%`);
+    }
+    return repo.find({ where, order: { vendor_code: 'ASC' } });
   }
   async createVendor(data: Partial<Vendor>) {
     const repo = AppDataSource.getRepository(Vendor);
@@ -92,7 +97,10 @@ export class MasterService {
 
   // ===== Cities =====
   async getCities() {
-    return AppDataSource.getRepository(City).find({ order: { name: 'ASC' } });
+    return AppDataSource.getRepository(City).find({ 
+      where: { active: true },
+      order: { name: 'ASC' } 
+    });
   }
   async createCity(data: Partial<City>) {
     const repo = AppDataSource.getRepository(City);

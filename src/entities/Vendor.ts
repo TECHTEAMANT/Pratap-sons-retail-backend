@@ -26,6 +26,9 @@ export class Vendor {
   @Column({ type: 'boolean', default: true })
   active: boolean;
 
+  @Column({ type: 'uuid', nullable: true })
+  city_id: string;
+
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
 }
