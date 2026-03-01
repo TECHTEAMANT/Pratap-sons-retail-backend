@@ -244,6 +244,7 @@ export class InventoryService {
         floor_id: data.floor || null,
         po_id: data.po_id || null,
         description: data.description || null,
+        photos: Array.isArray(data.photos) ? data.photos.filter(Boolean) : [],
         created_by: userId,
       } as any));
 
