@@ -189,17 +189,28 @@ export class InventoryService {
     return AppDataSource.transaction(async (manager) => {
       // Get and increment barcode sequence
       let seq = await manager.findOne(BarcodeSequence, { where: { id: 1 } });
-      if (!seq) {
-        // Find the actual max barcode in DB to continue from correct sequence
+
+      // Helper: find the real max valid barcode (< 10,000,000) from actual data
+      const getValidMax = async (): Promise<number> => {
         const maxRes = await manager.query(
           `SELECT MAX(CAST(barcode_alias_8digit AS INTEGER)) AS max_num
            FROM barcode_batches
            WHERE barcode_alias_8digit ~ '^[0-9]+$'
              AND CAST(barcode_alias_8digit AS INTEGER) < 10000000`
         );
-        const maxNum = maxRes[0]?.max_num ? parseInt(maxRes[0].max_num, 10) : 0;
+        return maxRes[0]?.max_num ? parseInt(maxRes[0].max_num, 10) : 0;
+      };
+
+      if (!seq) {
+        // No sequence row at all — create from real max
+        const maxNum = await getValidMax();
         seq = manager.create(BarcodeSequence, { id: 1, last_number: maxNum });
+      } else if (Number(seq.last_number) >= 10000000) {
+        // Sequence was wrongly seeded (e.g. 10000000) — correct it silently
+        const maxNum = await getValidMax();
+        seq.last_number = maxNum;
       }
+
       const nextNumber = Number(seq.last_number) + 1;
       seq.last_number = nextNumber;
       await manager.save(seq);
