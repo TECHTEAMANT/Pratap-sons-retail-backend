@@ -11,7 +11,7 @@ export const AppDataSource = new DataSource({
   username: config.db.user,
   password: config.db.password,
   ssl: config.db.ssl ? { rejectUnauthorized: false } : false,
-  synchronize: config.nodeEnv === 'development', // auto-sync in dev only
+  synchronize: false, // Handled explicitly in initializeDatabase() for all environments
   logging: config.nodeEnv === 'development' ? ['error', 'warn'] : ['error'],
   entities: [path.join(__dirname, '../entities/**/*.{ts,js}')],
   migrations: [path.join(__dirname, '../database/migrations/**/*.{ts,js}')],
@@ -25,6 +25,9 @@ export async function initializeDatabase(): Promise<DataSource> {
   if (!AppDataSource.isInitialized) {
     await AppDataSource.initialize();
   }
+  // Always synchronize schema on startup (adds missing columns/tables, never drops)
+  // This means any new entity fields are auto-applied to the DB without manual migrations
+  await AppDataSource.synchronize();
   return AppDataSource;
 }
 

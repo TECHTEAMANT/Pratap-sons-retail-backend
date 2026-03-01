@@ -1,4 +1,5 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, ManyToOne, JoinColumn } from 'typeorm';
+import { City } from './City';
 
 @Entity('vendors')
 export class Vendor {
@@ -26,8 +27,12 @@ export class Vendor {
   @Column({ type: 'boolean', default: true })
   active: boolean;
 
-  @Column({ type: 'uuid', nullable: true })
+  @Column({ name: 'city_id', type: 'uuid', nullable: true })
   city_id: string;
+
+  @ManyToOne(() => City, { nullable: true, eager: false })
+  @JoinColumn({ name: 'city_id' })
+  city: City;
 
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;

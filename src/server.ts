@@ -12,7 +12,7 @@ async function startServer() {
 
     // Initialize TypeORM DataSource
     await initializeDatabase();
-    logger.info('TypeORM DataSource initialized ✓');
+    logger.info('TypeORM DataSource initialized ✓ (auto-sync ran)');
     logger.info('PostgreSQL connected ✓');
 
     // Start Express server
