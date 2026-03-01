@@ -263,6 +263,7 @@ async function main() {
           mobile: row.mobile || '',
           st_number: row.st_number || null,
           active: mapBoolean(row.active, true),
+          city_id: row.city_id || null,
         }));
       }
     }
@@ -278,7 +279,8 @@ async function main() {
           id: row.id,
           name: row.name,
           state: row.state,
-          pincode: row.pincode || row.city_code || null,
+          city_code: row.city_code || null,
+          active: mapBoolean(row.active, true),
         }));
       }
     }

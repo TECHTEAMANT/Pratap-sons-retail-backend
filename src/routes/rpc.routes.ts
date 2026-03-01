@@ -50,14 +50,43 @@ router.post('/:functionName', authenticate, async (req, res) => {
     }
 
     if (functionName === 'get_next_barcode_number') {
-      // Barcode aliases are strictly 8 digits
-      const records = await AppDataSource.query(`SELECT barcode_alias_8digit FROM barcode_batches ORDER BY barcode_alias_8digit DESC LIMIT 1`);
-      let nextNum = 10000001; // initial seed if empty
-      if (records.length > 0 && records[0].barcode_alias_8digit) {
-        const parsed = parseInt(records[0].barcode_alias_8digit, 10);
-        if (!isNaN(parsed)) nextNum = parsed + 1;
+      // Only consider barcodes in the valid 8-digit "0-padded" range (numeric value < 10,000,000)
+      // This excludes any wrongly-seeded barcodes in the 10000001+ range from a previous bad seed.
+      const maxResult = await AppDataSource.query(
+        `SELECT MAX(CAST(barcode_alias_8digit AS INTEGER)) AS max_num
+         FROM barcode_batches
+         WHERE barcode_alias_8digit ~ '^[0-9]+$'
+           AND CAST(barcode_alias_8digit AS INTEGER) < 10000000`
+      );
+      let nextNum = 1; // initial seed → pads to 00000001
+      if (maxResult.length > 0 && maxResult[0].max_num != null) {
+        nextNum = parseInt(maxResult[0].max_num, 10) + 1;
       }
-      return sendSuccess(res, nextNum.toString().padStart(8, '0'));
+
+      // Safety: if somehow we land back in the bad range, reset to 1
+      if (nextNum >= 10000000) {
+        nextNum = 1;
+      }
+
+      // Collision guard: keep incrementing until the alias is truly unused
+      let attempts = 0;
+      while (attempts < 100000) {
+        const candidate = nextNum.toString().padStart(8, '0');
+        const exists = await AppDataSource.query(
+          `SELECT 1 FROM barcode_batches WHERE barcode_alias_8digit = $1 LIMIT 1`,
+          [candidate]
+        );
+        if (exists.length === 0) {
+          return sendSuccess(res, candidate);
+        }
+        nextNum++;
+        // Skip the bad range entirely
+        if (nextNum >= 10000000) {
+          return sendError(res, 'Barcode sequence exhausted valid 8-digit range');
+        }
+        attempts++;
+      }
+      return sendError(res, 'Could not generate a unique barcode number after 100000 attempts');
     }
 
     if (functionName === 'generate_invoice_transaction') {

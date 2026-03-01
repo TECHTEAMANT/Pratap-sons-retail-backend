@@ -11,8 +11,11 @@ export class City {
   @Column({ type: 'text', nullable: true })
   state: string;
 
-  @Column({ type: 'text', nullable: true })
-  pincode: string;
+  @Column({ type: 'text', unique: true, nullable: true })
+  city_code: string;
+
+  @Column({ type: 'boolean', default: true })
+  active: boolean;
 
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
