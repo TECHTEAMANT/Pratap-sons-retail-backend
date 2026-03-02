@@ -17,7 +17,7 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
-app.use(generalLimiter);
+// app.use(generalLimiter);
 
 // ===== Body Parsing =====
 app.use(express.json({ limit: '10mb' }));
