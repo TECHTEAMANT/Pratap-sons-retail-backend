@@ -306,7 +306,15 @@ export class PurchaseService {
 
   async bulkSaveInvoice(payload: BulkInvoicePayload, userId: string) {
     return AppDataSource.transaction(async (manager) => {
+      const t0 = Date.now();
+      const lap = (label: string, prev: number) => {
+        const now = Date.now();
+        console.log(`[BULK-SAVE] ${label}: ${now - prev}ms (total: ${now - t0}ms)`);
+        return now;
+      };
+      let t = t0;
       const { items, vendor, vendor_code = 'VND', ...header } = payload;
+      console.log(`[BULK-SAVE] START — items: ${items.length}, vendor: ${vendor}`);
 
       // Clean all items' design_no upfront
       for (const item of items) {
@@ -326,6 +334,7 @@ export class PurchaseService {
         if (!isNaN(lastNumPart)) nextNum = lastNumPart + 1;
       }
       const poNumber = `${prefix}${nextNum.toString().padStart(6, '0')}`;
+      t = lap('Step 1 — Generate PO number', t);
 
       // ── 2. Insert purchase_orders ──────────────────────────────────────────
       const poResult = await manager.query(
@@ -346,6 +355,7 @@ export class PurchaseService {
         ]
       );
       const po = poResult[0];
+      t = lap('Step 2 — Insert purchase_order header', t);
 
       // ── 3. Batch fetch existing product_masters ───────────────────────────
       const designNos = [...new Set(items.map(i => ensureId(i.design_no)?.trim().toUpperCase()))].filter(Boolean) as string[];
@@ -356,11 +366,13 @@ export class PurchaseService {
           )
         : [];
       const masterMap = new Map(existingMasters.map(m => [m.design_no.trim().toUpperCase(), m]));
+      t = lap(`Step 3 — Fetch product_masters (${designNos.length} designs, ${existingMasters.length} found)`, t);
 
       // ── 4. Batch resolve group/color codes (single query each) ────────────
       const allGroupIds = items.map(i => ensureId(i.product_group) || '');
       const allColorIds = items.map(i => ensureId(i.color) || '').filter(Boolean);
       const { groupMap, colorMap } = await batchResolveCodes(manager, allGroupIds, allColorIds);
+      t = lap('Step 4 — Batch resolve group/color codes', t);
 
       // ── 5. Count total size rows that need barcodes ────────────────────────
       const sizeRows = items.flatMap(item =>
@@ -370,6 +382,7 @@ export class PurchaseService {
 
       // ── 6. Reserve all barcode aliases in ONE DB call ─────────────────────
       const aliases = await reserveBarcodeAliases(manager, totalBarcodeCount);
+      t = lap(`Step 5+6 — Reserve ${totalBarcodeCount} barcode aliases`, t);
 
       // ── 7. Upsert product_masters (batch: one UPDATE + one multi-row INSERT) ─
       const toUpdate = items.filter(item => masterMap.has(ensureId(item.design_no)?.trim().toUpperCase() || ''));
@@ -413,6 +426,7 @@ export class PurchaseService {
           insertValues
         );
       }
+      t = lap(`Step 7 — Upsert product_masters (${toUpdate.length} updated, ${toInsert.length} inserted)`, t);
 
       // ── 8. Bulk-insert purchase_items ─────────────────────────────────────
       const piValues: any[] = [];
@@ -450,6 +464,7 @@ export class PurchaseService {
           piValues
         );
       }
+      t = lap(`Step 8 — Bulk insert ${piPlaceholders.length} purchase_items`, t);
 
       // ── 9. Bulk-insert barcode_batches ────────────────────────────────────
       const bbValues: any[] = [];
@@ -501,6 +516,8 @@ export class PurchaseService {
           bbValues
         );
       }
+      t = lap(`Step 9 — Bulk insert ${bbPlaceholders.length} barcode_batches`, t);
+      console.log(`[BULK-SAVE] ✅ DONE — total: ${Date.now() - t0}ms`);
 
       return { id: po.id, po_number: po.po_number };
     });
@@ -510,7 +527,15 @@ export class PurchaseService {
 
   async bulkUpdateInvoice(poId: string, payload: BulkInvoicePayload, userId: string) {
     return AppDataSource.transaction(async (manager) => {
+      const t0 = Date.now();
+      const lap = (label: string, prev: number) => {
+        const now = Date.now();
+        console.log(`[BULK-UPDATE] ${label}: ${now - prev}ms (total: ${now - t0}ms)`);
+        return now;
+      };
+      let t = t0;
       const { items, vendor, vendor_code = 'VND', original_quantities = {} } = payload;
+      console.log(`[BULK-UPDATE] START — poId: ${poId}, items: ${items.length}, vendor: ${vendor}`);
 
       // Clean all items' design_no upfront
       for (const item of items) {
@@ -526,6 +551,7 @@ export class PurchaseService {
         ),
       ]);
       if (!currentPO) throw new Error('Purchase invoice not found');
+      t = lap(`Step 1 — Fetch PO + ${dbItemsRaw.length} existing purchase_items (parallel)`, t);
 
       // ── 2. Update purchase_orders header ──────────────────────────────────
       await manager.query(
@@ -547,6 +573,7 @@ export class PurchaseService {
           userId ?? null, poId,
         ]
       );
+      t = lap('Step 2 — Update purchase_order header', t);
 
       // ── 3. Batch fetch & upsert product_masters ───────────────────────────
       const designNos = [...new Set(items.map(i => ensureId(i.design_no)?.trim().toUpperCase()))].filter(Boolean) as string[];
@@ -618,6 +645,7 @@ export class PurchaseService {
           );
         }
       }));
+      t = lap('Step 3 — Upsert product_masters (parallel)', t);
 
       // ── 4. Build old/new qty maps ─────────────────────────────────────────
       let oldMap: Record<string, number> = { ...original_quantities };
@@ -651,11 +679,13 @@ export class PurchaseService {
       }
 
       const allKeys = [...new Set([...Object.keys(oldMap), ...Object.keys(newMap)])];
+      t = lap(`Step 4 — Build qty maps (${allKeys.length} unique keys)`, t);
 
       // ── 5. Batch resolve codes for all items (one query each) ─────────────
       const allGroupIds = items.map(i => ensureId(i.product_group) || '');
       const allColorIds = items.map(i => ensureId(i.color) || '').filter(Boolean);
       const { groupMap, colorMap } = await batchResolveCodes(manager, allGroupIds, allColorIds);
+      t = lap('Step 5 — Batch resolve group/color codes', t);
 
       // ── 6. Batch-fetch existing barcode batches for ALL keys at once ───────
       // Build a list of (design_no, product_group, size, vendor) tuples
@@ -722,6 +752,7 @@ export class PurchaseService {
         ].join('__');
         if (!batchLookup.has(k)) batchLookup.set(k, row); // DISTINCT ON already picks latest
       }
+      t = lap(`Step 6 — Batch fetch barcode_batches (${batchRows.length} found for ${allKeys.length} keys)`, t);
 
       // ── 7. Count how many new barcode aliases we need for new batches ─────
       let newBatchCount = 0;
@@ -734,6 +765,7 @@ export class PurchaseService {
       }
       const newAliases = await reserveBarcodeAliases(manager, newBatchCount);
       let newAliasIdx = 0;
+      t = lap(`Step 7 — Reserve ${newBatchCount} new barcode aliases`, t);
 
       // ── 8. Process each key: update existing batch or insert new one ──────
       // Build bulk update params and new-batch inserts separately
@@ -871,6 +903,7 @@ export class PurchaseService {
         );
       }
       await Promise.all(parallelOps);
+      t = lap(`Step 8 — Update ${batchUpdates.length} barcode batches + insert ${newBbPlaceholders.length} new (parallel)`, t);
 
       // ── 9. Delete old purchase_items and re-insert in bulk ────────────────
       await manager.query(`DELETE FROM purchase_items WHERE po_id = $1`, [poId]);
@@ -911,6 +944,8 @@ export class PurchaseService {
           piValues
         );
       }
+      t = lap(`Step 9 — Delete + re-insert ${piPlaceholders.length} purchase_items`, t);
+      console.log(`[BULK-UPDATE] ✅ DONE — total: ${Date.now() - t0}ms`);
 
       return { id: poId, po_number: currentPO.po_number };
     });
