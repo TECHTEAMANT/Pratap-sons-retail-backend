@@ -121,7 +121,7 @@ export class InventoryService {
         MAX(bb.mrp_markup_percent) AS mrp_markup_percent,
         MAX(bb.hsn_code)           AS hsn_code,
         MAX(bb.description)        AS description,
-        ARRAY_AGG(DISTINCT photo_elem) FILTER (WHERE photo_elem IS NOT NULL) AS images,
+        ARRAY_AGG(DISTINCT ARRAY_TO_STRING(bb.photos, ',')) FILTER (WHERE bb.photos IS NOT NULL AND bb.photos <> '{}') AS images,
         JSON_AGG(
           JSON_BUILD_OBJECT(
             'batch_id',      bb.id,
@@ -141,7 +141,6 @@ export class InventoryService {
       LEFT JOIN colors         cl  ON cl.id  = bb.color
       LEFT JOIN sizes          sz  ON sz.id  = bb.size
       LEFT JOIN floors         fl  ON fl.id  = bb.floor
-      LEFT JOIN LATERAL UNNEST(COALESCE(bb.photos, ARRAY[]::text[])) AS photo_elem ON TRUE
       LEFT JOIN (
         SELECT barcode_batch_id, SUM(quantity) AS defective_qty
         FROM   defective_stock

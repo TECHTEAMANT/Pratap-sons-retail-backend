@@ -24,6 +24,27 @@ export class PurchaseController {
   async createPurchaseItem(req: Request, res: Response) { try { sendCreated(res, await purchaseService.createPurchaseItem(req.body)); } catch (e: any) { sendError(res, e.message, 400); } }
   async deletePurchaseItems(req: Request, res: Response) { try { await purchaseService.deletePurchaseItems(req.query as any); sendSuccess(res, null, 'Deleted'); } catch (e: any) { sendError(res, e.message); } }
   async createOrderItem(req: Request, res: Response) { try { sendCreated(res, await purchaseService.createOrderItem(req.body)); } catch (e: any) { sendError(res, e.message, 400); } }
+
+  async bulkSaveInvoice(req: AuthenticatedRequest, res: Response) {
+    try {
+      const result = await purchaseService.bulkSaveInvoice(req.body, req.user!.id);
+      sendCreated(res, result);
+    } catch (e: any) { sendError(res, e.message, 400); }
+  }
+
+  async bulkUpdateInvoice(req: AuthenticatedRequest, res: Response) {
+    try {
+      const result = await purchaseService.bulkUpdateInvoice(req.params.id, req.body, req.user!.id);
+      sendSuccess(res, result, 'Invoice updated successfully');
+    } catch (e: any) { sendError(res, e.message, 400); }
+  }
+
+  async bulkGetItems(req: Request, res: Response) {
+    try {
+      sendSuccess(res, await purchaseService.getItemsByOrderId(req.params.id));
+    } catch (e: any) { sendError(res, e.message); }
+  }
 }
 
 export const purchaseController = new PurchaseController();
+
