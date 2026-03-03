@@ -24,11 +24,23 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // ===== Request Logging =====
-app.use((req, _res, next) => {
-  logger.debug(`${req.method} ${req.path}`, {
-    query: req.query,
+app.use((req, res, next) => {
+  const start = Date.now();
+  const { method, path, query, body } = req;
+  
+  // Log request
+  logger.info(`[API Request] ${method} ${path}`, {
+    query,
+    body: method !== 'GET' ? body : undefined,
     ip: req.ip,
   });
+
+  // Log response on finish
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    logger.info(`[API Response] ${method} ${path} ${res.statusCode} (${duration}ms)`);
+  });
+
   next();
 });
 

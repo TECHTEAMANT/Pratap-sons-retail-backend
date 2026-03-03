@@ -36,6 +36,7 @@ router.use('/purchases', purchaseRoutes);
 router.use('/purchase-returns', purchaseReturnRoutes);
 router.use('/customers', customerRoutes);
 router.use('/bookings', bookingRoutes);
+router.use('/e-bookings', bookingRoutes);
 router.use('/payments', paymentRoutes);
 router.use('/masters', masterRoutes);
 router.use('/reports', reportRoutes);

@@ -10,6 +10,7 @@ import { PurchaseOrder } from './PurchaseOrder';
 import { ProductGroup } from './ProductGroup';
 import { Color } from './Color';
 import { Size } from './Size';
+import { Floor } from './Floor';
 
 @Entity('purchase_items')
 export class PurchaseItem {
@@ -73,6 +74,13 @@ export class PurchaseItem {
 
   @Column({ type: 'uuid', nullable: true })
   floor_id!: string | null;
+
+  @ManyToOne(() => Floor, { nullable: true })
+  @JoinColumn({ name: 'floor_id' })
+  floor!: Floor | null;
+
+  @Column({ type: 'integer', default: 1 })
+  barcodes_per_item!: number;
 
   @CreateDateColumn({ type: 'timestamptz' })
   created_at!: Date;

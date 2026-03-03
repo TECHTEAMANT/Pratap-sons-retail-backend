@@ -19,4 +19,10 @@ router.post('/purchase-items', (req, res) => purchaseController.createPurchaseIt
 router.delete('/purchase-items', (req, res) => purchaseController.deletePurchaseItems(req, res));
 router.post('/order-items', (req, res) => purchaseController.createOrderItem(req, res));
 
+// Bulk save routes — single API call for create/update invoice + full sync
+router.post('/bulk-save', (req, res) => purchaseController.bulkSaveInvoice(req, res));
+router.put('/bulk-save/:id', (req, res) => purchaseController.bulkUpdateInvoice(req, res));
+router.get('/bulk-items/:id', (req, res) => purchaseController.bulkGetItems(req, res));
+
 export default router;
+
