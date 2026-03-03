@@ -585,67 +585,59 @@ export class PurchaseService {
         : [];
       const masterMap = new Map(existingMasters.map(m => [m.design_no.trim().toUpperCase(), m]));
 
-      // Run all master upserts in parallel
-      await Promise.all(items.map(item => {
-        const itemDesignNo = ensureId(item.design_no)?.trim().toUpperCase() || '';
-        const existing = masterMap.get(itemDesignNo);
+      // ── Bulk UPDATE existing masters (single VALUES query) ────────────────
+      const pmToUpdate = items
+        .map(item => ({ item, existing: masterMap.get(ensureId(item.design_no)?.trim().toUpperCase() || '') }))
+        .filter((x): x is { item: BulkItem; existing: any } => !!x.existing);
+      const pmToInsert = items.filter(item => !masterMap.has(ensureId(item.design_no)?.trim().toUpperCase() || ''));
 
-        if (existing) {
-          const updateFields: string[] = [];
-          const updateParams: any[] = [];
-
-          if (item.hsn_code && item.hsn_code !== existing.hsn_code) {
-            updateFields.push(`hsn_code = $${updateParams.length + 1}`);
-            updateParams.push(item.hsn_code);
-          }
-          if (item.mrp) {
-            updateFields.push(`mrp = $${updateParams.length + 1}`);
-            updateParams.push(item.mrp);
-          }
-          if (item.barcodes_per_item) {
-            updateFields.push(`barcodes_per_item = $${updateParams.length + 1}`);
-            updateParams.push(item.barcodes_per_item);
-          }
-          if (item.gst_logic) {
-            updateFields.push(`gst_logic = $${updateParams.length + 1}`);
-            updateParams.push(item.gst_logic);
-          }
-          if (item.image_url) {
-            updateFields.push(`photos = $${updateParams.length + 1}`);
-            updateParams.push([item.image_url]);
-          }
-          if (item.description) {
-            updateFields.push(`description = $${updateParams.length + 1}`);
-            updateParams.push(item.description);
-          }
-
-          if (updateFields.length > 0) {
-            updateFields.push(`updated_at = NOW()`);
-            updateParams.push(existing.id);
-            return manager.query(
-              `UPDATE product_masters SET ${updateFields.join(', ')} WHERE id = $${updateParams.length}`,
-              updateParams
-            );
-          }
-          return Promise.resolve();
-        } else {
-          return manager.query(
-            `INSERT INTO product_masters
-               (design_no, product_group, color, vendor, mrp, gst_logic, floor,
-                photos, description, barcodes_per_item, hsn_code, created_by)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-             ON CONFLICT DO NOTHING`,
-            [
-              item.design_no, item.product_group, item.color || null,
-              vendor, item.mrp, item.gst_logic, item.floor_id || null,
-              item.image_url ? [item.image_url] : [],
-              item.description || '', item.barcodes_per_item ?? 1,
-              item.hsn_code || null, userId ?? null,
-            ]
+      if (pmToUpdate.length > 0) {
+        const pmVals: any[] = [];
+        const pmPh = pmToUpdate.map(({ item, existing }, i) => {
+          const b = i * 5;
+          pmVals.push(
+            existing.id,
+            item.hsn_code || existing.hsn_code || null,
+            item.mrp, item.barcodes_per_item ?? 1, item.gst_logic,
           );
-        }
-      }));
-      t = lap('Step 3 — Upsert product_masters (parallel)', t);
+          return `($${b+1}::uuid,$${b+2},$${b+3}::numeric,$${b+4}::int,$${b+5})`;
+        });
+        await manager.query(
+          `UPDATE product_masters AS pm
+           SET hsn_code = COALESCE(v.hsn_code, pm.hsn_code),
+               mrp = v.mrp::numeric,
+               barcodes_per_item = v.bpi::int,
+               gst_logic = v.gl,
+               updated_at = NOW()
+           FROM (VALUES ${pmPh.join(',')}) AS v(id,hsn_code,mrp,bpi,gl)
+           WHERE pm.id = v.id::uuid`,
+          pmVals
+        );
+      }
+
+      if (pmToInsert.length > 0) {
+        const pmInsVals: any[] = [];
+        const pmInsPh = pmToInsert.map((item, i) => {
+          const b = i * 12;
+          pmInsVals.push(
+            item.design_no, item.product_group, item.color || null,
+            vendor, item.mrp, item.gst_logic, item.floor_id || null,
+            item.image_url ? [item.image_url] : [],
+            item.description || '', item.barcodes_per_item ?? 1,
+            item.hsn_code || null, userId ?? null,
+          );
+          return `($${b+1},$${b+2},$${b+3},$${b+4},$${b+5},$${b+6},$${b+7},$${b+8},$${b+9},$${b+10},$${b+11},$${b+12})`;
+        });
+        await manager.query(
+          `INSERT INTO product_masters
+             (design_no,product_group,color,vendor,mrp,gst_logic,floor,
+              photos,description,barcodes_per_item,hsn_code,created_by)
+           VALUES ${pmInsPh.join(',')}
+           ON CONFLICT DO NOTHING`,
+          pmInsVals
+        );
+      }
+      t = lap(`Step 3 — Bulk upsert product_masters (${pmToUpdate.length} updated, ${pmToInsert.length} inserted)`, t);
 
       // ── 4. Build old/new qty maps ─────────────────────────────────────────
       let oldMap: Record<string, number> = { ...original_quantities };
@@ -687,72 +679,31 @@ export class PurchaseService {
       const { groupMap, colorMap } = await batchResolveCodes(manager, allGroupIds, allColorIds);
       t = lap('Step 5 — Batch resolve group/color codes', t);
 
-      // ── 6. Batch-fetch existing barcode batches for ALL keys at once ───────
-      // Build a list of (design_no, product_group, size, vendor) tuples
-      type BatchKey = { vendorId: string; designNo: string; productGroupId: string; colorId: string; sizeId: string };
-      const keysToQuery: BatchKey[] = allKeys.map(key => {
-        const [vendorId, designNo, productGroupId, colorId, sizeId] = key.split('__');
-        return { vendorId, designNo, productGroupId, colorId, sizeId };
-      });
+      // ── 6. Single-query fetch of all relevant barcode_batches ────────────
+      // Use ANY() on designNos for a simple index-friendly filter,
+      // then do exact (design_no, product_group, size, color) matching in JS.
+      const batchRows: any[] = designNos.length > 0
+        ? await manager.query(
+            `SELECT DISTINCT ON (UPPER(TRIM(design_no)), product_group, size, COALESCE(color::text,''))
+                    id, design_no, product_group, size, color,
+                    total_quantity, available_quantity, floor, photos, payout_code,
+                    cost_actual, mrp, mrp_markup_percent, gst_logic,
+                    description, order_number, hsn_code, print_quantity
+             FROM barcode_batches
+             WHERE status = 'active'
+               AND vendor = $1
+               AND UPPER(TRIM(design_no)) = ANY($2::text[])
+             ORDER BY UPPER(TRIM(design_no)), product_group, size, COALESCE(color::text,''), created_at DESC`,
+            [vendor, designNos]
+          )
+        : [];
 
-      // Split into color-null vs color-has-value (because SQL condition differs)
-      const keysWithColor = keysToQuery.filter(k => k.colorId && k.colorId !== 'null' && k.colorId !== '');
-      const keysNoColor = keysToQuery.filter(k => !k.colorId || k.colorId === 'null' || k.colorId === '');
-
-      // Fetch batches for keys with color
-      let batchRows: any[] = [];
-      if (keysWithColor.length > 0) {
-        // Build VALUES list for ANY matching
-        const placeholders = keysWithColor.map((_, i) =>
-          `(UPPER(TRIM($${i * 4 + 1})), $${i * 4 + 2}, $${i * 4 + 3}, $${i * 4 + 4})`
-        ).join(',');
-        const params = keysWithColor.flatMap(k => [k.designNo, k.productGroupId, k.sizeId, k.colorId]);
-        const withColorRows = await manager.query(
-          `SELECT DISTINCT ON (UPPER(TRIM(design_no)), product_group, size, color)
-                  id, design_no, product_group, size, color, vendor,
-                  total_quantity, available_quantity, floor, photos, payout_code
-           FROM barcode_batches
-           WHERE status = 'active'
-             AND vendor = $${params.length + 1}
-             AND (UPPER(TRIM(design_no)), product_group, size, color) IN (${placeholders})
-           ORDER BY UPPER(TRIM(design_no)), product_group, size, color, created_at DESC`,
-          [...params, vendor]
-        );
-        batchRows.push(...withColorRows);
-      }
-
-      if (keysNoColor.length > 0) {
-        const placeholders = keysNoColor.map((_, i) =>
-          `(UPPER(TRIM($${i * 3 + 1})), $${i * 3 + 2}, $${i * 3 + 3})`
-        ).join(',');
-        const params = keysNoColor.flatMap(k => [k.designNo, k.productGroupId, k.sizeId]);
-        const noColorRows = await manager.query(
-          `SELECT DISTINCT ON (UPPER(TRIM(design_no)), product_group, size)
-                  id, design_no, product_group, size, color, vendor,
-                  total_quantity, available_quantity, floor, photos, payout_code
-           FROM barcode_batches
-           WHERE status = 'active'
-             AND color IS NULL
-             AND vendor = $${params.length + 1}
-             AND (UPPER(TRIM(design_no)), product_group, size) IN (${placeholders})
-           ORDER BY UPPER(TRIM(design_no)), product_group, size, created_at DESC`,
-          [...params, vendor]
-        );
-        batchRows.push(...noColorRows);
-      }
-
-      // Build a lookup map: "designNo__productGroup__size__color" -> batch row
       const batchLookup = new Map<string, any>();
       for (const row of batchRows) {
-        const k = [
-          row.design_no?.trim().toUpperCase(),
-          row.product_group,
-          row.size,
-          row.color || ''
-        ].join('__');
-        if (!batchLookup.has(k)) batchLookup.set(k, row); // DISTINCT ON already picks latest
+        const k = [row.design_no?.trim().toUpperCase(), row.product_group, row.size, row.color || ''].join('__');
+        if (!batchLookup.has(k)) batchLookup.set(k, row);
       }
-      t = lap(`Step 6 — Batch fetch barcode_batches (${batchRows.length} found for ${allKeys.length} keys)`, t);
+      t = lap(`Step 6 — Batch fetch barcode_batches (${batchRows.length} rows, 1 query)`, t);
 
       // ── 7. Count how many new barcode aliases we need for new batches ─────
       let newBatchCount = 0;
@@ -767,9 +718,16 @@ export class PurchaseService {
       let newAliasIdx = 0;
       t = lap(`Step 7 — Reserve ${newBatchCount} new barcode aliases`, t);
 
-      // ── 8. Process each key: update existing batch or insert new one ──────
-      // Build bulk update params and new-batch inserts separately
-      const batchUpdates: Promise<any>[] = [];
+      // ── 8. Process each key: collect update rows and new-batch inserts ─────
+      // Row shape for bulk UPDATE: (id, tq, aq, ca, mrp, mmp, gl, fl, pi, desc, on_val, pc, hc, pq)
+      // $1=userId (constant), $2=poId (constant), per-row params start at $3
+      type BbUpdateRow = {
+        id: string; tq: number; aq: number;
+        ca: number|null; mrp: number|null; mmp: number|null; gl: string|null;
+        fl: string|null; desc: string|null; onVal: string|null;
+        pc: string|null; hc: string|null; pq: number|null; photos: any[]|null;
+      };
+      const bbUpdateRows: BbUpdateRow[] = [];
       const newBbValues: any[] = [];
       const newBbPlaceholders: string[] = [];
       let newBbIdx = 1;
@@ -792,66 +750,36 @@ export class PurchaseService {
 
         if (existingBatch) {
           const b = existingBatch;
-          const newTotal = Math.max(0, Number(b.total_quantity) + delta);
-          const newAvail = Math.max(0, Number(b.available_quantity) + delta);
-
-          const updateFields: string[] = [
-            `total_quantity = $1`,
-            `available_quantity = $2`,
-            `modified_by = $3`,
-            `updated_at = NOW()`,
-          ];
-          const updateParams: any[] = [newTotal, newAvail, userId ?? null];
+          const tq = Math.max(0, Number(b.total_quantity) + delta);
+          const aq = Math.max(0, Number(b.available_quantity) + delta);
 
           if (itemForCombo) {
             const pgId = ensureId(itemForCombo.product_group) || '';
-            const cId = ensureId(itemForCombo.color) || '';
             const gInfo = groupMap.get(pgId);
             const effectiveFloor = ensureId(itemForCombo.floor_id) || b.floor || gInfo?.floorId || null;
             const sqMatch = itemForCombo.sizes.find(s => ensureId(s.size) === sizeId);
             const printQty = sqMatch
               ? (sqMatch.print_quantity ?? sqMatch.quantity * (itemForCombo.barcodes_per_item ?? 1))
-              : undefined;
-
-            updateFields.push(
-              `cost_actual = $${updateParams.length + 1}`,
-              `mrp = $${updateParams.length + 2}`,
-              `mrp_markup_percent = $${updateParams.length + 3}`,
-              `gst_logic = $${updateParams.length + 4}`,
-              `floor = $${updateParams.length + 5}`,
-              `po_id = $${updateParams.length + 6}`,
-              `description = $${updateParams.length + 7}`,
-              `order_number = $${updateParams.length + 8}`,
-              `payout_code = $${updateParams.length + 9}`,
-              `hsn_code = $${updateParams.length + 10}`
-            );
-            updateParams.push(
-              itemForCombo.cost_per_item, itemForCombo.mrp,
-              itemForCombo.mrp_markup_percent, itemForCombo.gst_logic,
-              effectiveFloor, poId,
-              itemForCombo.description || null, itemForCombo.order_number || null,
-              itemForCombo.payout_code || b.payout_code || null,
-              itemForCombo.hsn_code || null
-            );
-            if (printQty !== undefined) {
-              updateFields.push(`print_quantity = $${updateParams.length + 1}`);
-              updateParams.push(printQty);
-            }
-            if (itemForCombo.image_url) {
-              updateFields.push(`photos = $${updateParams.length + 1}`);
-              updateParams.push([itemForCombo.image_url]);
-            }
+              : null;
+            bbUpdateRows.push({
+              id: b.id, tq, aq,
+              ca: itemForCombo.cost_per_item, mrp: itemForCombo.mrp,
+              mmp: itemForCombo.mrp_markup_percent, gl: itemForCombo.gst_logic,
+              fl: effectiveFloor, desc: itemForCombo.description || null,
+              onVal: itemForCombo.order_number || null,
+              pc: itemForCombo.payout_code || b.payout_code || null,
+              hc: itemForCombo.hsn_code || null, pq: printQty,
+              photos: itemForCombo.image_url ? [itemForCombo.image_url] : null,
+            });
+          } else {
+            // No itemForCombo — only qty changes; COALESCE keeps existing field values
+            bbUpdateRows.push({
+              id: b.id, tq, aq,
+              ca: null, mrp: null, mmp: null, gl: null, fl: null,
+              desc: null, onVal: null, pc: null, hc: null, pq: null, photos: null,
+            });
           }
-
-          updateParams.push(b.id);
-          batchUpdates.push(
-            manager.query(
-              `UPDATE barcode_batches SET ${updateFields.join(', ')} WHERE id = $${updateParams.length}`,
-              updateParams
-            )
-          );
         } else if (delta > 0 && itemForCombo) {
-          // New batch needed
           const pgId = ensureId(itemForCombo.product_group) || '';
           const cId = ensureId(itemForCombo.color) || '';
           const gInfo = groupMap.get(pgId);
@@ -875,8 +803,7 @@ export class PurchaseService {
             itemForCombo.cost_per_item, costEncoded,
             itemForCombo.mrp, itemForCombo.mrp_markup_percent,
             itemForCombo.gst_logic, delta, delta,
-            effectiveFloor, printQty,
-            poId,
+            effectiveFloor, printQty, poId,
             itemForCombo.image_url ? [itemForCombo.image_url] : [],
             itemForCombo.description || null, itemForCombo.order_number || null,
             itemForCombo.payout_code || null, itemForCombo.hsn_code || null,
@@ -886,24 +813,64 @@ export class PurchaseService {
         }
       }
 
-      // Run all barcode batch updates in parallel + new batch insert together
-      const parallelOps: Promise<any>[] = [...batchUpdates];
-      if (newBbPlaceholders.length > 0) {
-        parallelOps.push(
-          manager.query(
-            `INSERT INTO barcode_batches
-               (barcode_alias_8digit, barcode_structured, design_no, product_group,
-                size, color, vendor, cost_actual, cost_encoded, mrp, mrp_markup_percent,
-                gst_logic, total_quantity, available_quantity, floor, print_quantity,
-                status, po_id, photos, description, order_number,
-                payout_code, hsn_code, created_by)
-             VALUES ${newBbPlaceholders.join(',')}`,
-            newBbValues
-          )
-        );
+      // Single VALUES-based bulk UPDATE for all existing barcode batches
+      // $1=userId, $2=poId are constants; per-row data starts at $3
+      const parallelOps: Promise<any>[] = [];
+      if (bbUpdateRows.length > 0) {
+        const bbVals: any[] = [userId ?? null, poId];
+        const bbPh = bbUpdateRows.map((row, i) => {
+          const b = i * 14 + 3; // starts at $3
+          bbVals.push(
+            row.id, row.tq, row.aq,
+            row.ca, row.mrp, row.mmp, row.gl, row.fl,
+            row.desc, row.onVal, row.pc, row.hc, row.pq,
+            row.photos // Pass array directly, avoiding JSON.stringify!
+          );
+          return `($${b}::uuid,$${b+1}::int,$${b+2}::int,$${b+3}::numeric,$${b+4}::numeric,$${b+5}::numeric,$${b+6},$${b+7}::uuid,$${b+8},$${b+9},$${b+10},$${b+11},$${b+12}::int,$${b+13}::text[])`;
+        });
+        parallelOps.push(manager.query(
+          `UPDATE barcode_batches AS bb
+           SET total_quantity      = v.tq,
+               available_quantity  = v.aq,
+               modified_by         = $1,
+               cost_actual         = COALESCE(v.ca,  bb.cost_actual),
+               mrp                 = COALESCE(v.mrp, bb.mrp),
+               mrp_markup_percent  = COALESCE(v.mmp, bb.mrp_markup_percent),
+               gst_logic           = COALESCE(v.gl,  bb.gst_logic),
+               floor               = COALESCE(v.fl,  bb.floor),
+               po_id               = $2,
+               description         = COALESCE(v.desc_val,  bb.description),
+               order_number        = COALESCE(v.on_val, bb.order_number),
+               payout_code         = COALESCE(v.pc,  bb.payout_code),
+               hsn_code            = COALESCE(v.hc,  bb.hsn_code),
+               print_quantity      = COALESCE(v.pq,  bb.print_quantity),
+               photos              = COALESCE(v.ph, bb.photos),
+               updated_at          = NOW()
+           FROM (VALUES ${bbPh.join(',')})
+             AS v(id,tq,aq,ca,mrp,mmp,gl,fl,desc_val,on_val,pc,hc,pq,ph)
+           WHERE bb.id = v.id`,
+          bbVals
+        ));
       }
+
+      if (newBbPlaceholders.length > 0) {
+        parallelOps.push(manager.query(
+          `INSERT INTO barcode_batches
+             (barcode_alias_8digit, barcode_structured, design_no, product_group,
+              size, color, vendor, cost_actual, cost_encoded, mrp, mrp_markup_percent,
+              gst_logic, total_quantity, available_quantity, floor, print_quantity,
+              status, po_id, photos, description, order_number,
+              payout_code, hsn_code, created_by)
+           VALUES ${newBbPlaceholders.join(',')}`,
+          newBbValues
+        ));
+      }
+
       await Promise.all(parallelOps);
-      t = lap(`Step 8 — Update ${batchUpdates.length} barcode batches + insert ${newBbPlaceholders.length} new (parallel)`, t);
+      t = lap(`Step 8 — Bulk UPDATE ${bbUpdateRows.length} barcode batches + INSERT ${newBbPlaceholders.length} new (2 queries)`, t);
+
+
+
 
       // ── 9. Delete old purchase_items and re-insert in bulk ────────────────
       await manager.query(`DELETE FROM purchase_items WHERE po_id = $1`, [poId]);
