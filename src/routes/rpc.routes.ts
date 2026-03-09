@@ -90,7 +90,19 @@ router.post('/:functionName', authenticate, async (req, res) => {
     }
 
     if (functionName === 'generate_invoice_transaction') {
-      return sendSuccess(res, { invoice_number: 'INV-POST-GEN', id: 'some-uuid' });
+      const p_invoice_data = args.p_invoice_data;
+      const p_items = args.p_items;
+      
+      // Import salesService at the top of the file if needed, or inline require
+      const { salesService } = require('../services/sales.service');
+      
+      const invoiceDataToCreate = {
+        ...p_invoice_data,
+        items: p_items
+      };
+      
+      const createdInvoice = await salesService.createInvoice(invoiceDataToCreate, req.user!.id);
+      return sendSuccess(res, { invoice_number: createdInvoice.invoice_number, id: createdInvoice.id });
     }
 
     sendError(res, `RPC function ${functionName} not implemented`, 501);
