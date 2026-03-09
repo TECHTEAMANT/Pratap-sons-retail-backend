@@ -17,8 +17,10 @@ export class MasterController {
   async updateColor(req: Request, res: Response) { try { const r = await masterService.updateColor(req.params.id, req.body); r ? sendSuccess(res, r) : sendNotFound(res, 'Color'); } catch (e: any) { sendError(res, e.message, 400); } }
   // Vendors
   async getVendors(req: Request, res: Response) { try { sendSuccess(res, await masterService.getVendors(req.query as any)); } catch (e: any) { sendError(res, e.message); } }
+  async getVendorById(req: Request, res: Response) { try { const r = await masterService.getVendorById(req.params.id); r ? sendSuccess(res, r) : sendNotFound(res, 'Vendor'); } catch (e: any) { sendError(res, e.message); } }
   async createVendor(req: Request, res: Response) { try { sendCreated(res, await masterService.createVendor(req.body)); } catch (e: any) { sendError(res, e.message, 400); } }
   async updateVendor(req: Request, res: Response) { try { const r = await masterService.updateVendor(req.params.id, req.body); r ? sendSuccess(res, r) : sendNotFound(res, 'Vendor'); } catch (e: any) { sendError(res, e.message, 400); } }
+  async bulkUpdateVendors(req: Request, res: Response) { try { const r = await masterService.bulkUpdateVendors(req.query, req.body); sendSuccess(res, r); } catch (e: any) { sendError(res, e.message, 400); } }
   // Floors
   async getFloors(_r: Request, res: Response) { try { sendSuccess(res, await masterService.getFloors()); } catch (e: any) { sendError(res, e.message); } }
   async createFloor(req: Request, res: Response) { try { sendCreated(res, await masterService.createFloor(req.body)); } catch (e: any) { sendError(res, e.message, 400); } }

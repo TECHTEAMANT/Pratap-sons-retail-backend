@@ -1,6 +1,7 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, ManyToOne, OneToMany, JoinColumn } from 'typeorm';
 import { Vendor } from './Vendor';
 import { PurchaseReturnItem } from './PurchaseReturnItem';
+import { PurchaseOrder } from './PurchaseOrder';
 
 @Entity('purchase_returns')
 export class PurchaseReturn {
@@ -62,6 +63,10 @@ export class PurchaseReturn {
   @ManyToOne(() => Vendor)
   @JoinColumn({ name: 'vendor_id' })
   vendor: Vendor;
+
+  @ManyToOne(() => PurchaseOrder)
+  @JoinColumn({ name: 'original_po_id' })
+  original_po: PurchaseOrder;
 
   @OneToMany(() => PurchaseReturnItem, item => item.purchase_return)
   items: PurchaseReturnItem[];

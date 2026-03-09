@@ -24,8 +24,17 @@ export class Vendor {
   @Column({ type: 'text', nullable: true })
   st_number: string;
 
+  @Column({ type: 'text', nullable: true })
+  state: string;
+
+  @Column({ type: 'text', nullable: true })
+  pincode: string;
+
   @Column({ type: 'boolean', default: true })
   active: boolean;
+
+  @Column({ type: 'boolean', default: false })
+  tally_sync: boolean;
 
   @Column({ name: 'city_id', type: 'uuid', nullable: true })
   city_id: string;

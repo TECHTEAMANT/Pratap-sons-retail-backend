@@ -10,15 +10,15 @@ import logger from '../utils/logger';
 export class SalesService {
   private invoiceRepo = AppDataSource.getRepository(SalesInvoice);
 
-  async getInvoices(filters: { start_date?: string; end_date?: string; search?: string; payment_status?: string; page?: number; limit?: number }) {
+  async getInvoices(filters: { start_date?: string; end_date?: string; search?: string; payment_status?: string; page?: number; limit?: number; gte_invoice_date?: string; lte_invoice_date?: string; }) {
     const page = filters.page || 1;
     const limit = filters.limit || 50;
     const skip = (page - 1) * limit;
 
     const qb = this.invoiceRepo.createQueryBuilder('si');
 
-    if (filters.start_date) qb.andWhere('si.invoice_date >= :start', { start: filters.start_date });
-    if (filters.end_date) qb.andWhere('si.invoice_date <= :end', { end: filters.end_date });
+    if (filters.start_date || filters.gte_invoice_date) qb.andWhere('DATE(si.invoice_date) >= :start', { start: filters.start_date || filters.gte_invoice_date });
+    if (filters.end_date || filters.lte_invoice_date) qb.andWhere('DATE(si.invoice_date) <= :end', { end: filters.end_date || filters.lte_invoice_date });
     if (filters.payment_status) qb.andWhere('si.payment_status = :ps', { ps: filters.payment_status });
     if (filters.search) {
       qb.andWhere('(si.invoice_number ILIKE :search OR si.customer_name ILIKE :search OR si.customer_mobile ILIKE :search)', { search: `%${filters.search}%` });
@@ -139,9 +139,13 @@ export class SalesService {
     });
   }
   async getInvoiceItems(filters: any) {
-    const qb = AppDataSource.getRepository(SalesInvoiceItem).createQueryBuilder('sii');
+    const qb = AppDataSource.getRepository(SalesInvoiceItem).createQueryBuilder('sii')
+      .leftJoinAndSelect('sii.invoice', 'si');
     if (filters.invoice_id) qb.andWhere('sii.invoice_id = :id', { id: filters.invoice_id });
     if (filters.barcode_8digit) qb.andWhere('sii.barcode_8digit = :barcode', { barcode: filters.barcode_8digit });
+    if (filters['gte_sales_invoice.invoice_date']) qb.andWhere('DATE(si.invoice_date) >= :sd', { sd: filters['gte_sales_invoice.invoice_date'] });
+    if (filters['lte_sales_invoice.invoice_date']) qb.andWhere('DATE(si.invoice_date) <= :ed', { ed: filters['lte_sales_invoice.invoice_date'] });
+    if (filters.limit) qb.take(parseInt(filters.limit, 10));
     return qb.getMany();
   }
 }

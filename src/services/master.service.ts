@@ -59,13 +59,19 @@ export class MasterService {
   }
 
   // ===== Vendors =====
-  async getVendors(filters?: { search_vendor_code?: string }) {
+  async getVendors(filters?: { search_vendor_code?: string; tally_sync?: string | boolean }) {
     const repo = AppDataSource.getRepository(Vendor);
     const where: any = {};
     if (filters?.search_vendor_code) {
       where.vendor_code = ILike(`${filters.search_vendor_code}%`);
     }
+    if (filters?.tally_sync !== undefined) {
+      where.tally_sync = filters.tally_sync === 'true' || filters.tally_sync === true;
+    }
     return repo.find({ where, relations: ['city'], order: { vendor_code: 'ASC' } });
+  }
+  async getVendorById(id: string) {
+    return AppDataSource.getRepository(Vendor).findOne({ where: { id }, relations: ['city'] });
   }
   async createVendor(data: Partial<Vendor>) {
     const repo = AppDataSource.getRepository(Vendor);
@@ -77,6 +83,20 @@ export class MasterService {
     if (!item) return null;
     Object.assign(item, data);
     return repo.save(item);
+  }
+
+  async bulkUpdateVendors(query: any, data: Partial<Vendor>) {
+    const repo = AppDataSource.getRepository(Vendor);
+    const where: any = {};
+    if (query.tally_sync === 'true') where.tally_sync = true;
+    if (query.tally_sync === 'false') where.tally_sync = false;
+    
+    if (Object.keys(where).length === 0) {
+      throw new Error("Bulk update requires valid query parameters");
+    }
+    
+    await repo.update(where, data);
+    return { success: true };
   }
 
   // ===== Floors =====

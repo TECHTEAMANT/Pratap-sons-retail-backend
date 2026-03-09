@@ -20,6 +20,8 @@ export class ProductGroup {
   @Column({ type: 'text', nullable: true })
   floor: string;
 
+
+
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
 }

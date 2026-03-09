@@ -168,6 +168,8 @@ export class PurchaseService {
     order?: string;
     page?: number;
     limit?: number;
+    gte_order_date?: string;
+    lte_order_date?: string;
   }) {
     const page = Number(filters.page) || 1;
     const limit = Number(filters.limit) || 20;
@@ -187,6 +189,13 @@ export class PurchaseService {
       qb.andWhere('(po.po_number ILIKE :s OR v.name ILIKE :s)', { s: `%${filters.search}%` });
     }
 
+    if (filters.gte_order_date) {
+      qb.andWhere('DATE(po.order_date) >= :gteOrderDate', { gteOrderDate: filters.gte_order_date });
+    }
+    if (filters.lte_order_date) {
+      qb.andWhere('DATE(po.order_date) <= :lteOrderDate', { lteOrderDate: filters.lte_order_date });
+    }
+
     const sortCol = filters.sort === 'order_date' ? 'po.order_date' : 'po.created_at';
     const sortDir = filters.order?.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
     qb.orderBy(sortCol, sortDir);
@@ -197,7 +206,10 @@ export class PurchaseService {
   }
 
   async getOrderById(id: string) {
-    return this.poRepo.findOne({ where: { id }, relations: ['purchase_items', 'order_items', 'vendor'] });
+    return this.poRepo.findOne({ 
+      where: { id }, 
+      relations: ['purchase_items', 'purchase_items.product_group', 'order_items', 'vendor'] 
+    });
   }
 
   async createOrder(data: any, userId: string) {
@@ -257,16 +269,51 @@ export class PurchaseService {
 
   async getOrderItems(filters: any) {
     const repo = AppDataSource.getRepository(PurchaseOrderItem);
-    return repo.find({ where: filters, order: { created_at: 'ASC' } });
+    const qb = repo.createQueryBuilder('poi');
+    
+    if (filters.purchase_order_id) {
+      const ids = String(filters.purchase_order_id).split(',').map(id => id.trim()).filter(Boolean);
+      if (ids.length === 1) {
+        qb.andWhere('poi.purchase_order_id = :id', { id: ids[0] });
+      } else if (ids.length > 1) {
+        qb.andWhere('poi.purchase_order_id IN (:...ids)', { ids });
+      }
+    }
+    
+    qb.orderBy('poi.created_at', 'ASC');
+    return qb.getMany();
   }
 
   async getPurchaseItems(filters: any) {
     const repo = AppDataSource.getRepository(PurchaseItem);
-    return repo.find({ 
-      where: filters, 
-      relations: ['product_group', 'color', 'size'],
-      order: { created_at: 'ASC' } 
-    });
+    const qb = repo.createQueryBuilder('pi')
+      .leftJoinAndSelect('pi.product_group', 'pg')
+      .leftJoinAndSelect('pi.color', 'cl')
+      .leftJoinAndSelect('pi.size', 'sz')
+      .leftJoinAndSelect('pi.purchase_order', 'po')
+      .leftJoinAndSelect('po.vendor', 'vd');
+
+    if (filters['gte_purchase_order.order_date']) {
+      qb.andWhere('DATE(po.order_date) >= :gteDate', { gteDate: filters['gte_purchase_order.order_date'] });
+    }
+    if (filters['lte_purchase_order.order_date']) {
+      qb.andWhere('DATE(po.order_date) <= :lteDate', { lteDate: filters['lte_purchase_order.order_date'] });
+    }
+    if (filters.po_id) {
+      const ids = String(filters.po_id).split(',').map(id => id.trim()).filter(Boolean);
+      if (ids.length === 1) {
+        qb.andWhere('pi.po_id = :poId', { poId: ids[0] });
+      } else if (ids.length > 1) {
+        qb.andWhere('pi.po_id IN (:...poIds)', { poIds: ids });
+      }
+    }
+    if (filters['purchase_order.vendor_id']) {
+      qb.andWhere('po.vendor_id = :vid', { vid: filters['purchase_order.vendor_id'] });
+    }
+
+    qb.orderBy('pi.created_at', 'ASC');
+
+    return qb.getMany();
   }
 
   async createPurchaseItem(data: any) {

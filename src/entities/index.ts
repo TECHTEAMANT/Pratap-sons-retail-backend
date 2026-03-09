@@ -18,6 +18,7 @@ export { SalesOrder } from './SalesOrder';
 export { SalesOrderItem } from './SalesOrderItem';
 export { SalesOrderAdvance } from './SalesOrderAdvance';
 export { EBooking } from './EBooking';
+export { EBookingItem } from './EBookingItem';
 export { PaymentReceipt } from './PaymentReceipt';
 export { PurchaseOrder } from './PurchaseOrder';
 export { PurchaseOrderItem } from './PurchaseOrderItem';

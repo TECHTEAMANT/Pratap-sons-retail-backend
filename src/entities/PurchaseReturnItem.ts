@@ -7,6 +7,7 @@ import {
   CreateDateColumn,
 } from 'typeorm';
 import { PurchaseReturn } from './PurchaseReturn';
+import { BarcodeBatch } from './BarcodeBatch';
 
 @Entity('purchase_return_items')
 export class PurchaseReturnItem {
@@ -22,6 +23,10 @@ export class PurchaseReturnItem {
 
   @Column({ type: 'uuid' })
   item_id!: string;
+  
+  @ManyToOne(() => BarcodeBatch)
+  @JoinColumn({ name: 'item_id' })
+  item!: BarcodeBatch;
 
   @Column({ type: 'text' })
   barcode_id!: string;

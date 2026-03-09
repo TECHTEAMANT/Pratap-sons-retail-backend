@@ -39,7 +39,7 @@ router.post('/:functionName', authenticate, async (req, res) => {
     if (functionName === 'generate_booking_number') {
       const year = new Date().getFullYear();
       const prefix = `BK${year}`;
-      const records = await AppDataSource.query(`SELECT booking_number FROM bookings WHERE booking_number LIKE $1 ORDER BY booking_number DESC LIMIT 1`, [`${prefix}%`]);
+      const records = await AppDataSource.query(`SELECT booking_number FROM e_bookings WHERE booking_number LIKE $1 ORDER BY booking_number DESC LIMIT 1`, [`${prefix}%`]);
       let nextNum = 1;
       if (records.length > 0 && records[0].booking_number) {
         const lastPortion = records[0].booking_number.substring(prefix.length);

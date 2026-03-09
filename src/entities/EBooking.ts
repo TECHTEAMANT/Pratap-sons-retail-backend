@@ -1,4 +1,7 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, OneToMany, ManyToOne, JoinColumn } from 'typeorm';
+import { EBookingItem } from './EBookingItem';
+import { Floor } from './Floor';
+import { User } from './User';
 
 @Entity('e_bookings')
 export class EBooking {
@@ -11,11 +14,15 @@ export class EBooking {
   @Column({ type: 'text' })
   customer_mobile: string;
 
-  @Column({ type: 'text' })
+  @Column({ type: 'text', nullable: true })
   barcode_8digit: string;
 
   @Column({ type: 'text', nullable: true })
   floor: string;
+
+  @ManyToOne(() => Floor, { nullable: true })
+  @JoinColumn({ name: 'floor' })
+  floor_details: Floor;
 
   @Column({ type: 'timestamptz', default: () => 'NOW()' })
   booking_date: Date;
@@ -33,11 +40,24 @@ export class EBooking {
   notes: string;
 
   @Column({ type: 'uuid', nullable: true })
+  salesman_id: string;
+
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
+  discount_amount: number;
+
+  @Column({ type: 'uuid', nullable: true })
   created_by: string;
+
+  @ManyToOne(() => User, { nullable: true })
+  @JoinColumn({ name: 'created_by' })
+  created_by_details: User;
 
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
 
   @UpdateDateColumn({ type: 'timestamptz' })
   updated_at: Date;
+
+  @OneToMany(() => EBookingItem, item => item.booking, { cascade: true })
+  items: EBookingItem[];
 }

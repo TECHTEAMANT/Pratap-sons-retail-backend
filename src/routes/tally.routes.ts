@@ -8,6 +8,7 @@ router.use(authenticate);
 router.use(requirePermission('can_manage_purchases'));
 
 router.get('/unsynced-sales', (req, res) => tallyController.findAll(req, res));
+router.post('/unsynced-sales', (req, res) => tallyController.create(req, res));
 router.get('/pending', (req, res) => tallyController.getPending(req, res));
 router.post('/sync', (req, res) => tallyController.create(req, res));
 router.put('/:id/status', (req, res) => tallyController.updateStatus(req, res));

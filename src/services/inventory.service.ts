@@ -14,7 +14,9 @@ export class InventoryService {
     search?: string; page?: number; limit?: number; offset?: number;
     po_id?: string; design_no?: string; size?: string; color?: string; is_color?: string;
     search_barcode_alias_8digit?: string; search_design_no?: string;
+    barcode_alias_8digit?: string;
     sort?: string; order?: string;
+    gte_created_at?: string; lte_created_at?: string;
   }) {
     const page = filters.page || 1;
     const limit = Math.min(filters.limit || 1000, 5000);
@@ -37,13 +39,20 @@ export class InventoryService {
     if (filters.size) qb.andWhere('bb.size_id = :size', { size: filters.size });
     if (filters.color) qb.andWhere('bb.color_id = :color', { color: filters.color });
     if (filters.is_color === 'null') qb.andWhere('bb.color_id IS NULL');
+    if (filters.barcode_alias_8digit) qb.andWhere('bb.barcode_alias_8digit = :exact_bc', { exact_bc: filters.barcode_alias_8digit });
 
-    // General search (design_no + barcode + vendor name)
     if (filters.search) {
       qb.andWhere(
         '(bb.barcode_alias_8digit ILIKE :search OR bb.design_no ILIKE :search OR vd.name ILIKE :search)',
         { search: `%${filters.search}%` }
       );
+    }
+
+    if (filters.gte_created_at) {
+      qb.andWhere('bb.created_at >= :gteCreatedAt', { gteCreatedAt: filters.gte_created_at });
+    }
+    if (filters.lte_created_at) {
+      qb.andWhere('bb.created_at <= :lteCreatedAt', { lteCreatedAt: filters.lte_created_at });
     }
 
     // Specific barcode search from BarcodeManagement .ilike() shim call
@@ -142,10 +151,14 @@ export class InventoryService {
       LEFT JOIN sizes          sz  ON sz.id  = bb.size
       LEFT JOIN floors         fl  ON fl.id  = bb.floor
       LEFT JOIN (
-        SELECT barcode_batch_id, SUM(quantity) AS defective_qty
+        SELECT barcode_batch_id, barcode_alias, SUM(quantity) AS defective_qty
         FROM   defective_stock
-        GROUP  BY barcode_batch_id
-      ) AS def_agg ON def_agg.barcode_batch_id = bb.id
+        GROUP  BY barcode_batch_id, barcode_alias
+      ) AS def_agg ON (
+        (def_agg.barcode_batch_id IS NOT NULL AND def_agg.barcode_batch_id = bb.id)
+        OR
+        (def_agg.barcode_batch_id IS NULL AND def_agg.barcode_alias = bb.barcode_alias_8digit)
+      )
       WHERE bb.status = 'active' ${searchCond}
       GROUP BY bb.design_no, vd.id, vd.name, vd.vendor_code, pg.id, pg.name, cl.id, cl.name
       ORDER BY MAX(bb.created_at) DESC

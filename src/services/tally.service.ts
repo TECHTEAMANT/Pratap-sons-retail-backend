@@ -9,8 +9,20 @@ export class TallyService {
   }
 
   async create(data: any) {
+    if (data.sync_type && !data.record_type) data.record_type = data.sync_type;
+    if (data.purchase_order_id && !data.po_id) data.po_id = data.purchase_order_id;
     const record = this.repo.create(data);
     return this.repo.save(record);
+  }
+
+  async createBulk(dataArray: any[]) {
+    for (const data of dataArray) {
+      if (data.sync_type && !data.record_type) data.record_type = data.sync_type;
+      if (data.purchase_order_id && !data.po_id) data.po_id = data.purchase_order_id;
+    }
+    const records = this.repo.create(dataArray);
+    // save() automatically uses a transaction and batch inserts when given an array
+    return this.repo.save(records);
   }
 
   async updateStatus(id: string, status: string, errorMessage?: string) {
@@ -36,6 +48,12 @@ export class TallyService {
     // Support both sync_status and status
     const status = filters.sync_status || filters.status;
     if (status) qb.andWhere('ts.sync_status = :ss', { ss: status });
+    
+    // Support relation IDs for deduplication checks
+    if (filters.invoice_id) qb.andWhere('ts.invoice_id = :iid', { iid: filters.invoice_id });
+    
+    const poId = filters.purchase_order_id || filters.po_id;
+    if (poId) qb.andWhere('ts.po_id = :poid', { poid: poId });
     
     if (filters.start_date) qb.andWhere('ts.invoice_date >= :start', { start: filters.start_date });
     if (filters.end_date) qb.andWhere('ts.invoice_date <= :end', { end: filters.end_date });
