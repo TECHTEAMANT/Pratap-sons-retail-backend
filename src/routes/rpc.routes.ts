@@ -1,11 +1,11 @@
-import { Router } from 'express';
-import { authenticate } from '../middleware/auth';
+import { Router, Response } from 'express';
+import { authenticate, AuthenticatedRequest } from '../middleware/auth';
 import { sendSuccess, sendError } from '../utils/response';
 import { AppDataSource } from '../config/data-source';
 
 const router = Router();
 
-router.post('/:functionName', authenticate, async (req, res) => {
+router.post('/:functionName', authenticate, async (req: AuthenticatedRequest, res: Response) => {
   const { functionName } = req.params;
   const args = req.body;
 
