@@ -75,6 +75,11 @@ export class PurchaseReturnService {
       return_date: data.return_date,
       total_items: data.total_items || 0,
       total_amount: data.total_amount || 0,
+      gst_type: data.gst_type || null,
+      cgst_amount: data.cgst_amount || 0,
+      sgst_amount: data.sgst_amount || 0,
+      igst_amount: data.igst_amount || 0,
+      total_return_amount: data.total_return_amount || 0,
       reason: data.reason || null,
       notes: data.notes || null,
       status: data.status || 'sent',
@@ -100,7 +105,10 @@ export class PurchaseReturnService {
   async update(id: string, data: Record<string, any>) {
     const ret = await this.repo.findOneBy({ id });
     if (!ret) return null;
-    const allowed = ['status', 'total_items', 'total_amount', 'reason', 'notes'];
+    const allowed = [
+      'status', 'total_items', 'total_amount', 'reason', 'notes',
+      'gst_type', 'cgst_amount', 'sgst_amount', 'igst_amount', 'total_return_amount'
+    ];
     for (const key of allowed) { if (data[key] !== undefined) (ret as any)[key] = data[key]; }
     return this.repo.save(ret);
   }

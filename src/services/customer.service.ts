@@ -6,7 +6,7 @@ import { ILike } from 'typeorm';
 export class CustomerService {
   private customerRepo = AppDataSource.getRepository(Customer);
 
-  async findAll(filters: { search?: string; status?: string; page?: number; limit?: number }) {
+  async findAll(filters: { search?: string; status?: string; mobile?: string; page?: number; limit?: number }) {
     const page = filters.page || 1;
     const limit = filters.limit || 50;
     const skip = (page - 1) * limit;
@@ -14,6 +14,7 @@ export class CustomerService {
     const qb = this.customerRepo.createQueryBuilder('c');
 
     if (filters.status) qb.andWhere('c.status = :status', { status: filters.status });
+    if (filters.mobile) qb.andWhere('c.mobile = :mobile', { mobile: filters.mobile });
     if (filters.search) {
       qb.andWhere('(c.name ILIKE :search OR c.mobile ILIKE :search)', { search: `%${filters.search}%` });
     }

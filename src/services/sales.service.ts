@@ -61,7 +61,7 @@ export class SalesService {
         net_payable: data.net_payable || 0,
         payment_mode: data.payment_mode,
         amount_paid: data.amount_paid || 0,
-        amount_pending: data.amount_pending || data.net_payable || 0,
+        amount_pending: data.amount_paid !== undefined ? (data.net_payable - data.amount_paid) : (data.net_payable || 0),
         payment_status: data.amount_paid >= data.net_payable ? 'paid' : data.amount_paid > 0 ? 'partial' : 'pending',
         sales_order_id: data.sales_order_id || null,
         created_by: userId,
@@ -143,10 +143,24 @@ export class SalesService {
       .leftJoinAndSelect('sii.invoice', 'si');
     if (filters.invoice_id) qb.andWhere('sii.invoice_id = :id', { id: filters.invoice_id });
     if (filters.barcode_8digit) qb.andWhere('sii.barcode_8digit = :barcode', { barcode: filters.barcode_8digit });
+    if (filters.delivered !== undefined) {
+      qb.andWhere('sii.delivered = :delivered', { delivered: filters.delivered === 'true' || filters.delivered === true });
+    }
     if (filters['gte_sales_invoice.invoice_date']) qb.andWhere('DATE(si.invoice_date) >= :sd', { sd: filters['gte_sales_invoice.invoice_date'] });
     if (filters['lte_sales_invoice.invoice_date']) qb.andWhere('DATE(si.invoice_date) <= :ed', { ed: filters['lte_sales_invoice.invoice_date'] });
     if (filters.limit) qb.take(parseInt(filters.limit, 10));
     return qb.getMany();
+  }
+  async updateInvoiceItems(filters: any, data: any) {
+    const qb = AppDataSource.getRepository(SalesInvoiceItem).createQueryBuilder()
+      .update(SalesInvoiceItem)
+      .set(data);
+    if (filters.id) {
+      const ids = filters.id.split(',');
+      qb.where('id IN (:...ids)', { ids });
+    }
+    if (filters.invoice_id) qb.andWhere('invoice_id = :invoice_id', { invoice_id: filters.invoice_id });
+    return qb.execute();
   }
 }
 

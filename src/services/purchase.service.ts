@@ -61,6 +61,7 @@ interface BulkInvoicePayload {
   ledger_freight_gst_rate?: number | null;
   manual_gst_amount?: number | null;
   vendor_invoice_attachment?: string | null;
+  vendor_invoice_date?: string | null;
   items: BulkItem[];
   vendor_code?: string;
   original_quantities?: Record<string, number>; // used only on update
@@ -242,7 +243,7 @@ export class PurchaseService {
   async updateOrder(id: string, data: Record<string, any>) {
     const po = await this.poRepo.findOneBy({ id });
     if (!po) return null;
-    const allowed = ['status', 'taxable_value', 'manual_gst_amount', 'total_amount', 'notes', 'vendor_invoice_attachment', 'gst_difference_reason'];
+    const allowed = ['status', 'taxable_value', 'manual_gst_amount', 'total_amount', 'notes', 'vendor_invoice_attachment', 'gst_difference_reason', 'vendor_invoice_date'];
     for (const key of allowed) { if (data[key] !== undefined) (po as any)[key] = data[key]; }
     return this.poRepo.save(po);
   }
@@ -389,8 +390,8 @@ export class PurchaseService {
            (po_number, vendor, order_date, invoice_number, total_items, total_amount,
             status, notes, taxable_value, ledger_discount, ledger_freight,
             ledger_freight_gst_rate, manual_gst_amount, vendor_invoice_attachment,
-            gst_type, created_by)
-         VALUES ($1,$2,$3,$4,$5,$6,'Completed',$7,$8,$9,$10,$11,$12,$13,$14,$15)
+            gst_type, created_by, vendor_invoice_date)
+         VALUES ($1,$2,$3,$4,$5,$6,'Completed',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
          RETURNING id, po_number`,
         [
           poNumber, vendor, header.order_date, header.invoice_number,
@@ -398,7 +399,7 @@ export class PurchaseService {
           header.taxable_value, header.ledger_discount ?? null,
           header.ledger_freight ?? null, header.ledger_freight_gst_rate ?? null,
           header.manual_gst_amount ?? null, header.vendor_invoice_attachment ?? null,
-          header.gst_type ?? null, userId ?? null,
+          header.gst_type ?? null, userId ?? null, header.vendor_invoice_date ?? null,
         ]
       );
       const po = poResult[0];
@@ -608,8 +609,8 @@ export class PurchaseService {
            notes = $6, taxable_value = $7, ledger_discount = $8,
            ledger_freight = $9, ledger_freight_gst_rate = $10,
            manual_gst_amount = $11, vendor_invoice_attachment = $12,
-           gst_type = $13, modified_by = $14, updated_at = NOW()
-         WHERE id = $15`,
+           gst_type = $13, modified_by = $14, vendor_invoice_date = $15, updated_at = NOW()
+         WHERE id = $16`,
         [
           vendor, payload.order_date, payload.invoice_number,
           payload.total_items, payload.total_amount,
@@ -617,7 +618,7 @@ export class PurchaseService {
           payload.ledger_discount ?? null, payload.ledger_freight ?? null,
           payload.ledger_freight_gst_rate ?? null, payload.manual_gst_amount ?? null,
           payload.vendor_invoice_attachment ?? null, payload.gst_type ?? null,
-          userId ?? null, poId,
+          userId ?? null, payload.vendor_invoice_date ?? null, poId,
         ]
       );
       t = lap('Step 2 — Update purchase_order header', t);
