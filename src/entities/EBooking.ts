@@ -11,8 +11,8 @@ export class EBooking {
   @Column({ type: 'text', unique: true, nullable: true })
   booking_number: string;
 
-  @Column({ type: 'text' })
-  customer_mobile: string;
+  @Column({ type: 'text', name: 'customer_mobile' })
+  customer_identity: string;
 
   @Column({ type: 'text', nullable: true })
   barcode_8digit: string;
@@ -44,6 +44,16 @@ export class EBooking {
 
   @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   discount_amount: number;
+
+  @Column({ type: 'text', default: 'amount' })
+  discount_type: string;
+
+  @Column({ type: 'uuid', nullable: true })
+  discount_given_by: string;
+
+  @ManyToOne(() => User, { nullable: true })
+  @JoinColumn({ name: 'discount_given_by' })
+  discount_given_by_details: User;
 
   @Column({ type: 'uuid', nullable: true })
   created_by: string;

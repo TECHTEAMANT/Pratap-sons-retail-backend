@@ -58,6 +58,12 @@ export class SalesInvoice {
   @Column({ type: 'numeric', default: 0 })
   net_payable: number;
 
+  @Column({ type: 'uuid', nullable: true })
+  voucher_id: string;
+
+  @Column({ type: 'numeric', default: 0 })
+  voucher_discount: number;
+
   @Column({ type: 'text', nullable: true })
   payment_mode: string;
 

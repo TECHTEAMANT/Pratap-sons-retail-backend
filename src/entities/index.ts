@@ -37,3 +37,4 @@ export { PurchaseItem } from './PurchaseItem';
 export { PurchaseReturnItem } from './PurchaseReturnItem';
 export { PurchaseOrderSequence } from './PurchaseOrderSequence';
 export { LoyaltyConfig } from './LoyaltyConfig';
+export { Voucher } from './Voucher';

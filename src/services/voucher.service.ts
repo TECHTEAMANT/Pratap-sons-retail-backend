@@ -1,0 +1,83 @@
+import { AppDataSource } from '../config/data-source';
+import { Voucher } from '../entities/Voucher';
+import { DiscountMaster } from '../entities/DiscountMaster';
+import { SalesInvoice } from '../entities/SalesInvoice';
+
+export class VoucherService {
+  private voucherRepo = AppDataSource.getRepository(Voucher);
+  private discountRepo = AppDataSource.getRepository(DiscountMaster);
+
+  async validateVoucher(code: string) {
+    const voucher = await this.voucherRepo.findOne({
+      where: { voucher_code: code },
+      relations: ['discount_master']
+    });
+
+    if (!voucher) {
+      throw new Error('Invalid voucher code');
+    }
+
+    if (voucher.is_redeemed) {
+      throw new Error('Voucher already redeemed');
+    }
+
+    if (voucher.expiry_date && new Date(voucher.expiry_date) < new Date()) {
+      throw new Error('Voucher expired');
+    }
+
+    const dm = voucher.discount_master;
+    if (!dm || !dm.is_active) {
+      throw new Error('Associated discount is inactive');
+    }
+
+    return voucher;
+  }
+
+  async redeemVoucher(code: string, invoiceId: string, manager?: any) {
+    const repo = manager ? manager.getRepository(Voucher) : this.voucherRepo;
+    const voucher = await repo.findOne({ where: { voucher_code: code } });
+    
+    if (!voucher) throw new Error('Voucher not found');
+    if (voucher.is_redeemed) throw new Error('Voucher already redeemed');
+
+    voucher.is_redeemed = true;
+    voucher.redeemed_at = new Date();
+    voucher.redeemed_in_invoice_id = invoiceId;
+
+    return repo.save(voucher);
+  }
+
+  async generateVouchers(data: { 
+    discount_master_id: string; 
+    prefix: string; 
+    start_no: number; 
+    end_no: number; 
+    expiry_date?: string 
+  }) {
+    const dm = await this.discountRepo.findOneBy({ id: data.discount_master_id });
+    if (!dm) throw new Error('Discount master not found');
+
+    const vouchers: Voucher[] = [];
+    for (let i = data.start_no; i <= data.end_no; i++) {
+      const code = `${data.prefix}${i.toString().padStart(4, '0')}`;
+      const voucher = this.voucherRepo.create({
+        voucher_code: code,
+        discount_master_id: dm.id,
+        expiry_date: data.expiry_date ? new Date(data.expiry_date) : undefined
+      });
+      vouchers.push(voucher);
+    }
+
+    return this.voucherRepo.save(vouchers);
+  }
+
+  async findAll(filters: any) {
+    return this.voucherRepo.find({
+      relations: ['discount_master', 'redeemed_in_invoice'],
+      order: { created_at: 'DESC' },
+      where: filters
+    });
+  }
+}
+
+export const voucherService = new VoucherService();

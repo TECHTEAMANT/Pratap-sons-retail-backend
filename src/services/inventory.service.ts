@@ -19,7 +19,7 @@ export class InventoryService {
     gte_created_at?: string; lte_created_at?: string;
   }) {
     const page = filters.page || 1;
-    const limit = Math.min(filters.limit || 1000, 5000);
+    const limit = filters.limit || 50; 
     // Support both offset (from range()) and page-based pagination
     const skip = filters.offset !== undefined ? filters.offset : (page - 1) * limit;
 

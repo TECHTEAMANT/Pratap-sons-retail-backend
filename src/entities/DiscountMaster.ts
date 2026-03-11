@@ -38,6 +38,9 @@ export class DiscountMaster {
   @Column({ type: 'boolean', default: true })
   active: boolean;
 
+  @Column({ type: 'boolean', default: false })
+  is_voucher_only: boolean;
+
   @Column({ type: 'int', default: 0 })
   priority: number;
 

@@ -4,6 +4,8 @@ import { SalesInvoiceItem } from '../entities/SalesInvoiceItem';
 import { BarcodeBatch } from '../entities/BarcodeBatch';
 import { Customer } from '../entities/Customer';
 import { EBooking } from '../entities/EBooking';
+import { Voucher } from '../entities/Voucher';
+import { voucherService } from './voucher.service';
 import { ILike } from 'typeorm';
 import logger from '../utils/logger';
 
@@ -64,6 +66,8 @@ export class SalesService {
         amount_pending: data.amount_paid !== undefined ? (data.net_payable - data.amount_paid) : (data.net_payable || 0),
         payment_status: data.amount_paid >= data.net_payable ? 'paid' : data.amount_paid > 0 ? 'partial' : 'pending',
         sales_order_id: data.sales_order_id || null,
+        voucher_id: data.voucher_id || null,
+        voucher_discount: data.voucher_discount || 0,
         created_by: userId,
       });
 
@@ -107,6 +111,9 @@ export class SalesService {
             total_value: item.total_value || 0,
             selling_price: item.selling_price || item.mrp || 0,
             salesman_id: item.salesman_id || null,
+            delivered: item.delivered || false,
+            delivery_date: item.delivery_date || null,
+            expected_delivery_date: item.expected_delivery_date || null,
           });
           await manager.save(invoiceItem);
         }
@@ -131,6 +138,11 @@ export class SalesService {
             await manager.save(booking);
           }
         }
+      }
+
+      // Redeem voucher if applicable
+      if (data.voucher_code) {
+        await voucherService.redeemVoucher(data.voucher_code, savedInvoice.id, manager);
       }
 
       logger.info(`Invoice created: ${invoiceNumber}`, { items: data.items?.length || 0, total: data.net_payable });

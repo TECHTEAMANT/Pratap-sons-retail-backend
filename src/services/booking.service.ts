@@ -5,15 +5,17 @@ import { EBookingItem } from '../entities/EBookingItem';
 export class BookingService {
   private repo = AppDataSource.getRepository(EBooking);
 
-  async findAll(filters: { status?: string; floor?: string; customer_mobile?: string }) {
+  async findAll(filters: { status?: string; floor?: string; customer_identity?: string }) {
     const qb = this.repo.createQueryBuilder('b')
       .leftJoinAndSelect('b.items', 'items')
       .leftJoinAndSelect('b.floor_details', 'floor')
-      .leftJoinAndSelect('b.created_by_details', 'user');
+      .leftJoinAndSelect('b.created_by_details', 'user')
+      .leftJoinAndSelect('b.discount_given_by_details', 'discount_user');
     
     if (filters.status) qb.andWhere('b.status = :status', { status: filters.status });
     if (filters.floor) qb.andWhere('b.floor = :floor', { floor: filters.floor });
-    if (filters.customer_mobile) qb.andWhere('b.customer_mobile = :cm', { cm: filters.customer_mobile });
+    const identity = filters.customer_identity || (filters as any).customer_mobile;
+    if (identity) qb.andWhere('b.customer_identity = :ci', { ci: identity });
     
     qb.orderBy('b.created_at', 'DESC');
     return qb.getMany();
@@ -32,13 +34,15 @@ export class BookingService {
     
     const booking = this.repo.create({
       booking_number: data.booking_number || bkNum,
-      customer_mobile: data.customer_mobile,
+      customer_identity: data.customer_identity,
       floor: data.floor || null,
       booking_date: data.booking_date || new Date(),
       booking_expiry: data.booking_expiry || null,
       notes: data.notes || null,
       salesman_id: data.salesman_id || null,
       discount_amount: data.discount_amount || 0,
+      discount_type: data.discount_type || 'amount',
+      discount_given_by: data.discount_given_by || null,
       created_by: userId,
     });
 
