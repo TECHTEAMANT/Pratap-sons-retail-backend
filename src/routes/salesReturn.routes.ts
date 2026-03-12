@@ -9,6 +9,7 @@ router.use(requirePermission('can_manage_sales'));
 
 router.get('/', (req, res) => salesReturnController.findAll(req, res));
 router.get('/credit-notes', (req, res) => salesReturnController.getCreditNotes(req, res));
+router.get('/items', (req, res) => salesReturnController.getReturnItems(req, res));
 router.get('/:id', (req, res) => salesReturnController.findById(req, res));
 router.post('/', (req, res) => salesReturnController.create(req, res));
 router.post('/credit-notes/:id/apply', (req, res) => salesReturnController.applyCreditNote(req, res));

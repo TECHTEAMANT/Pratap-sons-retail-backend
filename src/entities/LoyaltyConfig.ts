@@ -23,6 +23,12 @@ export class LoyaltyConfig {
   @Column({ type: 'numeric', default: 100 })
   max_redeem_percentage!: number;
 
+  @Column({ type: 'numeric', default: 250 })
+  birthday_points!: number;
+
+  @Column({ type: 'numeric', default: 250 })
+  anniversary_points!: number;
+
   @Column({ type: 'boolean', default: true })
   active!: boolean;
 

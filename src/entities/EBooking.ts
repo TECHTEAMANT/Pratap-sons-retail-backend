@@ -2,6 +2,7 @@ import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateCol
 import { EBookingItem } from './EBookingItem';
 import { Floor } from './Floor';
 import { User } from './User';
+import { Salesman } from './Salesman';
 
 @Entity('e_bookings')
 export class EBooking {
@@ -41,6 +42,10 @@ export class EBooking {
 
   @Column({ type: 'uuid', nullable: true })
   salesman_id: string;
+
+  @ManyToOne(() => Salesman, { nullable: true })
+  @JoinColumn({ name: 'salesman_id' })
+  salesman_master: Salesman;
 
   @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   discount_amount: number;

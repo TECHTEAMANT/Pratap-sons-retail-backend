@@ -25,6 +25,9 @@ export class SalesReturnController {
       sendSuccess(res, result, 'Credit note applied');
     } catch (e: any) { sendError(res, e.message, 400); }
   }
+  async getReturnItems(req: Request, res: Response) {
+    try { sendSuccess(res, await salesReturnService.getReturnItems(req.query)); } catch (e: any) { sendError(res, e.message); }
+  }
 }
 
 export const salesReturnController = new SalesReturnController();

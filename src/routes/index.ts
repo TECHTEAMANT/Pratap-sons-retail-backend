@@ -22,6 +22,7 @@ import healthRoutes from './health.routes';
 import defectiveStockRoutes from './defectiveStock.routes';
 import rpcRoutes from './rpc.routes';
 import storageRoutes from './storage.routes';
+import salesmanRoutes from './salesman.routes';
 
 const router = Router();
 
@@ -49,5 +50,6 @@ router.use('/health', healthRoutes);
 router.use('/defective-stock', defectiveStockRoutes);
 router.use('/rpc', rpcRoutes);
 router.use('/storage', storageRoutes);
+router.use('/salesmen', salesmanRoutes);
 
 export default router;

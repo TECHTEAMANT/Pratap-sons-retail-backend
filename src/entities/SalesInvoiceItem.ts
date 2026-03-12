@@ -1,5 +1,6 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, ManyToOne, JoinColumn } from 'typeorm';
 import { SalesInvoice } from './SalesInvoice';
+import { Salesman } from './Salesman';
 
 @Entity('sales_invoice_items')
 export class SalesInvoiceItem {
@@ -85,4 +86,8 @@ export class SalesInvoiceItem {
   @ManyToOne(() => SalesInvoice, invoice => invoice.items, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'invoice_id' })
   invoice: SalesInvoice;
+
+  @ManyToOne(() => Salesman, { nullable: true })
+  @JoinColumn({ name: 'salesman_id' })
+  salesman: Salesman;
 }

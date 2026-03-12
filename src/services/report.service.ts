@@ -4,6 +4,7 @@ import { SalesInvoiceItem } from '../entities/SalesInvoiceItem';
 import { BarcodeBatch } from '../entities/BarcodeBatch';
 import { Customer } from '../entities/Customer';
 import { PurchaseOrder } from '../entities/PurchaseOrder';
+import { SalesReturnItem } from '../entities/SalesReturnItem';
 import { Between, MoreThanOrEqual, LessThanOrEqual } from 'typeorm';
 
 export class ReportService {
@@ -74,9 +75,43 @@ export class ReportService {
     return { groups: groupData, totals };
   }
 
-  async salesReport(filters: any) {
-    // TODO: Implement sales report
-    return { message: 'Sales report not implemented yet' };
+  async salesReport(filters: { startDate: string, endDate: string }) {
+    const qb = AppDataSource.getRepository(SalesInvoice)
+      .createQueryBuilder('si')
+      .select([
+        'COALESCE(SUM(si.net_payable), 0) as total_sales',
+        'COALESCE(SUM(si.total_mrp), 0) as total_mrp',
+        'COALESCE(SUM(CAST(si.total_discount AS NUMERIC) + CAST(si.voucher_discount AS NUMERIC)), 0) as total_discount',
+        'COALESCE(SUM(si.total_gst), 0) as total_gst',
+        'COALESCE(SUM(si.taxable_value), 0) as taxable_value',
+        'COUNT(si.id) as invoice_count',
+        'COALESCE(SUM(si.cgst_5), 0) as cgst_5',
+        'COALESCE(SUM(si.sgst_5), 0) as sgst_5',
+        'COALESCE(SUM(si.cgst_18), 0) as cgst_18',
+        'COALESCE(SUM(si.sgst_18), 0) as sgst_18',
+        'COALESCE(AVG(si.net_payable), 0) as avg_invoice_value',
+      ])
+      .where('si.invoice_date >= :start AND si.invoice_date <= :end', { 
+        start: `${filters.startDate}T00:00:00.000Z`, 
+        end: `${filters.endDate}T23:59:59.999Z` 
+      });
+
+    const result = await qb.getRawOne();
+    
+    // Convert string results to numbers to prevent frontend concatenation
+    return {
+      totalSales: parseFloat(result.total_sales),
+      totalMRP: parseFloat(result.total_mrp),
+      totalDiscount: parseFloat(result.total_discount),
+      totalGST: parseFloat(result.total_gst),
+      taxableValue: parseFloat(result.taxable_value),
+      invoiceCount: parseInt(result.invoice_count),
+      avgInvoiceValue: parseFloat(result.avg_invoice_value),
+      cgst_5: parseFloat(result.cgst_5),
+      sgst_5: parseFloat(result.sgst_5),
+      cgst_18: parseFloat(result.cgst_18),
+      sgst_18: parseFloat(result.sgst_18),
+    };
   }
 
   async inventoryReport() {
@@ -94,9 +129,35 @@ export class ReportService {
     return { message: 'Customer report not implemented yet' };
   }
 
-  async purchaseReport(filters: any) {
-    // TODO: Implement purchase report
-    return { message: 'Purchase report not implemented yet' };
+  async purchaseReport(filters: { startDate: string, endDate: string, vendorId?: string }) {
+    const qb = AppDataSource.getRepository(PurchaseOrder)
+      .createQueryBuilder('po')
+      .select([
+        'COALESCE(SUM(po.total_amount), 0) as total_purchase',
+        'COALESCE(SUM(po.total_items), 0) as total_items',
+        'COALESCE(SUM(po.total_amount - po.taxable_value), 0) as total_gst',
+        'COUNT(po.id) as po_count',
+        'COALESCE(AVG(po.total_amount), 0) as avg_po_value',
+      ])
+      .where('po.order_date >= :start AND po.order_date <= :end', { 
+        start: `${filters.startDate}T00:00:00.000Z`, 
+        end: `${filters.endDate}T23:59:59.999Z` 
+      })
+      .andWhere('po.status != :status', { status: 'Pending' });
+
+    if (filters.vendorId) {
+      qb.andWhere('po.vendor_id = :vendorId', { vendorId: filters.vendorId });
+    }
+
+    const result = await qb.getRawOne();
+
+    return {
+      totalPurchase: parseFloat(result.total_purchase),
+      totalItems: parseFloat(result.total_items),
+      totalGST: parseFloat(result.total_gst),
+      poCount: parseInt(result.po_count),
+      avgPOValue: parseFloat(result.avg_po_value),
+    };
   }
 
   // GST Report
@@ -122,7 +183,8 @@ export class ReportService {
 
   // Salesman Performance
   async salesmanPerformance(startDate: string, endDate: string) {
-    const qb = AppDataSource.getRepository(SalesInvoiceItem)
+    // 1. Get Sales
+    const salesQb = AppDataSource.getRepository(SalesInvoiceItem)
       .createQueryBuilder('sii')
       .innerJoin('sii.invoice', 'si')
       .select([
@@ -133,10 +195,65 @@ export class ReportService {
       ])
       .where('si.invoice_date >= :start AND si.invoice_date <= :end', { start: startDate, end: endDate })
       .andWhere('sii.salesman_id IS NOT NULL')
-      .groupBy('sii.salesman_id')
-      .orderBy('total_sales', 'DESC');
+      .groupBy('sii.salesman_id');
 
-    return qb.getRawMany();
+    const salesData = await salesQb.getRawMany();
+
+    // 2. Get Returns
+    const returnsQb = AppDataSource.getRepository(SalesReturnItem)
+      .createQueryBuilder('sri')
+      .innerJoin('sri.salesReturn', 'sr')
+      .select([
+        'sri.salesman_id as salesman_id',
+        'COALESCE(SUM(sri.return_amount), 0) as total_returns',
+        'COUNT(*) as return_items_count',
+      ])
+      .where('sr.return_date >= :start AND sr.return_date <= :end', { start: startDate, end: endDate })
+      .andWhere('sri.salesman_id IS NOT NULL')
+      .groupBy('sri.salesman_id');
+
+    const returnsData = await returnsQb.getRawMany();
+
+    // 3. Combine
+    const performanceMap = new Map<string, any>();
+
+    // Initialize with sales
+    for (const s of salesData) {
+      performanceMap.set(s.salesman_id, {
+        salesman_id: s.salesman_id,
+        invoice_count: parseInt(s.invoice_count),
+        total_sales: parseFloat(s.total_sales),
+        items_sold: parseInt(s.items_sold),
+        total_returns: 0,
+        return_items_count: 0,
+        net_sales: parseFloat(s.total_sales),
+        net_items: parseInt(s.items_sold)
+      });
+    }
+
+    // Subtract returns
+    for (const r of returnsData) {
+      if (!performanceMap.has(r.salesman_id)) {
+        performanceMap.set(r.salesman_id, {
+          salesman_id: r.salesman_id,
+          invoice_count: 0,
+          total_sales: 0,
+          items_sold: 0,
+          total_returns: parseFloat(r.total_returns),
+          return_items_count: parseInt(r.return_items_count),
+          net_sales: -parseFloat(r.total_returns),
+          net_items: -parseInt(r.return_items_count)
+        });
+      } else {
+        const p = performanceMap.get(r.salesman_id);
+        p.total_returns = parseFloat(r.total_returns);
+        p.return_items_count = parseInt(r.return_items_count);
+        p.net_sales = p.total_sales - p.total_returns;
+        p.net_items = p.items_sold - p.return_items_count;
+      }
+    }
+
+    return Array.from(performanceMap.values()).sort((a, b) => b.net_sales - a.net_sales);
   }
 
   // Customer Lifetime Value

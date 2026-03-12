@@ -1,10 +1,11 @@
 import { AppDataSource } from '../config/data-source';
 import { SalesReturn } from '../entities/SalesReturn';
 import { SalesReturnItem } from '../entities/SalesReturnItem';
+import { SalesInvoice } from '../entities/SalesInvoice';
 import { CreditNote } from '../entities/CreditNote';
 import { CreditNoteApplication } from '../entities/CreditNoteApplication';
 import { BarcodeBatch } from '../entities/BarcodeBatch';
-import { Customer } from '../entities/Customer';
+import { Customer, LoyaltyConfig, LoyaltyHistory, LoyaltyTransactionType } from '../entities';
 import { ILike } from 'typeorm';
 
 export class SalesReturnService {
@@ -21,7 +22,10 @@ export class SalesReturnService {
   }
 
   async findById(id: string) {
-    return this.returnRepo.findOne({ where: { id }, relations: ['items'] });
+    return this.returnRepo.findOne({ 
+      where: { id }, 
+      relations: ['items', 'salesman', 'items.salesman'] 
+    });
   }
 
   async create(data: any, userId: string) {
@@ -40,6 +44,7 @@ export class SalesReturnService {
         total_return_amount: data.total_return_amount,
         status: 'completed',
         created_by: userId,
+        salesman_id: data.salesman_id || null,
       });
       const savedReturn = await manager.save(ret);
 
@@ -56,6 +61,7 @@ export class SalesReturnService {
           gst_amount: item.gst_amount || 0,
           return_amount: item.return_amount,
           reason: item.reason || null,
+          salesman_id: item.salesman_id || null,
         });
         await manager.save(retItem);
 
@@ -89,6 +95,48 @@ export class SalesReturnService {
         customer.credit_balance = Number(customer.credit_balance) + Number(data.total_return_amount);
         customer.total_returns = Number(customer.total_returns) + Number(data.total_return_amount);
         customer.return_count = (customer.return_count || 0) + 1;
+
+        const invoice = await manager.findOne(SalesInvoice, { where: { id: data.invoice_id } });
+        
+        // Deduct loyalty points earned
+        const loyaltyConfig = await manager.findOne(LoyaltyConfig, { where: { active: true } });
+        if (loyaltyConfig && Number(loyaltyConfig.points_per_rupee) > 0) {
+          const points_to_deduct = parseFloat((Number(data.total_return_amount) * Number(loyaltyConfig.points_per_rupee)).toFixed(2));
+          if (points_to_deduct > 0) {
+            customer.loyalty_points = (Number(customer.loyalty_points) || 0) - points_to_deduct;
+            customer.loyalty_points_balance = (Number(customer.loyalty_points_balance) || 0) - points_to_deduct;
+            
+            const history = manager.create(LoyaltyHistory, {
+              customer_id: customer.id,
+              points: -points_to_deduct,
+              type: LoyaltyTransactionType.ADJUSTMENT,
+              notes: `Deduction for sales return ${retNum}`,
+              reference_id: savedReturn.id
+            });
+            await manager.save(history);
+          }
+        }
+
+        // Revert redeemed points if applicable
+        if (invoice && Number(invoice.loyalty_points_redeemed) > 0) {
+          const totalInvBeforeRedemption = Number(invoice.net_payable) + Number(invoice.loyalty_redemption_amount);
+          if (totalInvBeforeRedemption > 0) {
+            const points_to_revert = parseFloat(((Number(data.total_return_amount) / totalInvBeforeRedemption) * Number(invoice.loyalty_points_redeemed)).toFixed(2));
+            if (points_to_revert > 0) {
+              customer.loyalty_points_balance = (Number(customer.loyalty_points_balance) || 0) + points_to_revert;
+              
+              const revertHistory = manager.create(LoyaltyHistory, {
+                customer_id: customer.id,
+                points: points_to_revert,
+                type: LoyaltyTransactionType.ADJUSTMENT,
+                notes: `Reversed redeemed points for sales return ${retNum}`,
+                reference_id: savedReturn.id
+              });
+              await manager.save(revertHistory);
+            }
+          }
+        }
+
         await manager.save(customer);
       }
 
@@ -131,6 +179,17 @@ export class SalesReturnService {
 
       return { creditNoteId, invoiceId, amountApplied: amount, newBalance, newStatus: cn.status };
     });
+  }
+  async getReturnItems(filters: any) {
+    const qb = AppDataSource.getRepository(SalesReturnItem).createQueryBuilder('sri')
+      .leftJoinAndSelect('sri.salesman', 'salesman');
+
+    if (filters.return_id) {
+      qb.andWhere('sri.return_id = :returnId', { returnId: filters.return_id });
+    }
+
+    qb.orderBy('sri.created_at', 'ASC');
+    return qb.getMany();
   }
 }
 

@@ -15,6 +15,12 @@ export class CustomerController {
       cust ? sendSuccess(res, cust) : sendNotFound(res, 'Customer');
     } catch (e: any) { sendError(res, e.message); }
   }
+  async findByCard(req: Request, res: Response) {
+    try {
+      const cust = await customerService.findByCard(req.params.card_no);
+      cust ? sendSuccess(res, cust) : sendNotFound(res, 'Customer not found');
+    } catch (e: any) { sendError(res, e.message); }
+  }
   async create(req: Request, res: Response) {
     try { sendCreated(res, await customerService.create(req.body)); } catch (e: any) { sendError(res, e.message, 400); }
   }

@@ -8,6 +8,9 @@ export class Customer {
   @Column({ type: 'text', unique: true })
   mobile: string;
 
+  @Column({ type: 'text', unique: true, nullable: true })
+  card_no: string;
+
   @Column({ type: 'text' })
   name: string;
 

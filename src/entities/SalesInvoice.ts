@@ -1,6 +1,7 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, OneToMany, ManyToOne, JoinColumn } from 'typeorm';
 import { SalesInvoiceItem } from './SalesInvoiceItem';
 import { Customer } from './Customer';
+import { Salesman } from './Salesman';
 
 @Entity('sales_invoices')
 export class SalesInvoice {
@@ -79,11 +80,29 @@ export class SalesInvoice {
   @Column({ type: 'uuid', nullable: true })
   sales_order_id: string;
 
+  @Column({ type: 'numeric', default: 0 })
+  loyalty_points_earned: number;
+
+  @Column({ type: 'numeric', default: 0 })
+  loyalty_points_redeemed: number;
+
+  @Column({ type: 'numeric', default: 0 })
+  loyalty_redemption_amount: number;
+
   @Column({ type: 'uuid', nullable: true })
   created_by: string;
 
   @Column({ type: 'uuid', nullable: true })
   modified_by: string;
+
+  @Column({ type: 'text', nullable: true })
+  pan_no: string;
+
+  @Column({ type: 'text', nullable: true })
+  aadhar_no: string;
+
+  @Column({ type: 'uuid', nullable: true })
+  salesman_id: string;
 
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
@@ -98,4 +117,8 @@ export class SalesInvoice {
   @ManyToOne(() => Customer, { nullable: true })
   @JoinColumn({ name: 'customer_id' })
   customer: Customer;
+
+  @ManyToOne(() => Salesman, { nullable: true })
+  @JoinColumn({ name: 'salesman_id' })
+  salesman: Salesman;
 }

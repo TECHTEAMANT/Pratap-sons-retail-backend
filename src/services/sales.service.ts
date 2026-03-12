@@ -7,6 +7,7 @@ import { EBooking } from '../entities/EBooking';
 import { Voucher } from '../entities/Voucher';
 import { voucherService } from './voucher.service';
 import { ILike } from 'typeorm';
+import { LoyaltyConfig, LoyaltyHistory, LoyaltyTransactionType } from './../entities';
 import logger from '../utils/logger';
 
 export class SalesService {
@@ -26,6 +27,8 @@ export class SalesService {
       qb.andWhere('(si.invoice_number ILIKE :search OR si.customer_name ILIKE :search OR si.customer_mobile ILIKE :search)', { search: `%${filters.search}%` });
     }
 
+    qb.leftJoinAndSelect('si.salesman', 'salesman');
+
     qb.orderBy('si.created_at', 'DESC').skip(skip).take(limit);
 
     const [data, total] = await qb.getManyAndCount();
@@ -33,7 +36,10 @@ export class SalesService {
   }
 
   async getInvoiceById(id: string) {
-    return this.invoiceRepo.findOne({ where: { id }, relations: ['items'] });
+    return this.invoiceRepo.findOne({ 
+      where: { id }, 
+      relations: ['items', 'salesman', 'items.salesman'] 
+    });
   }
 
   async createInvoice(data: any, userId: string) {
@@ -68,6 +74,9 @@ export class SalesService {
         sales_order_id: data.sales_order_id || null,
         voucher_id: data.voucher_id || null,
         voucher_discount: data.voucher_discount || 0,
+        pan_no: data.pan_no || null,
+        aadhar_no: data.aadhar_no || null,
+        salesman_id: data.salesman_id || null,
         created_by: userId,
       });
 
@@ -119,11 +128,63 @@ export class SalesService {
         }
       }
 
-      // Update customer data
+      // Update customer data & Calculate Loyalty Points
       if (data.customer_mobile) {
         let customer = await manager.findOne(Customer, { where: { mobile: data.customer_mobile } });
         if (customer) {
           customer.last_purchase_date = new Date();
+          
+          const loyaltyConfig = await manager.findOne(LoyaltyConfig, { where: { active: true } });
+          const pointsPerRupee = loyaltyConfig ? Number(loyaltyConfig.points_per_rupee) : 0;
+          const redemptionValue = loyaltyConfig ? Number(loyaltyConfig.redemption_value_per_point) : 1;
+
+          // 1. Handle Point Redemption
+          if (data.loyalty_points_redeemed && data.loyalty_points_redeemed > 0) {
+            const pointsToRedeem = Number(data.loyalty_points_redeemed);
+            const currentBalance = Number(customer.loyalty_points_balance) || 0;
+
+            if (pointsToRedeem > currentBalance) {
+               throw new Error(`Insufficient loyalty points balance. Available: ${currentBalance}`);
+            }
+
+            customer.loyalty_points_balance = currentBalance - pointsToRedeem;
+            savedInvoice.loyalty_points_redeemed = pointsToRedeem;
+            savedInvoice.loyalty_redemption_amount = pointsToRedeem * redemptionValue;
+            
+            const redemptionHistory = manager.create(LoyaltyHistory, {
+              customer_id: customer.id,
+              points: -pointsToRedeem,
+              type: LoyaltyTransactionType.REDEEM,
+              reference_id: savedInvoice.id,
+              notes: `Points redeemed on invoice ${savedInvoice.invoice_number}`
+            });
+            await manager.save(redemptionHistory);
+          }
+
+          // 2. Handle Point Earning (1% of net payable)
+          if (loyaltyConfig && pointsPerRupee > 0) {
+            const pointsEarned = parseFloat((savedInvoice.net_payable * pointsPerRupee).toFixed(2));
+            if (pointsEarned > 0) {
+              savedInvoice.loyalty_points_earned = pointsEarned;
+              customer.loyalty_points = (Number(customer.loyalty_points) || 0) + pointsEarned;
+              customer.loyalty_points_balance = (Number(customer.loyalty_points_balance) || 0) + pointsEarned;
+
+              const earningHistory = manager.create(LoyaltyHistory, {
+                customer_id: customer.id,
+                points: pointsEarned,
+                type: LoyaltyTransactionType.EARN,
+                reference_id: savedInvoice.id,
+                notes: `Points earned from invoice ${savedInvoice.invoice_number}`
+              });
+              await manager.save(earningHistory);
+            }
+          }
+
+          await manager.save(savedInvoice);
+
+          customer.total_purchases = parseFloat((Number(customer.total_purchases) || 0).toFixed(2)) + parseFloat(Number(savedInvoice.net_payable).toFixed(2));
+          customer.total_visits = (Number(customer.total_visits) || 0) + 1;
+          
           await manager.save(customer);
         }
       }

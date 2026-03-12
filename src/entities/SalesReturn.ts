@@ -1,6 +1,7 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, OneToMany, ManyToOne, JoinColumn } from 'typeorm';
 import { SalesReturnItem } from './SalesReturnItem';
 import { SalesInvoice } from './SalesInvoice';
+import { Salesman } from './Salesman';
 
 @Entity('sales_returns')
 export class SalesReturn {
@@ -40,6 +41,9 @@ export class SalesReturn {
   @Column({ type: 'uuid', nullable: true })
   created_by: string;
 
+  @Column({ type: 'uuid', nullable: true })
+  salesman_id: string;
+
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
 
@@ -53,4 +57,8 @@ export class SalesReturn {
   @ManyToOne(() => SalesInvoice, { nullable: true })
   @JoinColumn({ name: 'invoice_id' })
   invoice: SalesInvoice;
+
+  @ManyToOne(() => Salesman, { nullable: true })
+  @JoinColumn({ name: 'salesman_id' })
+  salesman: Salesman;
 }

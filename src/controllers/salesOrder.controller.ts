@@ -5,30 +5,34 @@ import { AuthenticatedRequest } from '../middleware/auth';
 
 export class SalesOrderController {
   async findAll(req: Request, res: Response) {
-    try { sendSuccess(res, await salesOrderService.findAll(req.query as any)); } catch (e: any) { sendError(res, e.message); }
+    try { sendSuccess(res, await salesOrderService.findAll(req.query as any)); } catch (e: any) { console.error('findAll error:', e); sendError(res, e.message); }
   }
   async findById(req: Request, res: Response) {
     try {
       const order = await salesOrderService.findById(req.params.id);
       order ? sendSuccess(res, order) : sendNotFound(res, 'Sales order');
-    } catch (e: any) { sendError(res, e.message); }
+    } catch (e: any) { console.error('findById error:', e); sendError(res, e.message); }
   }
   async create(req: AuthenticatedRequest, res: Response) {
-    try { sendCreated(res, await salesOrderService.create(req.body, req.user!.id)); } catch (e: any) { sendError(res, e.message, 400); }
+    try { sendCreated(res, await salesOrderService.create(req.body, req.user!.id)); } catch (e: any) { console.error('create error:', e); sendError(res, e.message, 400); }
   }
   async update(req: Request, res: Response) {
     try {
       const order = await salesOrderService.update(req.params.id, req.body);
       order ? sendSuccess(res, order, 'Updated') : sendNotFound(res, 'Sales order');
-    } catch (e: any) { sendError(res, e.message, 400); }
+    } catch (e: any) { console.error('update error:', e); sendError(res, e.message, 400); }
   }
   async addAdvance(req: AuthenticatedRequest, res: Response) {
-    try { sendCreated(res, await salesOrderService.addAdvance(req.params.id, req.body, req.user!.id)); } catch (e: any) { sendError(res, e.message, 400); }
+    try { 
+      const id = req.params.id || req.body.sales_order_id;
+      if (!id) throw new Error('Sales order ID is required');
+      sendCreated(res, await salesOrderService.addAdvance(id, req.body, req.user!.id)); 
+    } catch (e: any) { console.error('addAdvance error:', e); sendError(res, e.message, 400); }
   }
   async delete(req: Request, res: Response) {
-    try { await salesOrderService.delete(req.params.id); sendSuccess(res, null, 'Order cancelled'); } catch (e: any) { sendError(res, e.message); }
+    try { await salesOrderService.delete(req.params.id); sendSuccess(res, null, 'Order cancelled'); } catch (e: any) { console.error('delete error:', e); sendError(res, e.message); }
   }
-  async getItems(req: Request, res: Response) { try { sendSuccess(res, await salesOrderService.getItems(req.query as any)); } catch (e: any) { sendError(res, e.message); } }
+  async getItems(req: Request, res: Response) { try { sendSuccess(res, await salesOrderService.getItems(req.query as any)); } catch (e: any) { console.error('GET ITEMS ERROR:', e); sendError(res, e.message); } }
   async createItem(req: Request, res: Response) { try { sendCreated(res, await salesOrderService.createItem(req.body)); } catch (e: any) { sendError(res, e.message, 400); } }
   async getAdvances(req: Request, res: Response) { try { sendSuccess(res, await salesOrderService.getAdvances(req.query as any)); } catch (e: any) { sendError(res, e.message); } }
 }

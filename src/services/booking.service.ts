@@ -1,11 +1,33 @@
 import { AppDataSource } from '../config/data-source';
 import { EBooking } from '../entities/EBooking';
 import { EBookingItem } from '../entities/EBookingItem';
+import { LessThan } from 'typeorm';
 
 export class BookingService {
   private repo = AppDataSource.getRepository(EBooking);
 
+  /** Mark all past-expiry 'booked' bookings as 'expired' in the DB */
+  private async expireStaleBookings() {
+    try {
+      const now = new Date();
+      await this.repo
+        .createQueryBuilder()
+        .update(EBooking)
+        .set({ status: 'expired' })
+        .where('status = :status', { status: 'booked' })
+        .andWhere('booking_expiry IS NOT NULL')
+        .andWhere('booking_expiry < :now', { now })
+        .execute();
+    } catch (err) {
+      // Non-fatal — don't block the main query
+      console.error('Error expiring stale bookings:', err);
+    }
+  }
+
   async findAll(filters: { status?: string; floor?: string; customer_identity?: string }) {
+    // Expire any overdue bookings before returning results
+    await this.expireStaleBookings();
+
     const qb = this.repo.createQueryBuilder('b')
       .leftJoinAndSelect('b.items', 'items')
       .leftJoinAndSelect('b.floor_details', 'floor')
@@ -24,7 +46,7 @@ export class BookingService {
   async findById(id: string) {
     return this.repo.findOne({
       where: { id },
-      relations: ['items', 'floor_details', 'created_by_details']
+      relations: ['items', 'floor_details', 'created_by_details', 'salesman_master']
     });
   }
 

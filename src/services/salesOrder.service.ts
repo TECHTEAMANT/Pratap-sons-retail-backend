@@ -98,7 +98,14 @@ export class SalesOrderService {
 
   async getItems(filters: any) {
     const repo = AppDataSource.getRepository(SalesOrderItem);
-    return repo.find({ where: filters, order: { sr_no: 'ASC' } });
+    const where: any = {};
+    if (filters.sales_order_id) where.sales_order_id = filters.sales_order_id;
+    if (filters.barcode_8digit) where.barcode_8digit = filters.barcode_8digit;
+    
+    return repo.find({ 
+      where, 
+      order: { sr_no: 'ASC' } 
+    });
   }
 
   async createItem(data: any) {
@@ -109,7 +116,13 @@ export class SalesOrderService {
 
   async getAdvances(filters: any) {
     const repo = AppDataSource.getRepository(SalesOrderAdvance);
-    return repo.find({ where: filters, order: { created_at: 'DESC' } });
+    const where: any = {};
+    if (filters.sales_order_id) where.sales_order_id = filters.sales_order_id;
+    
+    return repo.find({ 
+      where, 
+      order: { created_at: 'DESC' } 
+    });
   }
 }
 

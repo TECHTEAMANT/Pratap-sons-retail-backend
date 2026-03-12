@@ -3,6 +3,7 @@ import { config, validateConfig } from './config';
 import { initializeDatabase, closeDatabase } from './config/data-source';
 import app from './app';
 import logger from './utils/logger';
+import { customerService } from './services/customer.service';
 
 async function startServer() {
   try {
@@ -14,6 +15,12 @@ async function startServer() {
     await initializeDatabase();
     logger.info('TypeORM DataSource initialized ✓ (auto-sync ran)');
     logger.info('PostgreSQL connected ✓');
+
+    // Run automatic data repair on startup
+    logger.info('Running automatic data repair...');
+    customerService.recalculateCustomerStats()
+      .then(res => logger.info(`Data repair completed: Processed ${res.customersProcessed} customers, ${res.errors} errors.`))
+      .catch(err => logger.error('Data repair failed', { error: err.message }));
 
     // Start Express server
     const server = app.listen(config.port, () => {

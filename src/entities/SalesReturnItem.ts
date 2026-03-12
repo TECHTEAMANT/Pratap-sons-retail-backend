@@ -1,5 +1,6 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, ManyToOne, JoinColumn } from 'typeorm';
 import { SalesReturn } from './SalesReturn';
+import { Salesman } from './Salesman';
 
 @Entity('sales_return_items')
 export class SalesReturnItem {
@@ -36,6 +37,9 @@ export class SalesReturnItem {
   @Column({ type: 'text', nullable: true })
   reason: string;
 
+  @Column({ type: 'uuid', nullable: true })
+  salesman_id: string;
+
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
 
@@ -43,4 +47,8 @@ export class SalesReturnItem {
   @ManyToOne(() => SalesReturn, ret => ret.items, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'return_id' })
   salesReturn: SalesReturn;
+
+  @ManyToOne(() => Salesman, { nullable: true })
+  @JoinColumn({ name: 'salesman_id' })
+  salesman: Salesman;
 }
