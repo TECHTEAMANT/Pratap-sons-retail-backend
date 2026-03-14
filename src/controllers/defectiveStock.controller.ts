@@ -25,35 +25,98 @@ export const getDefectiveStock = async (req: Request, res: Response) => {
 };
 
 export const createDefectiveStock = async (req: Request, res: Response) => {
+  const queryRunner = AppDataSource.createQueryRunner();
+  await queryRunner.connect();
+  await queryRunner.startTransaction();
+
   try {
     const data = req.body;
-    const repo = AppDataSource.getRepository(DefectiveStock);
-    const batchRepo = AppDataSource.getRepository(BarcodeBatch);
+    const batchRepo = queryRunner.manager.getRepository(BarcodeBatch);
+    const defectiveRepo = queryRunner.manager.getRepository(DefectiveStock);
 
-    // Accept both old field names (item_id/barcode) and new names (barcode_batch_id/barcode_alias)
     let batchId: string | null = data.barcode_batch_id || data.item_id || null;
     const barcodeAlias: string = data.barcode_alias || data.barcode || '';
 
-    // If no batch ID provided but we have a barcode alias, look up the batch
     if (!batchId && barcodeAlias) {
       const batch = await batchRepo.findOne({
         where: { barcode_alias_8digit: barcodeAlias },
-        select: ['id'],
+        select: ['id', 'available_quantity'],
       });
       if (batch) batchId = batch.id;
     }
 
-    const newStock = repo.create({
-      barcode_batch_id: batchId ?? undefined,
-      barcode_alias: barcodeAlias,
-      quantity: data.quantity || 1,
+    if (!batchId) {
+      throw new Error('Barcode batch not found');
+    }
+
+    const batch = await batchRepo.findOneBy({ id: batchId });
+    if (!batch) {
+      throw new Error('Barcode batch not found');
+    }
+
+    const qty = Number(data.quantity) || 1;
+    if (batch.available_quantity < qty) {
+      throw new Error(`Insufficient available quantity (Available: ${batch.available_quantity})`);
+    }
+
+    // 1. Create defective record
+    const newStock = defectiveRepo.create({
+      barcode_batch_id: batchId,
+      barcode_alias: barcodeAlias || batch.barcode_alias_8digit,
+      quantity: qty,
       reason: data.reason || '',
       notes: data.notes || '',
       reported_by: data.reported_by || data.marked_by || null,
     });
-    const saved = await repo.save(newStock);
-    sendSuccess(res, saved, 'Created successfully');
+    await defectiveRepo.save(newStock);
+
+    // 2. Decrement available quantity in batch
+    batch.available_quantity -= qty;
+    await batchRepo.save(batch);
+
+    await queryRunner.commitTransaction();
+    sendSuccess(res, newStock, 'Created successfully and stock updated');
   } catch (err: any) {
+    await queryRunner.rollbackTransaction();
     sendError(res, err.message, 400);
+  } finally {
+    await queryRunner.release();
+  }
+};
+
+export const deleteDefectiveStock = async (req: Request, res: Response) => {
+  const queryRunner = AppDataSource.createQueryRunner();
+  await queryRunner.connect();
+  await queryRunner.startTransaction();
+
+  try {
+    const { id } = req.params;
+    const defectiveRepo = queryRunner.manager.getRepository(DefectiveStock);
+    const batchRepo = queryRunner.manager.getRepository(BarcodeBatch);
+
+    const record = await defectiveRepo.findOneBy({ id });
+    if (!record) {
+      throw new Error('Record not found');
+    }
+
+    // 1. Restore available quantity if batch still exists
+    if (record.barcode_batch_id) {
+      const batch = await batchRepo.findOneBy({ id: record.barcode_batch_id });
+      if (batch) {
+        batch.available_quantity += record.quantity;
+        await batchRepo.save(batch);
+      }
+    }
+
+    // 2. Delete record
+    await defectiveRepo.remove(record);
+
+    await queryRunner.commitTransaction();
+    sendSuccess(res, null, 'Deleted successfully and stock restored');
+  } catch (err: any) {
+    await queryRunner.rollbackTransaction();
+    sendError(res, err.message, 400);
+  } finally {
+    await queryRunner.release();
   }
 };

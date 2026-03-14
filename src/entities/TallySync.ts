@@ -30,6 +30,18 @@ export class TallySync {
   @Column({ type: 'text', default: 'pending' })
   sync_status: string;
 
+  @Column({ type: 'uuid', nullable: true })
+  receipt_id: string;
+
+  @Column({ type: 'text', nullable: true })
+  receipt_number: string;
+
+  @Column({ type: 'uuid', nullable: true })
+  purchase_return_id: string;
+
+  @Column({ type: 'uuid', nullable: true })
+  sales_return_id: string;
+
   @Column({ type: 'timestamptz', nullable: true })
   synced_at: Date;
 
@@ -58,4 +70,16 @@ export class TallySync {
   @ManyToOne(() => SalesInvoice, { nullable: true, onDelete: 'CASCADE' })
   @JoinColumn({ name: 'invoice_id' })
   invoice: SalesInvoice;
+
+  @ManyToOne('PaymentReceipt', { nullable: true, onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'receipt_id' })
+  receipt: any;
+
+  @ManyToOne('PurchaseReturn', { nullable: true, onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'purchase_return_id' })
+  purchase_return: any;
+
+  @ManyToOne('SalesReturn', { nullable: true, onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'sales_return_id' })
+  sales_return: any;
 }

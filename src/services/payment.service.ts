@@ -9,58 +9,65 @@ export class PaymentService {
     const where: any = {};
     if (filters.invoice_id) where.invoice_id = filters.invoice_id;
     if (filters.customer_mobile) where.customer_mobile = filters.customer_mobile;
-    return this.repo.find({ where, order: { created_at: 'DESC' } });
+    return this.repo.find({ 
+      where, 
+      relations: ['items', 'items.invoice'],
+      order: { created_at: 'DESC' } 
+    });
+  }
+
+  async findOne(id: string) {
+    return this.repo.findOne({ 
+      where: { id },
+      relations: ['items', 'items.invoice']
+    });
   }
 
   async create(data: any, userId: string) {
     return AppDataSource.transaction(async (manager) => {
-      const count = await manager.count(PaymentReceipt);
-      const recNum = `REC${new Date().getFullYear()}${(count + 1).toString().padStart(6, '0')}`;
-
+      // payment_receipts insert will be handled by TypeORM or manual save
+      // Triggers handle the invoice updates once payment_receipt_items are inserted
       const receipt = manager.create(PaymentReceipt, {
-        receipt_number: recNum,
-        receipt_date: data.receipt_date || new Date(),
-        invoice_id: data.invoice_id,
-        invoice_number: data.invoice_number,
-        customer_mobile: data.customer_mobile || null,
-        customer_name: data.customer_name || null,
-        amount_received: data.amount_received,
-        payment_mode: data.payment_mode,
-        reference_number: data.reference_number || null,
-        notes: data.notes || null,
+        ...data,
         created_by: userId,
       });
-      const saved = await manager.save(receipt);
-
-      // Update invoice payment status
-      const invoice = await manager.findOne(SalesInvoice, { where: { id: data.invoice_id } });
-      if (invoice) {
-        invoice.amount_paid = Number(invoice.amount_paid) + Number(data.amount_received);
-        invoice.amount_pending = Number(invoice.net_payable) - Number(invoice.amount_paid);
-        invoice.payment_status = invoice.amount_pending <= 0 ? 'paid' : invoice.amount_paid > 0 ? 'partial' : 'pending';
-        await manager.save(invoice);
-      }
-
-      return saved;
+      return await manager.save(receipt);
     });
   }
 
   async delete(id: string) {
     return AppDataSource.transaction(async (manager) => {
-      const receipt = await manager.findOne(PaymentReceipt, { where: { id } });
+      const receipt = await manager.findOne(PaymentReceipt, { 
+        where: { id },
+        relations: ['items', 'items.invoice']
+      });
+      
       if (!receipt) return null;
 
-      // Reverse the payment on invoice
-      const invoice = await manager.findOne(SalesInvoice, { where: { id: receipt.invoice_id } });
-      if (invoice) {
-        invoice.amount_paid = Number(invoice.amount_paid) - Number(receipt.amount_received);
-        invoice.amount_pending = Number(invoice.net_payable) - Number(invoice.amount_paid);
-        invoice.payment_status = invoice.amount_paid <= 0 ? 'pending' : 'partial';
-        await manager.save(invoice);
+      // 1. Reverse balance updates for each item
+      if (receipt.items && receipt.items.length > 0) {
+        for (const item of receipt.items) {
+          const invoice = item.invoice || await manager.findOne(SalesInvoice, { where: { id: item.invoice_id } });
+          if (invoice) {
+            invoice.amount_paid = Math.max(0, Number(invoice.amount_paid || 0) - Number(item.amount_paid));
+            invoice.amount_pending = Math.min(Number(invoice.net_payable || 0), Number(invoice.amount_pending || 0) + Number(item.amount_paid));
+
+            if (invoice.amount_pending <= 0) {
+              invoice.payment_status = 'paid';
+            } else if (invoice.amount_paid > 0) {
+              invoice.payment_status = 'partial';
+            } else {
+              invoice.payment_status = 'pending';
+            }
+            await manager.save(invoice);
+          }
+          // 2. Delete the item
+          await manager.remove(item);
+        }
       }
 
-      await manager.remove(receipt);
-      return receipt;
+      // 3. Finally delete the receipt head
+      return await manager.remove(receipt);
     });
   }
 }

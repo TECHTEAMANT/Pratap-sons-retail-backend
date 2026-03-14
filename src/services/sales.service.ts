@@ -13,7 +13,20 @@ import logger from '../utils/logger';
 export class SalesService {
   private invoiceRepo = AppDataSource.getRepository(SalesInvoice);
 
-  async getInvoices(filters: { start_date?: string; end_date?: string; search?: string; payment_status?: string; page?: number; limit?: number; gte_invoice_date?: string; lte_invoice_date?: string; }) {
+  async getInvoices(filters: { 
+    start_date?: string; 
+    end_date?: string; 
+    search?: string; 
+    payment_status?: string; 
+    page?: number; 
+    limit?: number; 
+    gte_invoice_date?: string; 
+    lte_invoice_date?: string;
+    gt_amount_pending?: string | number;
+    lte_amount_pending?: string | number;
+    customer_mobile?: string;
+    customer_name?: string;
+  }) {
     const page = filters.page || 1;
     const limit = filters.limit || 50;
     const skip = (page - 1) * limit;
@@ -25,6 +38,18 @@ export class SalesService {
     if (filters.payment_status) qb.andWhere('si.payment_status = :ps', { ps: filters.payment_status });
     if (filters.search) {
       qb.andWhere('(si.invoice_number ILIKE :search OR si.customer_name ILIKE :search OR si.customer_mobile ILIKE :search)', { search: `%${filters.search}%` });
+    }
+    if (filters.gt_amount_pending !== undefined) {
+      qb.andWhere('si.amount_pending > :gtap', { gtap: parseFloat(filters.gt_amount_pending.toString()) });
+    }
+    if (filters.lte_amount_pending !== undefined) {
+      qb.andWhere('si.amount_pending <= :lteap', { lteap: parseFloat(filters.lte_amount_pending.toString()) });
+    }
+    if (filters.customer_mobile) {
+      qb.andWhere('si.customer_mobile = :mobile', { mobile: filters.customer_mobile });
+    }
+    if (filters.customer_name) {
+      qb.andWhere('si.customer_name = :name', { name: filters.customer_name });
     }
 
     qb.leftJoinAndSelect('si.salesman', 'salesman');
@@ -38,7 +63,13 @@ export class SalesService {
   async getInvoiceById(id: string) {
     return this.invoiceRepo.findOne({ 
       where: { id }, 
-      relations: ['items', 'salesman', 'items.salesman'] 
+      relations: [
+        'items', 
+        'salesman', 
+        'items.salesman', 
+        'items.product_item', 
+        'items.product_item.product_group'
+      ] 
     });
   }
 
@@ -67,8 +98,9 @@ export class SalesService {
         igst_5: data.igst_5 || 0,
         igst_18: data.igst_18 || 0,
         net_payable: data.net_payable || 0,
-        payment_mode: data.payment_mode,
+        payment_mode: data.payment_mode || (data.payment_details && data.payment_details.length > 0 ? data.payment_details[0].mode : null),
         amount_paid: data.amount_paid || 0,
+        payment_details: data.payment_details || null,
         amount_pending: data.amount_paid !== undefined ? (data.net_payable - data.amount_paid) : (data.net_payable || 0),
         payment_status: data.amount_paid >= data.net_payable ? 'paid' : data.amount_paid > 0 ? 'partial' : 'pending',
         sales_order_id: data.sales_order_id || null,
@@ -204,6 +236,12 @@ export class SalesService {
       // Redeem voucher if applicable
       if (data.voucher_code) {
         await voucherService.redeemVoucher(data.voucher_code, savedInvoice.id, manager);
+      }
+
+      // Redeem credit coupon if applicable
+      if (data.coupon_no) {
+        const { creditCouponService } = require('./creditCoupon.service');
+        await creditCouponService.redeem(data.coupon_no, savedInvoice.id, manager);
       }
 
       logger.info(`Invoice created: ${invoiceNumber}`, { items: data.items?.length || 0, total: data.net_payable });

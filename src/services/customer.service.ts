@@ -137,7 +137,16 @@ export class CustomerService {
     const qb = this.customerRepo.createQueryBuilder('c');
 
     if (filters.status) qb.andWhere('c.status = :status', { status: filters.status });
-    if (filters.mobile) qb.andWhere('c.mobile = :mobile', { mobile: filters.mobile });
+    
+    if (filters.mobile) {
+      const mobiles = filters.mobile.split(',').filter(m => m.trim());
+      if (mobiles.length > 1) {
+        qb.andWhere('c.mobile IN (:...mobiles)', { mobiles });
+      } else if (mobiles.length === 1) {
+        qb.andWhere('c.mobile = :mobile', { mobile: mobiles[0] });
+      }
+    }
+
     if (filters.search) {
       qb.andWhere(
         '(c.name ILIKE :search OR c.mobile ILIKE :search OR c.card_no ILIKE :search)',
@@ -158,7 +167,14 @@ export class CustomerService {
     return this.customerRepo.findOneBy({ card_no });
   }
 
+  private normalizeDates(data: any) {
+    if (data.birthday === '') data.birthday = null;
+    if (data.anniversary === '') data.anniversary = null;
+    return data;
+  }
+
   async create(data: Partial<Customer>) {
+    this.normalizeDates(data);
     const customer = this.customerRepo.create(data);
     // Auto-generate card_no if not provided
     if (!customer.card_no) {
@@ -168,6 +184,7 @@ export class CustomerService {
   }
 
   async update(id: string, data: Partial<Customer>) {
+    this.normalizeDates(data);
     const customer = await this.customerRepo.findOneBy({ id });
     if (!customer) return null;
     Object.assign(customer, data);

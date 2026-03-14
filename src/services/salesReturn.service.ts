@@ -138,6 +138,37 @@ export class SalesReturnService {
         }
 
         await manager.save(customer);
+
+        // Calculate Excess Payment for Credit Coupon
+        const returnAmount = Number(data.total_return_amount);
+        let refundAmount = 0;
+        
+        if (invoice) {
+          if (Number(invoice.amount_pending) >= returnAmount) {
+            invoice.amount_pending = Number(invoice.amount_pending) - returnAmount;
+          } else {
+            refundAmount = returnAmount - Number(invoice.amount_pending);
+            invoice.amount_pending = 0;
+          }
+          
+          if (Number(invoice.amount_pending) <= 0) {
+            invoice.payment_status = 'paid';
+          }
+
+          await manager.save(SalesInvoice, invoice);
+
+          if (refundAmount > 0) {
+            const { creditCouponService } = require('./creditCoupon.service');
+            const coupon = await creditCouponService.generate({
+              amount: refundAmount,
+              customer_mobile: data.customer_mobile,
+              return_id: savedReturn.id
+            }, manager);
+            
+            savedReturn.credit_coupon_no = coupon.coupon_no;
+            await manager.save(SalesReturn, savedReturn);
+          }
+        }
       }
 
       return savedReturn;
@@ -182,7 +213,9 @@ export class SalesReturnService {
   }
   async getReturnItems(filters: any) {
     const qb = AppDataSource.getRepository(SalesReturnItem).createQueryBuilder('sri')
-      .leftJoinAndSelect('sri.salesman', 'salesman');
+      .leftJoinAndSelect('sri.salesman', 'salesman')
+      .leftJoinAndSelect('sri.product_item', 'product_item')
+      .leftJoinAndSelect('product_item.product_group', 'product_group');
 
     if (filters.return_id) {
       qb.andWhere('sri.return_id = :returnId', { returnId: filters.return_id });

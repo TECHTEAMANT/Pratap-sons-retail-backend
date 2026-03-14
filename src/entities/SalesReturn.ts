@@ -38,6 +38,9 @@ export class SalesReturn {
   @Column({ type: 'text', default: 'pending' })
   status: string;
 
+  @Column({ type: 'text', nullable: true })
+  credit_coupon_no: string;
+
   @Column({ type: 'uuid', nullable: true })
   created_by: string;
 

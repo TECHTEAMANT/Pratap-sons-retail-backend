@@ -1,5 +1,6 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, ManyToOne, JoinColumn } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, ManyToOne, JoinColumn, OneToMany } from 'typeorm';
 import { SalesInvoice } from './SalesInvoice';
+import { PaymentReceiptItem } from './PaymentReceiptItem';
 
 @Entity('payment_receipts')
 export class PaymentReceipt {
@@ -12,10 +13,10 @@ export class PaymentReceipt {
   @Column({ type: 'date', default: () => 'CURRENT_DATE' })
   receipt_date: Date;
 
-  @Column({ type: 'uuid' })
+  @Column({ type: 'uuid', nullable: true })
   invoice_id: string;
 
-  @Column({ type: 'text' })
+  @Column({ type: 'text', nullable: true })
   invoice_number: string;
 
   @Column({ type: 'text', nullable: true })
@@ -36,6 +37,9 @@ export class PaymentReceipt {
   @Column({ type: 'text', nullable: true })
   notes: string;
 
+  @Column({ type: 'jsonb', nullable: true })
+  payment_details: any;
+
   @Column({ type: 'uuid', nullable: true })
   created_by: string;
 
@@ -46,4 +50,7 @@ export class PaymentReceipt {
   @ManyToOne(() => SalesInvoice)
   @JoinColumn({ name: 'invoice_id' })
   invoice: SalesInvoice;
+
+  @OneToMany(() => PaymentReceiptItem, (item) => item.receipt)
+  items: PaymentReceiptItem[];
 }

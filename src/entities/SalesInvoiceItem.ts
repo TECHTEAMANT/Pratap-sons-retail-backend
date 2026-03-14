@@ -1,6 +1,7 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, ManyToOne, JoinColumn } from 'typeorm';
 import { SalesInvoice } from './SalesInvoice';
 import { Salesman } from './Salesman';
+import { BarcodeBatch } from './BarcodeBatch';
 
 @Entity('sales_invoice_items')
 export class SalesInvoiceItem {
@@ -90,4 +91,8 @@ export class SalesInvoiceItem {
   @ManyToOne(() => Salesman, { nullable: true })
   @JoinColumn({ name: 'salesman_id' })
   salesman: Salesman;
+
+  @ManyToOne(() => BarcodeBatch, { nullable: true })
+  @JoinColumn({ name: 'barcode_8digit', referencedColumnName: 'barcode_alias_8digit' })
+  product_item: BarcodeBatch;
 }

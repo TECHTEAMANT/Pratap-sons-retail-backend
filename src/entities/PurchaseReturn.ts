@@ -26,6 +26,15 @@ export class PurchaseReturn {
   @Column({ type: 'numeric', default: 0 })
   total_amount: number;
 
+  @Column({ type: 'numeric', nullable: true })
+  ledger_discount: number;
+
+  @Column({ type: 'numeric', nullable: true })
+  ledger_freight: number;
+
+  @Column({ type: 'int', default: 5, nullable: true })
+  ledger_freight_gst_rate: number;
+
   @Column({ type: 'text', nullable: true })
   reason: string;
 

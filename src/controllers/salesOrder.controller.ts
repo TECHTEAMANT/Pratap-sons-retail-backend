@@ -26,7 +26,9 @@ export class SalesOrderController {
     try { 
       const id = req.params.id || req.body.sales_order_id;
       if (!id) throw new Error('Sales order ID is required');
-      sendCreated(res, await salesOrderService.addAdvance(id, req.body, req.user!.id)); 
+      
+      const advances = Array.isArray(req.body) ? req.body : (req.body.advances || [req.body]);
+      sendCreated(res, await salesOrderService.addAdvance(id, advances, req.user!.id)); 
     } catch (e: any) { console.error('addAdvance error:', e); sendError(res, e.message, 400); }
   }
   async delete(req: Request, res: Response) {

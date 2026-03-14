@@ -54,6 +54,21 @@ export class SalesOrderService {
           await manager.save(orderItem);
         }
       }
+
+      if (data.advances && Array.isArray(data.advances)) {
+        for (const adv of data.advances) {
+          const orderAdv = manager.create(SalesOrderAdvance, {
+            sales_order_id: savedOrder.id,
+            amount: adv.amount,
+            payment_mode: adv.mode || adv.payment_mode,
+            reference_number: adv.reference || adv.reference_number,
+            notes: adv.notes || '',
+            created_by: userId,
+          });
+          await manager.save(orderAdv);
+        }
+      }
+
       return savedOrder;
     });
   }
@@ -68,24 +83,31 @@ export class SalesOrderService {
     return this.orderRepo.save(order);
   }
 
-  async addAdvance(orderId: string, data: { amount: number; payment_mode: string; reference_number?: string; notes?: string }, userId: string) {
+  async addAdvance(orderId: string, advances: { amount: number; payment_mode: string; reference_number?: string; notes?: string }[], userId: string) {
     return AppDataSource.transaction(async (manager) => {
-      const adv = manager.create(SalesOrderAdvance);
-      adv.sales_order_id = orderId;
-      adv.amount = data.amount;
-      adv.payment_mode = data.payment_mode;
-      adv.reference_number = data.reference_number;
-      adv.notes = data.notes;
-      adv.created_by = userId;
-      const savedAdv = await manager.save(adv);
+      let totalAdded = 0;
+      const savedAdvances = [];
+
+      for (const data of advances) {
+        const adv = manager.create(SalesOrderAdvance);
+        adv.sales_order_id = orderId;
+        adv.amount = data.amount;
+        adv.payment_mode = (data as any).mode || data.payment_mode;
+        adv.reference_number = (data as any).reference || data.reference_number;
+        adv.notes = data.notes;
+        adv.created_by = userId;
+        const saved = await manager.save(adv);
+        savedAdvances.push(saved);
+        totalAdded += Number(data.amount);
+      }
 
       const order = await manager.findOne(SalesOrder, { where: { id: orderId } });
       if (order) {
-        order.advance_received = Number(order.advance_received) + data.amount;
-        order.balance_amount = Number(order.balance_amount) - data.amount;
+        order.advance_received = Number(order.advance_received) + totalAdded;
+        order.balance_amount = Number(order.balance_amount) - totalAdded;
         await manager.save(order);
       }
-      return savedAdv;
+      return savedAdvances;
     });
   }
 

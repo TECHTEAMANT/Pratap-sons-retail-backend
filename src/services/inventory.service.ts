@@ -17,6 +17,7 @@ export class InventoryService {
     barcode_alias_8digit?: string;
     sort?: string; order?: string;
     gte_created_at?: string; lte_created_at?: string;
+    min_quantity?: string | number;
   }) {
     const page = filters.page || 1;
     const limit = filters.limit || 50; 
@@ -53,6 +54,10 @@ export class InventoryService {
     }
     if (filters.lte_created_at) {
       qb.andWhere('bb.created_at <= :lteCreatedAt', { lteCreatedAt: filters.lte_created_at });
+    }
+
+    if (filters.min_quantity !== undefined) {
+      qb.andWhere('bb.available_quantity >= :minQty', { minQty: Number(filters.min_quantity) });
     }
 
     // Specific barcode search from BarcodeManagement .ilike() shim call

@@ -40,3 +40,4 @@ export { PurchaseOrderSequence } from './PurchaseOrderSequence';
 export { LoyaltyConfig } from './LoyaltyConfig';
 export { LoyaltyHistory, LoyaltyTransactionType } from './LoyaltyHistory';
 export { Voucher } from './Voucher';
+export { CreditCoupon } from './CreditCoupon';
