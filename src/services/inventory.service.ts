@@ -15,6 +15,7 @@ export class InventoryService {
     po_id?: string; design_no?: string; size?: string; color?: string; is_color?: string;
     search_barcode_alias_8digit?: string; search_design_no?: string;
     barcode_alias_8digit?: string;
+    id?: string;
     sort?: string; order?: string;
     gte_created_at?: string; lte_created_at?: string;
     min_quantity?: string | number;
@@ -30,6 +31,13 @@ export class InventoryService {
       .leftJoinAndSelect('bb.color', 'cl')
       .leftJoinAndSelect('bb.vendor', 'vd')
       .leftJoinAndSelect('bb.floor', 'fl');
+
+    if (filters.id) {
+      const ids = filters.id.split(',').filter(Boolean);
+      if (ids.length > 0) {
+        qb.andWhere('bb.id IN (:...ids)', { ids });
+      }
+    }
 
     if (filters.po_id) qb.andWhere('bb.po_id = :po_id', { po_id: filters.po_id });
     if (filters.status) qb.andWhere('bb.status = :status', { status: filters.status });

@@ -112,6 +112,15 @@ export class PurchaseReturnService {
     for (const key of allowed) { if (data[key] !== undefined) (ret as any)[key] = data[key]; }
     return this.repo.save(ret);
   }
+
+  async delete(id: string) {
+    return this.repo.delete({ id });
+  }
+
+  async deleteItems(filters: any) {
+    const repo = AppDataSource.getRepository(PurchaseReturnItem);
+    return repo.delete(filters);
+  }
 }
 
 export const purchaseReturnService = new PurchaseReturnService();

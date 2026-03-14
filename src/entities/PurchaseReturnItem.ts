@@ -40,6 +40,12 @@ export class PurchaseReturnItem {
   @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   cost!: number;
 
+  @Column({ type: 'int', default: 1 })
+  quantity!: number;
+
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
+  discount!: number;
+
   @Column({ type: 'text', nullable: true })
   hsn_code!: string;
 

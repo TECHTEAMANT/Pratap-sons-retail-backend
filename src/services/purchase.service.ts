@@ -1001,6 +1001,15 @@ export class PurchaseService {
       };
     });
   }
+
+  async deleteInvoice(id: string) {
+    const repo = AppDataSource.getRepository(PurchaseInvoice);
+    return repo.delete({ id });
+  }
+
+  async deleteOrder(id: string) {
+    return this.poRepo.delete({ id });
+  }
 }
 
 export const purchaseService = new PurchaseService();

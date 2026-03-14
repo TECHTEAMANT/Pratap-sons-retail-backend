@@ -12,6 +12,20 @@ export class PurchaseReturnController {
   async update(req: Request, res: Response) {
     try { const r = await purchaseReturnService.update(req.params.id, req.body); r ? sendSuccess(res, r, 'Updated') : sendNotFound(res, 'Purchase return'); } catch (e: any) { sendError(res, e.message, 400); }
   }
+
+  async delete(req: Request, res: Response) {
+    try {
+      await purchaseReturnService.delete(req.params.id);
+      sendSuccess(res, null, 'Deleted');
+    } catch (e: any) { sendError(res, e.message); }
+  }
+
+  async deleteItems(req: Request, res: Response) {
+    try {
+      await purchaseReturnService.deleteItems(req.query as any);
+      sendSuccess(res, null, 'Items deleted');
+    } catch (e: any) { sendError(res, e.message); }
+  }
 }
 
 export const purchaseReturnController = new PurchaseReturnController();

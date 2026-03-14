@@ -44,6 +44,20 @@ export class PurchaseController {
       sendSuccess(res, await purchaseService.getItemsByOrderId(req.params.id));
     } catch (e: any) { sendError(res, e.message); }
   }
+
+  async deleteInvoice(req: Request, res: Response) {
+    try {
+      await purchaseService.deleteInvoice(req.params.id);
+      sendSuccess(res, null, 'Invoice deleted');
+    } catch (e: any) { sendError(res, e.message); }
+  }
+
+  async deleteOrder(req: Request, res: Response) {
+    try {
+      await purchaseService.deleteOrder(req.params.id);
+      sendSuccess(res, null, 'Order deleted');
+    } catch (e: any) { sendError(res, e.message); }
+  }
 }
 
 export const purchaseController = new PurchaseController();
