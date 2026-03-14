@@ -42,6 +42,9 @@ export class PurchaseOrderItem {
   @Column({ type: 'text', nullable: true })
   hsn_code: string;
 
+  @Column({ type: 'text', nullable: true })
+  image_url: string;
+
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
 
