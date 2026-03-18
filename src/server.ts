@@ -4,6 +4,7 @@ import { initializeDatabase, closeDatabase } from './config/data-source';
 import app from './app';
 import logger from './utils/logger';
 import { customerService } from './services/customer.service';
+import { loyaltyService } from './services/loyalty.service';
 
 async function startServer() {
   try {
@@ -15,6 +16,9 @@ async function startServer() {
     await initializeDatabase();
     logger.info('TypeORM DataSource initialized ✓ (auto-sync ran)');
     logger.info('PostgreSQL connected ✓');
+
+    // Initialize loyalty config
+    await loyaltyService.initializeLoyaltyConfig();
 
     // Run automatic data repair on startup
     logger.info('Running automatic data repair...');

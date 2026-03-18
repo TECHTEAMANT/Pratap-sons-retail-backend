@@ -108,7 +108,7 @@ export class InventoryService {
     // Build search condition
     const searchParam = filters.search ? `%${filters.search.toLowerCase()}%` : null;
     const searchCond = searchParam
-      ? `AND (LOWER(bb.design_no) LIKE $1 OR LOWER(vd.name) LIKE $1 OR LOWER(vd.vendor_code) LIKE $1 OR LOWER(pg.name) LIKE $1 OR LOWER(cl.name) LIKE $1 OR bb.barcode_alias_8digit LIKE $1)`
+      ? `AND (bb.design_no ILIKE $1 OR vd.name ILIKE $1 OR vd.vendor_code ILIKE $1 OR pg.name ILIKE $1 OR cl.name ILIKE $1 OR bb.barcode_alias_8digit ILIKE $1)`
       : '';
 
     // Count distinct groups for pagination
@@ -143,7 +143,7 @@ export class InventoryService {
         MAX(bb.mrp_markup_percent) AS mrp_markup_percent,
         MAX(bb.hsn_code)           AS hsn_code,
         MAX(bb.description)        AS description,
-        ARRAY_AGG(DISTINCT ARRAY_TO_STRING(bb.photos, ',')) FILTER (WHERE bb.photos IS NOT NULL AND bb.photos <> '{}') AS images,
+        ARRAY_AGG(DISTINCT ARRAY_TO_STRING(bb.photos, ',')) FILTER (WHERE bb.photos IS NOT NULL AND CARDINALITY(bb.photos) > 0) AS images,
         JSON_AGG(
           JSON_BUILD_OBJECT(
             'batch_id',      bb.id,

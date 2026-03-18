@@ -92,6 +92,10 @@ export class TallyService {
       totalRecords: records.length,
     };
   }
+
+  async deleteByType(recordType: string) {
+    return this.repo.delete({ record_type: recordType });
+  }
 }
 
 export const tallyService = new TallyService();

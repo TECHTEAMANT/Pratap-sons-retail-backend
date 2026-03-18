@@ -182,6 +182,34 @@ export class LoyaltyService {
       return count;
     });
   }
+
+  /**
+   * Ensures that a default loyalty configuration exists in the database.
+   * If no active configuration is found, it creates one with default values.
+   */
+  async initializeLoyaltyConfig() {
+    try {
+      const configRepo = AppDataSource.getRepository(LoyaltyConfig);
+      let config = await configRepo.findOne({ where: { active: true } });
+
+      if (!config) {
+        logger.info('No active loyalty config found. Creating default...');
+        config = configRepo.create({
+          points_per_rupee: 0.01, // 1%
+          redemption_value_per_point: 1, // 1 point = 1 rupee
+          min_invoice_value: 0,
+          max_redeem_percentage: 100,
+          birthday_points: 250,
+          anniversary_points: 250,
+          active: true
+        });
+        await configRepo.save(config);
+        logger.info('Default loyalty config created successfully.');
+      }
+    } catch (err) {
+      logger.error('Error initializing loyalty config:', err);
+    }
+  }
 }
 
 export const loyaltyService = new LoyaltyService();

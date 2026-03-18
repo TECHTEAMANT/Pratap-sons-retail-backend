@@ -6,7 +6,7 @@ import { CreditNote } from '../entities/CreditNote';
 import { CreditNoteApplication } from '../entities/CreditNoteApplication';
 import { BarcodeBatch } from '../entities/BarcodeBatch';
 import { Customer, LoyaltyConfig, LoyaltyHistory, LoyaltyTransactionType } from '../entities';
-import { ILike } from 'typeorm';
+import { ILike, In } from 'typeorm';
 
 export class SalesReturnService {
   private returnRepo = AppDataSource.getRepository(SalesReturn);
@@ -218,7 +218,12 @@ export class SalesReturnService {
       .leftJoinAndSelect('product_item.product_group', 'product_group');
 
     if (filters.return_id) {
-      qb.andWhere('sri.return_id = :returnId', { returnId: filters.return_id });
+      const ids = String(filters.return_id).split(',');
+      if (ids.length > 1) {
+        qb.andWhere('sri.return_id IN (:...returnIds)', { returnIds: ids });
+      } else {
+        qb.andWhere('sri.return_id = :returnId', { returnId: ids[0] });
+      }
     }
 
     qb.orderBy('sri.created_at', 'ASC');
