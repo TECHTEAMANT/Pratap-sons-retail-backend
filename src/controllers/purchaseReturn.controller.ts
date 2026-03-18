@@ -13,6 +13,13 @@ export class PurchaseReturnController {
     try { const r = await purchaseReturnService.update(req.params.id, req.body); r ? sendSuccess(res, r, 'Updated') : sendNotFound(res, 'Purchase return'); } catch (e: any) { sendError(res, e.message, 400); }
   }
 
+  async bulkUpdate(req: AuthenticatedRequest, res: Response) {
+    try {
+      const result = await purchaseReturnService.bulkUpdateReturn(req.params.id, req.body, req.user!.id);
+      sendSuccess(res, result, 'Purchase return updated successfully');
+    } catch (e: any) { sendError(res, e.message, 400); }
+  }
+
   async delete(req: Request, res: Response) {
     try {
       await purchaseReturnService.delete(req.params.id);
