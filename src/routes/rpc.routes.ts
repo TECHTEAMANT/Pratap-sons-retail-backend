@@ -89,6 +89,19 @@ router.post('/:functionName', authenticate, async (req: AuthenticatedRequest, re
       return sendError(res, 'Could not generate a unique barcode number after 100000 attempts');
     }
 
+    if (functionName === 'generate_payment_receipt_number') {
+      const year = new Date().getFullYear();
+      const prefix = `RCP${year}`;
+      const records = await AppDataSource.query(`SELECT receipt_number FROM payment_receipts WHERE receipt_number LIKE $1 ORDER BY receipt_number DESC LIMIT 1`, [`${prefix}%`]);
+      let nextNum = 1;
+      if (records.length > 0 && records[0].receipt_number) {
+        const lastPortion = records[0].receipt_number.substring(prefix.length);
+        const parsed = parseInt(lastPortion, 10);
+        if (!isNaN(parsed)) nextNum = parsed + 1;
+      }
+      return sendSuccess(res, `${prefix}${nextNum.toString().padStart(6, '0')}`);
+    }
+
     if (functionName === 'generate_invoice_transaction') {
       const p_invoice_data = args.p_invoice_data;
       const p_items = args.p_items;
