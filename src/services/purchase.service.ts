@@ -164,6 +164,7 @@ export class PurchaseService {
     status?: string;
     search?: string;
     search_po_number?: string;
+    po_number?: string;
     neq_status?: string;
     sort?: string;
     order?: string;
@@ -188,6 +189,9 @@ export class PurchaseService {
     }
     if (filters.search) {
       qb.andWhere('(po.po_number ILIKE :s OR v.name ILIKE :s)', { s: `%${filters.search}%` });
+    }
+    if (filters.po_number) {
+      qb.andWhere('po.po_number = :exactPoNum', { exactPoNum: filters.po_number });
     }
 
     if (filters.gte_order_date) {
