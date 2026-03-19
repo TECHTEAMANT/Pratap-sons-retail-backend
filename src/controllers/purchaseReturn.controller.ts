@@ -12,6 +12,12 @@ export class PurchaseReturnController {
   async update(req: Request, res: Response) {
     try { const r = await purchaseReturnService.update(req.params.id, req.body); r ? sendSuccess(res, r, 'Updated') : sendNotFound(res, 'Purchase return'); } catch (e: any) { sendError(res, e.message, 400); }
   }
+  async bulkCreate(req: AuthenticatedRequest, res: Response) {
+    try {
+      const result = await purchaseReturnService.bulkCreateReturn(req.body, req.user!.id);
+      sendCreated(res, result, 'Purchase return created successfully');
+    } catch (e: any) { sendError(res, e.message, 400); }
+  }
 
   async bulkUpdate(req: AuthenticatedRequest, res: Response) {
     try {

@@ -125,6 +125,117 @@ export class PurchaseReturnService {
   }
 
   /**
+   * Bulk create a purchase return:
+   * - Creates return header
+   * - Dedupes items and updates inventory
+   * - Inserts into purchase_return_items
+   * - Inserts into defective_stock
+   */
+  async bulkCreateReturn(payload: any, userId: string) {
+    return AppDataSource.transaction(async (manager) => {
+      // 1. Generate return ID
+      let retNum = payload.return_number;
+      if (!retNum) {
+        const year = new Date().getFullYear();
+        const prefix = `PRET${year}`;
+        const records = await manager.query(`SELECT return_number FROM purchase_returns WHERE return_number LIKE $1 ORDER BY return_number DESC LIMIT 1`, [`${prefix}%`]);
+        let nextNum = 1;
+        if (records.length > 0 && records[0].return_number) {
+          const lastPortion = records[0].return_number.substring(prefix.length);
+          const parsed = parseInt(lastPortion, 10);
+          if (!isNaN(parsed)) nextNum = parsed + 1;
+        }
+        retNum = `${prefix}${nextNum.toString().padStart(6, '0')}`;
+      }
+
+      const newItems = payload.items || [];
+
+      // 2. Insert header
+      const [insertResult] = await manager.query(
+        `INSERT INTO purchase_returns (
+          return_number, vendor_id, original_po_id, return_date, 
+          total_items, total_amount, ledger_discount, ledger_freight, ledger_freight_gst_rate,
+          gst_type, cgst_amount, sgst_amount, igst_amount, total_return_amount, 
+          reason, notes, status, created_by, created_at, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW(), NOW()) RETURNING id`,
+        [
+          retNum, payload.vendor_id, payload.original_po_id || null, payload.return_date,
+          payload.total_items || 0, payload.total_amount || 0,
+          payload.ledger_discount || null, payload.ledger_freight || null, payload.ledger_freight_gst_rate || null,
+          payload.gst_type || null, payload.cgst_amount || 0, payload.sgst_amount || 0, payload.igst_amount || 0,
+          payload.total_return_amount || 0, payload.reason || null, payload.notes || null,
+          payload.status || 'sent', userId
+        ]
+      );
+      
+      const returnId = insertResult.id;
+
+      // 3. Process items
+      for (const item of newItems) {
+        const itemId = item.item_id;
+        const barcodeId = item.barcode_id;
+        const qty = Number(item.quantity) || 1;
+
+        // Fetch current barcode batch
+        const [batch] = await manager.query(
+          `SELECT id, available_quantity, total_quantity, status FROM barcode_batches WHERE id = $1`,
+          [itemId]
+        );
+        
+        if (!batch) {
+          throw new Error(`Inventory record not found for Item ID: ${itemId}`);
+        }
+
+        const currentAvail = Number(batch.available_quantity) || 0;
+        const currentTotal = Number(batch.total_quantity) || 0;
+
+        if (currentAvail < qty) {
+          throw new Error(`Item ${barcodeId} is no longer available in inventory. Current Stock: ${currentAvail}, Requested: ${qty}`);
+        }
+
+        const newAvail = Math.max(0, currentAvail - qty);
+        const newTotal = Math.max(0, currentTotal - qty);
+        const newStatus = (newAvail === 0 && newTotal === 0) ? 'returned' : 'Available';
+
+        // Update barcode_batches
+        await manager.query(
+          `UPDATE barcode_batches SET available_quantity = $1, total_quantity = $2, status = $3, updated_at = NOW() WHERE id = $4`,
+          [newAvail, newTotal, newStatus, itemId]
+        );
+
+        // Insert defective stock
+        await manager.query(
+          `INSERT INTO defective_stock (barcode_batch_id, barcode_alias, quantity, reason, notes, reported_by)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [
+            itemId, barcodeId, -qty,
+            item.reason || payload.reason || 'Returned to vendor',
+            `Purchase return ${retNum}`,
+            userId || null,
+          ]
+        );
+
+        // Insert purchase return items
+        await manager.query(
+          `INSERT INTO purchase_return_items (return_id, item_id, barcode_id, reason, condition, cost, discount, quantity, hsn_code)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+          [
+            returnId, itemId, barcodeId,
+            item.reason || null,
+            item.condition || null,
+            item.cost || 0,
+            item.discount || 0,
+            qty,
+            item.hsn_code || null,
+          ]
+        );
+      }
+
+      return { id: returnId, return_number: retNum };
+    });
+  }
+
+  /**
    * Bulk update a purchase return:
    * - Reverses inventory effect of old items
    * - Applies inventory effect of new items

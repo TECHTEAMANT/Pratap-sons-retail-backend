@@ -39,14 +39,69 @@ export class InventoryService {
       }
     }
 
-    if (filters.po_id) qb.andWhere('bb.po_id = :po_id', { po_id: filters.po_id });
-    if (filters.status) qb.andWhere('bb.status = :status', { status: filters.status });
-    if (filters.vendor) qb.andWhere('bb.vendor_id = :vendor', { vendor: filters.vendor });
-    if (filters.product_group) qb.andWhere('bb.product_group_id = :pg', { pg: filters.product_group });
-    if (filters.floor) qb.andWhere('bb.floor_id = :floor', { floor: filters.floor });
+    if (filters.po_id) {
+      const ids = filters.po_id.split(',').filter(Boolean);
+      if (ids.length > 1) {
+        qb.andWhere('bb.po_id IN (:...poIds)', { poIds: ids });
+      } else {
+        qb.andWhere('bb.po_id = :po_id', { po_id: filters.po_id });
+      }
+    }
+    
+    if (filters.status) {
+      const statuses = filters.status.split(',').filter(Boolean);
+      if (statuses.length > 1) {
+        qb.andWhere('bb.status IN (:...statuses)', { statuses });
+      } else {
+        qb.andWhere('bb.status = :status', { status: filters.status });
+      }
+    }
+
+    if (filters.vendor) {
+      const vendorIds = filters.vendor.split(',').filter(Boolean);
+      if (vendorIds.length > 1) {
+        qb.andWhere('bb.vendor_id IN (:...vIds)', { vIds: vendorIds });
+      } else {
+        qb.andWhere('bb.vendor_id = :vendor', { vendor: filters.vendor });
+      }
+    }
+    if (filters.product_group) {
+      const ids = filters.product_group.split(',').filter(Boolean);
+      if (ids.length > 1) {
+        qb.andWhere('bb.product_group_id IN (:...pgIds)', { pgIds: ids });
+      } else {
+        qb.andWhere('bb.product_group_id = :pg', { pg: filters.product_group });
+      }
+    }
+
+    if (filters.floor) {
+      const ids = filters.floor.split(',').filter(Boolean);
+      if (ids.length > 1) {
+        qb.andWhere('bb.floor_id IN (:...flIds)', { flIds: ids });
+      } else {
+        qb.andWhere('bb.floor_id = :floor', { floor: filters.floor });
+      }
+    }
+
     if (filters.design_no) qb.andWhere('bb.design_no = :design_no', { design_no: filters.design_no });
-    if (filters.size) qb.andWhere('bb.size_id = :size', { size: filters.size });
-    if (filters.color) qb.andWhere('bb.color_id = :color', { color: filters.color });
+
+    if (filters.size) {
+      const ids = filters.size.split(',').filter(Boolean);
+      if (ids.length > 1) {
+        qb.andWhere('bb.size_id IN (:...szIds)', { szIds: ids });
+      } else {
+        qb.andWhere('bb.size_id = :size', { size: filters.size });
+      }
+    }
+
+    if (filters.color) {
+      const ids = filters.color.split(',').filter(Boolean);
+      if (ids.length > 1) {
+        qb.andWhere('bb.color_id IN (:...clIds)', { clIds: ids });
+      } else {
+        qb.andWhere('bb.color_id = :color', { color: filters.color });
+      }
+    }
     if (filters.is_color === 'null') qb.andWhere('bb.color_id IS NULL');
     if (filters.barcode_alias_8digit) qb.andWhere('bb.barcode_alias_8digit = :exact_bc', { exact_bc: filters.barcode_alias_8digit });
 
