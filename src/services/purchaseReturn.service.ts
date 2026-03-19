@@ -293,8 +293,8 @@ export class PurchaseReturnService {
 
         // delta > 0: more items returned => reduce available/total
         // delta < 0: fewer items returned => restore available/total
-        const newAvail = Math.max(0, currentAvail - delta);
         const newTotal = Math.max(0, currentTotal - delta);
+        const newAvail = Math.min(newTotal, Math.max(0, currentAvail - delta));
         const newStatus = (newAvail === 0 && newTotal === 0) ? 'returned' : 'active';
 
         await manager.query(

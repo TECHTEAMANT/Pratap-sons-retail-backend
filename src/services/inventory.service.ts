@@ -201,15 +201,19 @@ export class InventoryService {
         ARRAY_AGG(DISTINCT ARRAY_TO_STRING(bb.photos, ',')) FILTER (WHERE bb.photos IS NOT NULL AND CARDINALITY(bb.photos) > 0) AS images,
         JSON_AGG(
           JSON_BUILD_OBJECT(
-            'batch_id',      bb.id,
-            'size_id',       sz.id,
-            'size_name',     COALESCE(sz.name, 'Unknown'),
-            'barcode_8digit',bb.barcode_alias_8digit,
-            'available',     bb.available_quantity,
-            'total',         bb.total_quantity,
-            'floor_name',    COALESCE(fl.name, 'Unassigned'),
-            'floor_id',      COALESCE(fl.id::text, ''),
-            'defective_qty', COALESCE(def_agg.defective_qty, 0)
+            'batch_id',       bb.id,
+            'size_id',        sz.id,
+            'size_name',      COALESCE(sz.name, 'Unknown'),
+            'barcode_8digit', bb.barcode_alias_8digit,
+            'available',      bb.available_quantity,
+            'total',          bb.total_quantity,
+            'floor_name',     COALESCE(fl.name, 'Unassigned'),
+            'floor_id',       COALESCE(fl.id::text, ''),
+            'defective_qty',  COALESCE(def_agg.defective_qty, 0),
+            'cost',           bb.cost_actual,
+            'mrp',            bb.mrp,
+            'invoice_no',     COALESCE(po.po_number, ''),
+            'vendor_invoice', COALESCE(po.invoice_number, '')
           ) ORDER BY sz.sort_order NULLS LAST
         ) AS sizes
       FROM barcode_batches bb
@@ -218,6 +222,7 @@ export class InventoryService {
       LEFT JOIN colors         cl  ON cl.id  = bb.color
       LEFT JOIN sizes          sz  ON sz.id  = bb.size
       LEFT JOIN floors         fl  ON fl.id  = bb.floor
+      LEFT JOIN purchase_orders po ON po.id  = bb.po_id
       LEFT JOIN (
         SELECT barcode_batch_id, barcode_alias, SUM(quantity) AS defective_qty
         FROM   defective_stock
@@ -363,7 +368,9 @@ export class InventoryService {
     if (!batch) return null;
 
     batch.available_quantity += adjustment;
+    // Never allow available to go below 0 or above total
     if (batch.available_quantity < 0) batch.available_quantity = 0;
+    if (batch.available_quantity > batch.total_quantity) batch.available_quantity = batch.total_quantity;
     batch.modified_by = userId;
 
     return this.batchRepo.save(batch);

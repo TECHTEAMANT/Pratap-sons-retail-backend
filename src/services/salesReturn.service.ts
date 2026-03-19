@@ -77,10 +77,13 @@ export class SalesReturnService {
         });
         await manager.save(retItem);
 
-        // Restore inventory
+        // Restore inventory — cap available at total to prevent available > total
         const batch = await manager.findOne(BarcodeBatch, { where: { barcode_alias_8digit: item.barcode_8digit } });
         if (batch) {
-          batch.available_quantity += (item.quantity || 1);
+          batch.available_quantity = Math.min(
+            batch.total_quantity,
+            batch.available_quantity + (item.quantity || 1)
+          );
           await manager.save(batch);
         }
       }
