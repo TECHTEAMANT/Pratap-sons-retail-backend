@@ -66,8 +66,19 @@ export class PurchaseReturnService {
   }
 
   async create(data: any, userId: string) {
-    const count = await this.repo.count();
-    const retNum = `PRET${new Date().getFullYear()}${(count + 1).toString().padStart(6, '0')}`;
+    let retNum = data.return_number;
+    if (!retNum) {
+      const year = new Date().getFullYear();
+      const prefix = `PRET${year}`;
+      const records = await this.repo.query(`SELECT return_number FROM purchase_returns WHERE return_number LIKE $1 ORDER BY return_number DESC LIMIT 1`, [`${prefix}%`]);
+      let nextNum = 1;
+      if (records.length > 0 && records[0].return_number) {
+        const lastPortion = records[0].return_number.substring(prefix.length);
+        const parsed = parseInt(lastPortion, 10);
+        if (!isNaN(parsed)) nextNum = parsed + 1;
+      }
+      retNum = `${prefix}${nextNum.toString().padStart(6, '0')}`;
+    }
     const ret = this.repo.create({
       return_number: retNum,
       vendor_id: data.vendor_id,

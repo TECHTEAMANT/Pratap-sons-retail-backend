@@ -31,8 +31,19 @@ export class SalesReturnService {
 
   async create(data: any, userId: string) {
     return AppDataSource.transaction(async (manager) => {
-      const count = await manager.count(SalesReturn);
-      const retNum = `RET${new Date().getFullYear()}${(count + 1).toString().padStart(6, '0')}`;
+      let retNum = data.return_number;
+      if (!retNum) {
+        const year = new Date().getFullYear();
+        const prefix = `SRET${year}`;
+        const records = await manager.query(`SELECT return_number FROM sales_returns WHERE return_number LIKE $1 ORDER BY return_number DESC LIMIT 1`, [`${prefix}%`]);
+        let nextNum = 1;
+        if (records.length > 0 && records[0].return_number) {
+          const lastPortion = records[0].return_number.substring(prefix.length);
+          const parsed = parseInt(lastPortion, 10);
+          if (!isNaN(parsed)) nextNum = parsed + 1;
+        }
+        retNum = `${prefix}${nextNum.toString().padStart(6, '0')}`;
+      }
 
       const ret = manager.create(SalesReturn, {
         return_number: retNum,
@@ -75,7 +86,19 @@ export class SalesReturnService {
       }
 
       // Create credit note
-      const cnNum = `CN${new Date().getFullYear()}${Math.floor(100000 + Math.random() * 900000)}`;
+      let cnNum = data.credit_note_number;
+      if (!cnNum) {
+        const year = new Date().getFullYear();
+        const prefix = `CN${year}`;
+        const records = await manager.query(`SELECT credit_note_number FROM credit_notes WHERE credit_note_number LIKE $1 ORDER BY credit_note_number DESC LIMIT 1`, [`${prefix}%`]);
+        let nextNum = 1;
+        if (records.length > 0 && records[0].credit_note_number) {
+          const lastPortion = records[0].credit_note_number.substring(prefix.length);
+          const parsed = parseInt(lastPortion, 10);
+          if (!isNaN(parsed)) nextNum = parsed + 1;
+        }
+        cnNum = `${prefix}${nextNum.toString().padStart(6, '0')}`;
+      }
       const cn = manager.create(CreditNote, {
         credit_note_number: cnNum,
         credit_date: data.return_date,

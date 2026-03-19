@@ -10,19 +10,6 @@ router.post('/:functionName', authenticate, async (req: AuthenticatedRequest, re
   const args = req.body;
 
   try {
-    if (functionName === 'generate_sales_order_number') {
-      const year = new Date().getFullYear();
-      const prefix = `ORD${year}`;
-      const records = await AppDataSource.query(`SELECT order_number FROM sales_orders WHERE order_number LIKE $1 ORDER BY order_number DESC LIMIT 1`, [`${prefix}%`]);
-      let nextNum = 1;
-      if (records.length > 0 && records[0].order_number) {
-        const lastPortion = records[0].order_number.substring(prefix.length);
-        const parsed = parseInt(lastPortion, 10);
-        if (!isNaN(parsed)) nextNum = parsed + 1;
-      }
-      return sendSuccess(res, `${prefix}${nextNum.toString().padStart(6, '0')}`);
-    }
-
     if (functionName === 'get_next_po_number') {
       const year = new Date().getFullYear();
       const prefix = `PI${year}`;
@@ -96,6 +83,71 @@ router.post('/:functionName', authenticate, async (req: AuthenticatedRequest, re
       let nextNum = 1;
       if (records.length > 0 && records[0].receipt_number) {
         const lastPortion = records[0].receipt_number.substring(prefix.length);
+        const parsed = parseInt(lastPortion, 10);
+        if (!isNaN(parsed)) nextNum = parsed + 1;
+      }
+      return sendSuccess(res, `${prefix}${nextNum.toString().padStart(6, '0')}`);
+    }
+
+    if (functionName === 'generate_purchase_return_number') {
+      const year = new Date().getFullYear();
+      const prefix = `PRET${year}`;
+      const records = await AppDataSource.query(`SELECT return_number FROM purchase_returns WHERE return_number LIKE $1 ORDER BY return_number DESC LIMIT 1`, [`${prefix}%`]);
+      let nextNum = 1;
+      if (records.length > 0 && records[0].return_number) {
+        const lastPortion = records[0].return_number.substring(prefix.length);
+        const parsed = parseInt(lastPortion, 10);
+        if (!isNaN(parsed)) nextNum = parsed + 1;
+      }
+      return sendSuccess(res, `${prefix}${nextNum.toString().padStart(6, '0')}`);
+    }
+
+    if (functionName === 'generate_sales_return_number') {
+      const year = new Date().getFullYear();
+      const prefix = `SRET${year}`;
+      const records = await AppDataSource.query(`SELECT return_number FROM sales_returns WHERE return_number LIKE $1 ORDER BY return_number DESC LIMIT 1`, [`${prefix}%`]);
+      let nextNum = 1;
+      if (records.length > 0 && records[0].return_number) {
+        const lastPortion = records[0].return_number.substring(prefix.length);
+        const parsed = parseInt(lastPortion, 10);
+        if (!isNaN(parsed)) nextNum = parsed + 1;
+      }
+      return sendSuccess(res, `${prefix}${nextNum.toString().padStart(6, '0')}`);
+    }
+
+    if (functionName === 'generate_credit_note_number') {
+      const year = new Date().getFullYear();
+      const prefix = `CN${year}`;
+      const records = await AppDataSource.query(`SELECT credit_note_number FROM credit_notes WHERE credit_note_number LIKE $1 ORDER BY credit_note_number DESC LIMIT 1`, [`${prefix}%`]);
+      let nextNum = 1;
+      if (records.length > 0 && records[0].credit_note_number) {
+        const lastPortion = records[0].credit_note_number.substring(prefix.length);
+        const parsed = parseInt(lastPortion, 10);
+        if (!isNaN(parsed)) nextNum = parsed + 1;
+      }
+      return sendSuccess(res, `${prefix}${nextNum.toString().padStart(6, '0')}`);
+    }
+
+    if (functionName === 'generate_sales_invoice_number') {
+      const year = new Date().getFullYear();
+      const prefix = `INV${year}`;
+      const records = await AppDataSource.query(`SELECT invoice_number FROM sales_invoices WHERE invoice_number LIKE $1 ORDER BY invoice_number DESC LIMIT 1`, [`${prefix}%`]);
+      let nextNum = 1;
+      if (records.length > 0 && records[0].invoice_number) {
+        const lastPortion = records[0].invoice_number.substring(prefix.length);
+        const parsed = parseInt(lastPortion, 10);
+        if (!isNaN(parsed)) nextNum = parsed + 1;
+      }
+      return sendSuccess(res, `${prefix}${nextNum.toString().padStart(6, '0')}`);
+    }
+
+    if (functionName === 'generate_sales_order_number') {
+      const year = new Date().getFullYear();
+      const prefix = `ORD${year}`;
+      const records = await AppDataSource.query(`SELECT order_number FROM sales_orders WHERE order_number LIKE $1 ORDER BY order_number DESC LIMIT 1`, [`${prefix}%`]);
+      let nextNum = 1;
+      if (records.length > 0 && records[0].order_number) {
+        const lastPortion = records[0].order_number.substring(prefix.length);
         const parsed = parseInt(lastPortion, 10);
         if (!isNaN(parsed)) nextNum = parsed + 1;
       }

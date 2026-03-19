@@ -77,8 +77,19 @@ export class SalesService {
   async createInvoice(data: any, userId: string) {
     return AppDataSource.transaction(async (manager) => {
       // Generate invoice number
-      const count = await manager.count(SalesInvoice);
-      const invoiceNumber = `INV${new Date().getFullYear()}${(count + 1).toString().padStart(6, '0')}`;
+      let invoiceNumber = data.invoice_number;
+      if (!invoiceNumber) {
+        const year = new Date().getFullYear();
+        const prefix = `INV${year}`;
+        const records = await manager.query(`SELECT invoice_number FROM sales_invoices WHERE invoice_number LIKE $1 ORDER BY invoice_number DESC LIMIT 1`, [`${prefix}%`]);
+        let nextNum = 1;
+        if (records.length > 0 && records[0].invoice_number) {
+          const lastPortion = records[0].invoice_number.substring(prefix.length);
+          const parsed = parseInt(lastPortion, 10);
+          if (!isNaN(parsed)) nextNum = parsed + 1;
+        }
+        invoiceNumber = `${prefix}${nextNum.toString().padStart(6, '0')}`;
+      }
 
       // Create invoice
       const invoice = manager.create(SalesInvoice, {

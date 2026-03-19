@@ -51,8 +51,19 @@ export class BookingService {
   }
 
   async create(data: any, userId: string) {
-    const count = await this.repo.count();
-    const bkNum = `BK${new Date().getFullYear()}${(count + 1).toString().padStart(6, '0')}`;
+    let bkNum = data.booking_number;
+    if (!bkNum) {
+      const year = new Date().getFullYear();
+      const prefix = `BK${year}`;
+      const records = await this.repo.query(`SELECT booking_number FROM e_bookings WHERE booking_number LIKE $1 ORDER BY booking_number DESC LIMIT 1`, [`${prefix}%`]);
+      let nextNum = 1;
+      if (records.length > 0 && records[0].booking_number) {
+        const lastPortion = records[0].booking_number.substring(prefix.length);
+        const parsed = parseInt(lastPortion, 10);
+        if (!isNaN(parsed)) nextNum = parsed + 1;
+      }
+      bkNum = `${prefix}${nextNum.toString().padStart(6, '0')}`;
+    }
     
     const booking = this.repo.create({
       booking_number: data.booking_number || bkNum,

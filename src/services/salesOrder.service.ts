@@ -23,8 +23,20 @@ export class SalesOrderService {
 
   async create(data: any, userId: string) {
     return AppDataSource.transaction(async (manager) => {
-      const count = await manager.count(SalesOrder);
-      const orderNum = `ORD${new Date().getFullYear()}${(count + 1).toString().padStart(6, '0')}`;
+      // Generate order number
+      let orderNum = data.order_number;
+      if (!orderNum) {
+        const year = new Date().getFullYear();
+        const prefix = `ORD${year}`;
+        const records = await manager.query(`SELECT order_number FROM sales_orders WHERE order_number LIKE $1 ORDER BY order_number DESC LIMIT 1`, [`${prefix}%`]);
+        let nextNum = 1;
+        if (records.length > 0 && records[0].order_number) {
+          const lastPortion = records[0].order_number.substring(prefix.length);
+          const parsed = parseInt(lastPortion, 10);
+          if (!isNaN(parsed)) nextNum = parsed + 1;
+        }
+        orderNum = `${prefix}${nextNum.toString().padStart(6, '0')}`;
+      }
 
       const order = manager.create(SalesOrder, {
         order_number: orderNum,
