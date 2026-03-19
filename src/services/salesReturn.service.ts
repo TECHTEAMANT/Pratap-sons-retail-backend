@@ -7,6 +7,7 @@ import { CreditNoteApplication } from '../entities/CreditNoteApplication';
 import { BarcodeBatch } from '../entities/BarcodeBatch';
 import { Customer, LoyaltyConfig, LoyaltyHistory, LoyaltyTransactionType } from '../entities';
 import { ILike, In } from 'typeorm';
+import { creditCouponService } from './creditCoupon.service';
 
 export class SalesReturnService {
   private returnRepo = AppDataSource.getRepository(SalesReturn);
@@ -158,7 +159,6 @@ export class SalesReturnService {
           await manager.save(SalesInvoice, invoice);
 
           if (refundAmount > 0) {
-            const { creditCouponService } = require('./creditCoupon.service');
             const coupon = await creditCouponService.generate({
               amount: refundAmount,
               customer_mobile: data.customer_mobile,

@@ -47,7 +47,9 @@ export class SalesOrder {
   @UpdateDateColumn({ type: 'timestamptz' })
   updated_at: Date;
 
-  // Relations
+  @Column({ type: 'uuid', nullable: true })
+  salesman_id: string;
+
   @OneToMany(() => SalesOrderItem, item => item.salesOrder, { cascade: true })
   items: SalesOrderItem[];
 
@@ -57,4 +59,8 @@ export class SalesOrder {
   @ManyToOne(() => Customer, { nullable: true })
   @JoinColumn({ name: 'customer_id' })
   customer: Customer;
+
+  @ManyToOne('Salesman', { nullable: true })
+  @JoinColumn({ name: 'salesman_id' })
+  salesman: any;
 }

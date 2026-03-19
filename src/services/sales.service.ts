@@ -8,6 +8,7 @@ import { Voucher } from '../entities/Voucher';
 import { voucherService } from './voucher.service';
 import { ILike } from 'typeorm';
 import { LoyaltyConfig, LoyaltyHistory, LoyaltyTransactionType } from './../entities';
+import { creditCouponService } from './creditCoupon.service';
 import logger from '../utils/logger';
 
 export class SalesService {
@@ -240,7 +241,6 @@ export class SalesService {
 
       // Redeem credit coupon if applicable
       if (data.coupon_no) {
-        const { creditCouponService } = require('./creditCoupon.service');
         await creditCouponService.redeem(data.coupon_no, savedInvoice.id, manager);
       }
 

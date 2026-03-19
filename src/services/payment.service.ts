@@ -1,5 +1,6 @@
 import { AppDataSource } from '../config/data-source';
 import { PaymentReceipt } from '../entities/PaymentReceipt';
+import { PaymentReceiptItem } from '../entities/PaymentReceiptItem';
 import { SalesInvoice } from '../entities/SalesInvoice';
 
 export class PaymentService {
@@ -25,13 +26,51 @@ export class PaymentService {
 
   async create(data: any, userId: string) {
     return AppDataSource.transaction(async (manager) => {
-      // payment_receipts insert will be handled by TypeORM or manual save
-      // Triggers handle the invoice updates once payment_receipt_items are inserted
+      // 1. Create the receipt head
       const receipt = manager.create(PaymentReceipt, {
-        ...data,
+        receipt_number: data.receipt_number,
+        receipt_date: data.receipt_date,
+        customer_mobile: data.customer_mobile,
+        customer_name: data.customer_name,
+        amount_received: data.amount_received,
+        payment_mode: data.payment_mode,
+        payment_details: data.payment_details,
+        reference_number: data.reference_number,
+        notes: data.notes,
         created_by: userId,
       });
-      return await manager.save(receipt);
+      const savedReceipt = await manager.save(receipt);
+
+      // 2. Handle items and update invoice balances
+      if (data.items && Array.isArray(data.items)) {
+        for (const itemData of data.items) {
+          // Create receipt item
+          const item = manager.create(PaymentReceiptItem, {
+            receipt_id: savedReceipt.id,
+            invoice_id: itemData.invoice_id,
+            amount_paid: itemData.amount_paid,
+          });
+          await manager.save(item);
+
+          // Update invoice balance
+          const invoice = await manager.findOne(SalesInvoice, { where: { id: itemData.invoice_id } });
+          if (invoice) {
+            invoice.amount_paid = Number(invoice.amount_paid || 0) + Number(itemData.amount_paid);
+            invoice.amount_pending = Math.max(0, Number(invoice.net_payable) - Number(invoice.amount_paid));
+            
+            if (invoice.amount_pending <= 0) {
+              invoice.payment_status = 'paid';
+            } else if (invoice.amount_paid > 0) {
+              invoice.payment_status = 'partial';
+            } else {
+              invoice.payment_status = 'pending';
+            }
+            await manager.save(invoice);
+          }
+        }
+      }
+
+      return savedReceipt;
     });
   }
 

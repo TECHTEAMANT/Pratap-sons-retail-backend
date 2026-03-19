@@ -23,6 +23,7 @@ import defectiveStockRoutes from './defectiveStock.routes';
 import rpcRoutes from './rpc.routes';
 import storageRoutes from './storage.routes';
 import salesmanRoutes from './salesman.routes';
+import creditCouponRoutes from './creditCoupon.routes';
 
 const router = Router();
 
@@ -40,6 +41,8 @@ router.use('/customers', customerRoutes);
 router.use('/bookings', bookingRoutes);
 router.use('/e-bookings', bookingRoutes);
 router.use('/payments', paymentRoutes);
+router.use('/payment-receipts', paymentRoutes);
+router.use('/payment-receipt-items', paymentRoutes);
 router.use('/masters', masterRoutes);
 router.use('/reports', reportRoutes);
 router.use('/discounts', discountRoutes);
@@ -51,5 +54,6 @@ router.use('/defective-stock', defectiveStockRoutes);
 router.use('/rpc', rpcRoutes);
 router.use('/storage', storageRoutes);
 router.use('/salesmen', salesmanRoutes);
+router.use('/credit-coupons', creditCouponRoutes);
 
 export default router;

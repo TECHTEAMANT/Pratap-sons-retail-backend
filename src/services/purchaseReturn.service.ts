@@ -223,7 +223,13 @@ export class PurchaseReturnService {
 
       // 9. Compute totals
       const totalItems = newItems.reduce((sum: number, i: any) => sum + (Number(i.quantity) || 1), 0);
-      const totalAmount = newItems.reduce((sum: number, i: any) => sum + (Number(i.cost) * (Number(i.quantity) || 1)), 0);
+      const totalAmount = newItems.reduce((sum: number, i: any) => {
+        const qty = Number(i.quantity) || 1;
+        const perItemCost = Number(i.cost) || 0;
+        const discountPercent = Number(i.discount) || 0;
+        const absoluteDiscount = (perItemCost * discountPercent) / 100;
+        return sum + (perItemCost * qty) - (absoluteDiscount * qty);
+      }, 0);
 
       const ledgerDiscount = Number(payload.ledger_discount) || 0;
       const ledgerFreight = Number(payload.ledger_freight) || 0;
