@@ -100,17 +100,43 @@ export class PurchaseReturnService {
   }
 
   async createItem(data: any) {
-    const itemRepo = AppDataSource.getRepository(PurchaseReturnItem);
-    const item = itemRepo.create({
-      return_id: data.return_id,
-      item_id: data.item_id,
-      barcode_id: data.barcode_id,
-      reason: data.reason || null,
-      condition: data.condition || null,
-      cost: data.cost || 0,
-      hsn_code: data.hsn_code || null,
+    return AppDataSource.transaction(async (manager) => {
+      const itemRepo = manager.getRepository(PurchaseReturnItem);
+      
+      const itemId = data.item_id;
+      const qty = Number(data.quantity) || 1;
+
+      // Atomic update of available_quantity only
+      // Preserve total_quantity to reflect original received count
+      const updateResult = await manager.query(
+        `UPDATE barcode_batches 
+         SET available_quantity = available_quantity - $1, 
+             status = 'active',
+             updated_at = NOW() 
+         WHERE id = $2 AND available_quantity >= $1
+         RETURNING id, available_quantity, total_quantity`,
+        [qty, itemId]
+      );
+
+      if (updateResult.length === 0) {
+        throw new Error(`Insufficient inventory or record not found for Item ID: ${itemId}`);
+      }
+
+      const item = itemRepo.create({
+        return_id: data.return_id,
+        item_id: itemId,
+        barcode_id: data.barcode_id,
+        reason: data.reason || null,
+        condition: data.condition || null,
+        cost: data.cost || 0,
+        quantity: qty,
+        hsn_code: data.hsn_code || null,
+      });
+
+      const savedItem = await itemRepo.save(item);
+      console.log(`[PURCHASE-RETURN-ITEM] Created item and deducted available inventory for ${itemId} (Qty: ${qty})`);
+      return savedItem;
     });
-    return itemRepo.save(item);
   }
 
   async update(id: string, data: Record<string, any>) {
@@ -170,50 +196,37 @@ export class PurchaseReturnService {
       
       const returnId = insertResult.id;
 
-      // 3. Process items
+      // 3. Process items and update inventory atomically
       for (const item of newItems) {
         const itemId = item.item_id;
         const barcodeId = item.barcode_id;
-        const qty = Number(item.quantity) || 1;
+        const qty = Number(item.quantity) || 0;
 
-        // Fetch current barcode batch
-        const [batch] = await manager.query(
-          `SELECT id, available_quantity, total_quantity, status FROM barcode_batches WHERE id = $1`,
-          [itemId]
+        if (qty <= 0) continue;
+
+        // Atomic update of available_quantity only
+        const updateResult = await manager.query(
+          `UPDATE barcode_batches 
+           SET available_quantity = available_quantity - $1, 
+               status = 'active',
+               updated_at = NOW() 
+           WHERE id = $2 AND available_quantity >= $1
+           RETURNING id, available_quantity, total_quantity, status`,
+          [qty, itemId]
         );
-        
-        if (!batch) {
-          throw new Error(`Inventory record not found for Item ID: ${itemId}`);
+
+        if (updateResult.length === 0) {
+          // Either the item wasn't found or there wasn't enough inventory
+          const [check] = await manager.query(`SELECT available_quantity FROM barcode_batches WHERE id = $1`, [itemId]);
+          if (!check) {
+            throw new Error(`Inventory record not found for Item ID: ${itemId} (Barcode: ${barcodeId})`);
+          } else {
+            throw new Error(`Insufficient inventory for ${barcodeId}. Available: ${check.available_quantity}, Requested: ${qty}`);
+          }
         }
 
-        const currentAvail = Number(batch.available_quantity) || 0;
-        const currentTotal = Number(batch.total_quantity) || 0;
-
-        if (currentAvail < qty) {
-          throw new Error(`Item ${barcodeId} is no longer available in inventory. Current Stock: ${currentAvail}, Requested: ${qty}`);
-        }
-
-        const newAvail = Math.max(0, currentAvail - qty);
-        const newTotal = Math.max(0, currentTotal - qty);
-        const newStatus = (newAvail === 0 && newTotal === 0) ? 'returned' : 'Available';
-
-        // Update barcode_batches
-        await manager.query(
-          `UPDATE barcode_batches SET available_quantity = $1, total_quantity = $2, status = $3, updated_at = NOW() WHERE id = $4`,
-          [newAvail, newTotal, newStatus, itemId]
-        );
-
-        // Insert defective stock
-        await manager.query(
-          `INSERT INTO defective_stock (barcode_batch_id, barcode_alias, quantity, reason, notes, reported_by)
-           VALUES ($1, $2, $3, $4, $5, $6)`,
-          [
-            itemId, barcodeId, -qty,
-            item.reason || payload.reason || 'Returned to vendor',
-            `Purchase return ${retNum}`,
-            userId || null,
-          ]
-        );
+        const updatedBatch = updateResult[0];
+        console.log(`[PURCHASE-RETURN] Updated available inventory for ${barcodeId}: ${updatedBatch.available_quantity}/${updatedBatch.total_quantity}`);
 
         // Insert purchase return items
         await manager.query(
@@ -281,44 +294,19 @@ export class PurchaseReturnService {
 
         if (delta === 0) continue;
 
-        // Fetch current barcode batch
-        const [batch] = await manager.query(
-          `SELECT id, available_quantity, total_quantity, status FROM barcode_batches WHERE id = $1`,
-          [itemId]
-        );
-        if (!batch) continue;
-
-        const currentAvail = Number(batch.available_quantity) || 0;
-        const currentTotal = Number(batch.total_quantity) || 0;
-
-        // delta > 0: more items returned => reduce available/total
-        // delta < 0: fewer items returned => restore available/total
-        const newTotal = Math.max(0, currentTotal - delta);
-        const newAvail = Math.min(newTotal, Math.max(0, currentAvail - delta));
-        const newStatus = (newAvail === 0 && newTotal === 0) ? 'returned' : 'active';
-
-        await manager.query(
-          `UPDATE barcode_batches SET available_quantity = $1, total_quantity = $2, status = $3, updated_at = NOW() WHERE id = $4`,
-          [newAvail, newTotal, newStatus, itemId]
+        // Atomic update of available_quantity only
+        const updateResult = await manager.query(
+          `UPDATE barcode_batches 
+           SET available_quantity = available_quantity - $1, 
+               status = 'active',
+               updated_at = NOW() 
+           WHERE id = $2 AND (available_quantity >= $1 OR $1 < 0)
+           RETURNING id, available_quantity, total_quantity, status`,
+          [delta, itemId]
         );
 
-        // 7. Adjust defective_stock for delta
-        const newItemData = newItems.find((it: any) => it.item_id === itemId);
-        const barcodeId = newItemData?.barcode_id || oldItems.find(it => it.item_id === itemId)?.barcode_id || null;
-
-        if (delta !== 0) {
-          await manager.query(
-            `INSERT INTO defective_stock (barcode_batch_id, barcode_alias, quantity, reason, notes, reported_by)
-             VALUES ($1, $2, $3, $4, $5, $6)`,
-            [
-              itemId,
-              barcodeId,
-              -delta, // negative delta means restoring to stock
-              newItemData?.reason || payload.reason || 'Purchase return edit adjustment',
-              `Edit of purchase return ${existingReturn.return_number}`,
-              userId || null,
-            ]
-          );
+        if (updateResult.length === 0) {
+          const [check] = await manager.query(`SELECT available_quantity, barcode_alias_8digit FROM barcode_batches WHERE id = $1`, [itemId]);
         }
       }
 

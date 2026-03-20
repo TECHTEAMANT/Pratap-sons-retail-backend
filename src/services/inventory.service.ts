@@ -174,7 +174,7 @@ export class InventoryService {
         LEFT JOIN vendors vd ON vd.id = bb.vendor
         LEFT JOIN product_groups pg ON pg.id = bb.product_group
         LEFT JOIN colors cl ON cl.id = bb.color
-        WHERE bb.status = 'active' ${searchCond}
+        WHERE bb.status IN ('active', 'Available', 'returned', 'defective', 'Sold', 'Returned') ${searchCond}
         GROUP BY bb.design_no, bb.vendor, bb.product_group, bb.color
       ) g
     `;
@@ -191,6 +191,7 @@ export class InventoryService {
         cl.name        AS color_name,
         SUM(bb.available_quantity) AS total_available,
         SUM(bb.total_quantity)     AS total_quantity,
+        SUM(COALESCE(ret_agg.returned_qty, 0)) AS total_returned,
         MAX(bb.mrp)                AS mrp,
         MAX(bb.cost_actual)        AS cost,
         MAX(bb.order_number)       AS order_number,
@@ -210,6 +211,7 @@ export class InventoryService {
             'floor_name',     COALESCE(fl.name, 'Unassigned'),
             'floor_id',       COALESCE(fl.id::text, ''),
             'defective_qty',  COALESCE(def_agg.defective_qty, 0),
+            'returned_qty',   COALESCE(ret_agg.returned_qty, 0),
             'cost',           bb.cost_actual,
             'mrp',            bb.mrp,
             'invoice_no',     COALESCE(po.po_number, ''),
@@ -226,13 +228,19 @@ export class InventoryService {
       LEFT JOIN (
         SELECT barcode_batch_id, barcode_alias, SUM(quantity) AS defective_qty
         FROM   defective_stock
+        WHERE  reason != 'Returned to vendor' OR reason IS NULL
         GROUP  BY barcode_batch_id, barcode_alias
       ) AS def_agg ON (
         (def_agg.barcode_batch_id IS NOT NULL AND def_agg.barcode_batch_id = bb.id)
         OR
         (def_agg.barcode_batch_id IS NULL AND def_agg.barcode_alias = bb.barcode_alias_8digit)
       )
-      WHERE bb.status = 'active' ${searchCond}
+      LEFT JOIN (
+        SELECT item_id, SUM(quantity) AS returned_qty
+        FROM   purchase_return_items
+        GROUP  BY item_id
+      ) AS ret_agg ON ret_agg.item_id = bb.id
+      WHERE bb.status IN ('active', 'Available', 'returned', 'defective', 'Sold', 'Returned') ${searchCond}
       GROUP BY bb.design_no, vd.id, vd.name, vd.vendor_code, pg.id, pg.name, cl.id, cl.name
       ORDER BY MAX(bb.created_at) DESC
       LIMIT $${searchParam ? '2' : '1'} OFFSET $${searchParam ? '3' : '2'}
