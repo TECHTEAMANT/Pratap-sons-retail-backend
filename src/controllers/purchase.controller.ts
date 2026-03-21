@@ -23,7 +23,14 @@ export class PurchaseController {
   async getPurchaseItems(req: Request, res: Response) { try { sendSuccess(res, await purchaseService.getPurchaseItems(req.query as any)); } catch (e: any) { sendError(res, e.message); } }
   async createPurchaseItem(req: Request, res: Response) { try { sendCreated(res, await purchaseService.createPurchaseItem(req.body)); } catch (e: any) { sendError(res, e.message, 400); } }
   async deletePurchaseItems(req: Request, res: Response) { try { await purchaseService.deletePurchaseItems(req.query as any); sendSuccess(res, null, 'Deleted'); } catch (e: any) { sendError(res, e.message); } }
+  async deleteOrderItems(req: Request, res: Response) { try { await purchaseService.deleteOrderItems(req.query as any); sendSuccess(res, null, 'Deleted'); } catch (e: any) { sendError(res, e.message); } }
   async createOrderItem(req: Request, res: Response) { try { sendCreated(res, await purchaseService.createOrderItem(req.body)); } catch (e: any) { sendError(res, e.message, 400); } }
+  async getRemainingOrderItems(req: Request, res: Response) {
+    try {
+      const items = await purchaseService.getRemainingOrderItems(req.params.id);
+      sendSuccess(res, items);
+    } catch (e: any) { sendError(res, e.message); }
+  }
 
   async bulkSaveInvoice(req: AuthenticatedRequest, res: Response) {
     try {

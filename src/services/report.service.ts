@@ -114,19 +114,103 @@ export class ReportService {
     };
   }
 
-  async inventoryReport() {
-    // TODO: Implement inventory report
-    return { message: 'Inventory report not implemented yet' };
+  async inventoryReport(filters: { vendorId?: string; floorId?: string } = {}) {
+    const qb = AppDataSource.getRepository(BarcodeBatch)
+      .createQueryBuilder('bb')
+      .leftJoin('bb.product_group', 'pg')
+      .select([
+        'bb.barcode_alias_8digit as barcode',
+        'bb.design_no as design',
+        'bb.hsn_code as hsn_code',
+        'pg.name as "productGroup"',
+        'COALESCE(bb.available_quantity, 0) as "availableQty"',
+        'COALESCE(bb.total_quantity - bb.available_quantity, 0) as "soldQty"',
+        'COALESCE(bb.cost_actual, 0) as cost',
+        'COALESCE(bb.mrp, 0) as mrp',
+        'COALESCE(bb.available_quantity * bb.cost_actual, 0) as "inventoryValue"',
+        'COALESCE(bb.available_quantity * (bb.mrp - bb.cost_actual), 0) as "potentialProfit"',
+        'COALESCE((bb.total_quantity - bb.available_quantity) * (bb.mrp - bb.cost_actual), 0) as "soldProfit"'
+      ]);
+
+    qb.where('bb.status IN (:...statuses)', { statuses: ['active', 'Available', 'defective', 'Sold', 'Returned'] });
+
+    if (filters.vendorId) {
+      qb.andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
+    }
+    if (filters.floorId) {
+      qb.andWhere('bb.floor = :floorId', { floorId: filters.floorId });
+    }
+
+    qb.orderBy('bb.design_no', 'ASC');
+
+    const results = await qb.getRawMany();
+    return results.map(r => ({
+      ...r,
+      availableQty: parseFloat(r.availableQty),
+      soldQty: parseFloat(r.soldQty),
+      cost: parseFloat(r.cost),
+      mrp: parseFloat(r.mrp),
+      inventoryValue: parseFloat(r.inventoryValue),
+      potentialProfit: parseFloat(r.potentialProfit),
+      soldProfit: parseFloat(r.soldProfit)
+    }));
   }
 
   async salesmanReport(filters: any) {
-    // TODO: Implement salesman report
-    return { message: 'Salesman report not implemented yet' };
+    const startDate = filters.start_date || filters.startDate;
+    const endDate = filters.end_date || filters.endDate;
+    return this.salesmanPerformance(startDate, endDate);
   }
 
-  async customerReport() {
-    // TODO: Implement customer report
-    return { message: 'Customer report not implemented yet' };
+  async customerReport(limit: number = 100) {
+    const qb = AppDataSource.getRepository(SalesInvoice)
+      .createQueryBuilder('si')
+      .select([
+        'si.customer_mobile as customer_mobile',
+        'si.customer_name as customer_name',
+        'COUNT(*) as total_invoices',
+        'COALESCE(SUM(si.net_payable), 0) as total_spent',
+        'MIN(si.invoice_date) as first_purchase',
+        'MAX(si.invoice_date) as last_purchase',
+      ])
+      .where('si.customer_mobile IS NOT NULL')
+      .groupBy('si.customer_mobile')
+      .addGroupBy('si.customer_name')
+      .orderBy('total_spent', 'DESC')
+      .limit(limit);
+
+    const results = await qb.getRawMany();
+    return results.map(r => ({
+      ...r,
+      total_invoices: parseInt(r.total_invoices),
+      total_spent: parseFloat(r.total_spent)
+    }));
+  }
+
+  async floorwiseSalesReport(filters: { startDate: string, endDate: string }) {
+    const qb = AppDataSource.getRepository(SalesInvoice)
+      .createQueryBuilder('si')
+      .leftJoin('si.floor', 'f')
+      .select([
+        'COALESCE(f.name, \'Unknown\') as floor',
+        'COUNT(*) as invoiceCount',
+        'COALESCE(SUM(si.net_payable), 0) as totalSales',
+        'COALESCE(SUM(CAST(si.total_discount AS NUMERIC) + CAST(si.voucher_discount AS NUMERIC)), 0) as totalDiscount'
+      ])
+      .where('si.invoice_date >= :start AND si.invoice_date <= :end', { 
+        start: `${filters.startDate}T00:00:00.000Z`, 
+        end: `${filters.endDate}T23:59:59.999Z` 
+      })
+      .groupBy('f.name')
+      .orderBy('totalSales', 'DESC');
+
+    const results = await qb.getRawMany();
+    return results.map(r => ({
+      ...r,
+      invoiceCount: parseInt(r.invoiceCount),
+      totalSales: parseFloat(r.totalSales),
+      totalDiscount: parseFloat(r.totalDiscount)
+    }));
   }
 
   async purchaseReport(filters: { startDate: string, endDate: string, vendorId?: string }) {
@@ -254,6 +338,147 @@ export class ReportService {
     }
 
     return Array.from(performanceMap.values()).sort((a, b) => b.net_sales - a.net_sales);
+  }
+ 
+  async profitabilityReport(filters: { startDate: string, endDate: string }) {
+    const qb = AppDataSource.getRepository(SalesInvoiceItem)
+      .createQueryBuilder('sii')
+      .innerJoin('sii.invoice', 'si')
+      .leftJoin(BarcodeBatch, 'bb', 'bb.barcode_alias_8digit = sii.barcode_8digit')
+      .select([
+        'si.invoice_number as invoice_number',
+        'si.invoice_date as invoice_date',
+        'si.customer_name as customer_name',
+        'si.id as invoice_id',
+        'sii.barcode_8digit as barcode',
+        'sii.design_no as design_no',
+        'sii.product_description as product_description',
+        'sii.quantity as quantity',
+        'COALESCE(bb.cost_actual, 0) as cost',
+        'sii.mrp as mrp',
+        'sii.discount as discount',
+        'sii.selling_price as revenue'
+      ])
+      .where('si.invoice_date >= :start AND si.invoice_date <= :end', { 
+        start: `${filters.startDate}T00:00:00.000Z`, 
+        end: `${filters.endDate}T23:59:59.999Z` 
+      });
+
+    const items = await qb.getRawMany();
+
+    let totalRevenue = 0;
+    let totalCost = 0;
+    let totalMRP = 0;
+    let totalDiscount = 0;
+    let totalQuantitySold = 0;
+
+    const details = items.map(item => {
+      const quantity = parseFloat(item.quantity) || 0;
+      const cost = parseFloat(item.cost) || 0;
+      const revenue = parseFloat(item.revenue) || 0;
+      const mrp = parseFloat(item.mrp) || 0;
+      const discount = parseFloat(item.discount) || 0;
+      const itemCost = cost * quantity;
+      const profit = revenue - itemCost;
+      const profitMargin = revenue > 0 ? (profit / revenue) * 100 : 0;
+
+      totalRevenue += revenue;
+      totalCost += itemCost;
+      totalMRP += mrp;
+      totalDiscount += discount;
+      totalQuantitySold += quantity;
+
+      return {
+        ...item,
+        quantity,
+        cost,
+        revenue,
+        mrp,
+        discount,
+        totalCost: itemCost,
+        profit,
+        profitMargin
+      };
+    });
+
+    return {
+      summary: {
+        totalRevenue,
+        totalCost,
+        grossProfit: totalRevenue - totalCost,
+        profitMargin: totalRevenue > 0 ? ((totalRevenue - totalCost) / totalRevenue) * 100 : 0,
+        totalMRP,
+        totalDiscount,
+        itemsSold: totalQuantitySold
+      },
+      details
+    };
+  }
+ 
+  async topSellingReport(filters: { startDate: string, endDate: string }) {
+    const qb = AppDataSource.getRepository(SalesInvoiceItem)
+      .createQueryBuilder('sii')
+      .innerJoin('sii.invoice', 'si')
+      .leftJoin(BarcodeBatch, 'bb', 'bb.barcode_alias_8digit = sii.barcode_8digit')
+      .leftJoin('bb.product_group', 'pg')
+      .select([
+        'sii.barcode_8digit as barcode',
+        'sii.design_no as design',
+        'COALESCE(pg.name, \'N/A\') as "productGroup"',
+        'SUM(sii.quantity) as quantity',
+        'SUM(sii.selling_price) as revenue',
+        'AVG(sii.mrp) as mrp'
+      ])
+      .where('si.invoice_date >= :start AND si.invoice_date <= :end', { 
+        start: `${filters.startDate}T00:00:00.000Z`, 
+        end: `${filters.endDate}T23:59:59.999Z` 
+      })
+      .groupBy('sii.barcode_8digit')
+      .addGroupBy('sii.design_no')
+      .addGroupBy('pg.name')
+      .orderBy('quantity', 'DESC')
+      .limit(100);
+
+    const results = await qb.getRawMany();
+    return results.map(r => ({
+      ...r,
+      quantity: parseFloat(r.quantity),
+      revenue: parseFloat(r.revenue),
+      mrp: parseFloat(r.mrp)
+    }));
+  }
+ 
+  async slowMovingReport(days: number = 30) {
+    const cutOffDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    const qb = AppDataSource.getRepository(BarcodeBatch)
+      .createQueryBuilder('bb')
+      .leftJoin('bb.product_group', 'pg')
+      .leftJoin('bb.vendor', 'v')
+      .select([
+        'bb.barcode_alias_8digit as barcode',
+        'bb.design_no as design',
+        'COALESCE(pg.name, \'N/A\') as "productGroup"',
+        'COALESCE(v.name, \'N/A\') as vendor',
+        'bb.available_quantity as "availableQty"',
+        'bb.cost_actual as cost',
+        'bb.mrp as mrp',
+        '(bb.available_quantity * bb.cost_actual) as "inventoryValue"',
+        '(EXTRACT(EPOCH FROM (NOW() - bb.created_at)) / 86400)::int as "daysInStock"'
+      ])
+      .where('bb.status = :status', { status: 'active' })
+      .andWhere('bb.available_quantity > 0')
+      .andWhere('bb.created_at <= :date', { date: cutOffDate })
+      .orderBy('bb.created_at', 'ASC')
+      .limit(100);
+
+    const results = await qb.getRawMany();
+    return results.map(r => ({
+      ...r,
+      availableQty: parseFloat(r.availableQty),
+      cost: parseFloat(r.cost),
+      mrp: parseFloat(r.mrp),
+      inventoryValue: parseFloat(r.inventoryValue)
+    }));
   }
 
   // Customer Lifetime Value

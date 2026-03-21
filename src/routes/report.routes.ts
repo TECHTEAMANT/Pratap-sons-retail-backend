@@ -13,5 +13,9 @@ router.get('/gst', (req, res) => reportController.gstReport(req, res));
 router.get('/salesman', (req, res) => reportController.salesmanReport(req, res));
 router.get('/customers', (req, res) => reportController.customerReport(req, res));
 router.get('/purchases', (req, res) => reportController.purchaseReport(req, res));
+router.get('/profitability', (req, res) => reportController.profitabilityReport(req, res));
+router.get('/top-selling', (req, res) => reportController.topSellingReport(req, res));
+router.get('/slow-moving', (req, res) => reportController.slowMovingReport(req, res));
+router.get('/floorwise-sales', (req, res) => reportController.floorwiseReport(req, res));
 
 export default router;

@@ -65,6 +65,7 @@ interface BulkInvoicePayload {
   items: BulkItem[];
   vendor_code?: string;
   original_quantities?: Record<string, number>; // used only on update
+  po_id?: string;
 }
 
 // ─── Helper: Atomically reserve N barcode aliases in one DB round-trip ────────
@@ -247,7 +248,7 @@ export class PurchaseService {
   async updateOrder(id: string, data: Record<string, any>) {
     const po = await this.poRepo.findOneBy({ id });
     if (!po) return null;
-    const allowed = ['status', 'taxable_value', 'manual_gst_amount', 'total_amount', 'notes', 'vendor_invoice_attachment', 'gst_difference_reason', 'vendor_invoice_date'];
+    const allowed = ['status', 'taxable_value', 'manual_gst_amount', 'total_amount', 'notes', 'vendor_invoice_attachment', 'gst_difference_reason', 'vendor_invoice_date', 'total_items', 'vendor', 'order_date'];
     for (const key of allowed) { if (data[key] !== undefined) (po as any)[key] = data[key]; }
     return this.poRepo.save(po);
   }
@@ -324,20 +325,29 @@ export class PurchaseService {
   async createPurchaseItem(data: any) {
     const repo = AppDataSource.getRepository(PurchaseItem);
     
-    const entityData = { ...data };
-    if (data.product_group) {
-        entityData.product_group_id = data.product_group;
-        delete entityData.product_group;
-    }
-    if (data.size) {
-        entityData.size_id = data.size;
-        delete entityData.size;
-    }
-    if (data.color) {
-        entityData.color_id = data.color;
-        delete entityData.color;
+    const processItem = (itemData: any) => {
+      const entityData = { ...itemData };
+      if (itemData.product_group) {
+          entityData.product_group_id = itemData.product_group;
+          delete entityData.product_group;
+      }
+      if (itemData.size) {
+          entityData.size_id = itemData.size;
+          delete entityData.size;
+      }
+      if (itemData.color) {
+          entityData.color_id = itemData.color;
+          delete entityData.color;
+      }
+      return entityData;
+    };
+
+    if (Array.isArray(data)) {
+        const entities = repo.create(data.map(processItem));
+        return repo.save(entities);
     }
     
+    const entityData = processItem(data);
     const item = repo.create(entityData);
     return repo.save(item);
   }
@@ -348,10 +358,61 @@ export class PurchaseService {
     return repo.delete(filters);
   }
 
+  async deleteOrderItems(filters: any) {
+    const repo = AppDataSource.getRepository(PurchaseOrderItem);
+    if (!filters || Object.keys(filters).length === 0) throw new Error('Delete filters required');
+    return repo.delete(filters);
+  }
+
   async createOrderItem(data: any) {
     const repo = AppDataSource.getRepository(PurchaseOrderItem);
+    if (Array.isArray(data)) {
+      const entities = repo.create(data);
+      return repo.save(entities);
+    }
     const item = repo.create(data);
     return repo.save(item);
+  }
+
+  async getRemainingOrderItems(orderId: string) {
+    // 1. Fetch expected items from PO item table
+    const poiRepo = AppDataSource.getRepository(PurchaseOrderItem);
+    const expected = await poiRepo.find({ where: { purchase_order_id: orderId } });
+
+    // 2. Fetch actually received items from purchase_items linked to this PO OR its children
+    const piRepo = AppDataSource.getRepository(PurchaseItem);
+    const receivedItems = await piRepo.createQueryBuilder('pi')
+      .leftJoin('purchase_orders', 'po', 'pi.po_id = po.id')
+      .where('po.id = :orderId OR po.reference_po_id = :orderId', { orderId })
+      .getMany();
+
+    // Aggregate received quantities by (design_no, group, color, size)
+    const receivedMap = new Map<string, number>();
+    for (const ri of receivedItems) {
+        const key = `${ri.design_no}__${ri.product_group_id}__${ri.color_id || ''}__${ri.size_id}`.toUpperCase();
+        receivedMap.set(key, (receivedMap.get(key) || 0) + ri.quantity);
+    }
+
+    // 3. Match and calculate remaining
+    const remainingCount: any[] = [];
+    for (const exp of expected) {
+        // PurchaseOrderItem stores these as fields (not relations, but IDs)
+        const key = `${exp.design_no}__${exp.product_group}__${exp.color || ''}__${exp.size}`.toUpperCase();
+        const receivedQty = receivedMap.get(key) || 0;
+        const totalExpectedQty = exp.quantity || 0;
+        const remainingQty = totalExpectedQty - receivedQty;
+
+        if (remainingQty > 0) {
+            remainingCount.push({
+                ...exp,
+                quantity: remainingQty, // Return remaining quantity instead of original
+                original_po_quantity: totalExpectedQty,
+                received_quantity: receivedQty
+            });
+        }
+    }
+
+    return remainingCount;
   }
 
   // ─── BULK SAVE — CREATE ────────────────────────────────────────────────────
@@ -394,8 +455,8 @@ export class PurchaseService {
            (po_number, vendor, order_date, invoice_number, total_items, total_amount,
             status, notes, taxable_value, ledger_discount, ledger_freight,
             ledger_freight_gst_rate, manual_gst_amount, vendor_invoice_attachment,
-            gst_type, created_by, vendor_invoice_date)
-         VALUES ($1,$2,$3,$4,$5,$6,'Completed',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+            gst_type, created_by, vendor_invoice_date, reference_po_id)
+         VALUES ($1,$2,$3,$4,$5,$6,'Completed',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
          RETURNING id, po_number`,
         [
           poNumber, vendor, header.order_date, header.invoice_number,
@@ -404,6 +465,7 @@ export class PurchaseService {
           header.ledger_freight ?? null, header.ledger_freight_gst_rate ?? null,
           header.manual_gst_amount ?? null, header.vendor_invoice_attachment ?? null,
           header.gst_type ?? null, userId ?? null, header.vendor_invoice_date ?? null,
+          payload.po_id || null
         ]
       );
       const po = poResult[0];
@@ -515,6 +577,38 @@ export class PurchaseService {
            VALUES ${piPlaceholders.join(',')}`,
           piValues
         );
+
+        // Handle source PO status update if po_id is provided (Partial Receipt Logic)
+        if (payload.po_id) {
+            // 1. Fetch total expected quantity from the source PO items
+            const expRes = await manager.query(
+                `SELECT SUM(quantity) as total FROM purchase_order_items WHERE purchase_order_id = $1`,
+                [payload.po_id]
+            );
+            const totalExpected = parseInt(expRes[0]?.total || '0');
+
+            // 2. Fetch total received quantity (including all invoices linked to this PO)
+            const recRes = await manager.query(
+                `SELECT SUM(pi.quantity) as total 
+                 FROM purchase_items pi
+                 JOIN purchase_orders po ON pi.po_id = po.id
+                 WHERE (po.reference_po_id = $1 OR po.id = $1)
+                 AND po.status != 'Cancelled'`,
+                [payload.po_id]
+            );
+            const totalReceived = parseInt(recRes[0]?.total || '0');
+
+            // 3. Update Status
+            let newStatus = 'Partial';
+            if (totalReceived >= totalExpected) {
+                newStatus = 'Completed';
+            }
+            await manager.query(
+                `UPDATE purchase_orders SET status = $1 WHERE id = $2`,
+                [newStatus, payload.po_id]
+            );
+            console.log(`[BULK-SAVE] Updated source PO ${payload.po_id} status to ${newStatus} (Received ${totalReceived}/${totalExpected})`);
+        }
       }
       t = lap(`Step 8 — Bulk insert ${piPlaceholders.length} purchase_items`, t);
 

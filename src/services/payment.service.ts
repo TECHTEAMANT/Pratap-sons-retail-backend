@@ -1,3 +1,4 @@
+import { Between, MoreThanOrEqual, LessThanOrEqual, In } from 'typeorm';
 import { AppDataSource } from '../config/data-source';
 import { PaymentReceipt } from '../entities/PaymentReceipt';
 import { PaymentReceiptItem } from '../entities/PaymentReceiptItem';
@@ -8,7 +9,13 @@ export class PaymentService {
 
   async findAll(filters: { invoice_id?: string; customer_mobile?: string }) {
     const where: any = {};
-    if (filters.invoice_id) where.invoice_id = filters.invoice_id;
+    if (filters.invoice_id) {
+      if (filters.invoice_id.includes(',')) {
+        where.invoice_id = In(filters.invoice_id.split(','));
+      } else {
+        where.invoice_id = filters.invoice_id;
+      }
+    }
     if (filters.customer_mobile) where.customer_mobile = filters.customer_mobile;
     return this.repo.find({ 
       where, 

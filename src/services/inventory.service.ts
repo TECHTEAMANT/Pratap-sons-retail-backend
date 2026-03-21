@@ -103,7 +103,14 @@ export class InventoryService {
       }
     }
     if (filters.is_color === 'null') qb.andWhere('bb.color_id IS NULL');
-    if (filters.barcode_alias_8digit) qb.andWhere('bb.barcode_alias_8digit = :exact_bc', { exact_bc: filters.barcode_alias_8digit });
+    if (filters.barcode_alias_8digit) {
+      const barcodes = filters.barcode_alias_8digit.split(',').map((b: string) => b.trim()).filter(Boolean);
+      if (barcodes.length === 1) {
+        qb.andWhere('bb.barcode_alias_8digit = :exact_bc', { exact_bc: barcodes[0] });
+      } else if (barcodes.length > 1) {
+        qb.andWhere('bb.barcode_alias_8digit IN (:...barcodes)', { barcodes });
+      }
+    }
 
     if (filters.search) {
       qb.andWhere(
@@ -146,6 +153,12 @@ export class InventoryService {
     qb.skip(skip).take(limit);
 
     const [data, total] = await qb.getManyAndCount();
+
+    // Remove heavy photos array from list response to prevent massive JSON payloads
+    data.forEach((item: any) => {
+      delete item.photos;
+    });
+
     return { data, total, page, limit };
   }
 
@@ -226,15 +239,13 @@ export class InventoryService {
       LEFT JOIN floors         fl  ON fl.id  = bb.floor
       LEFT JOIN purchase_orders po ON po.id  = bb.po_id
       LEFT JOIN (
-        SELECT barcode_batch_id, barcode_alias, SUM(quantity) AS defective_qty
-        FROM   defective_stock
-        WHERE  reason != 'Returned to vendor' OR reason IS NULL
-        GROUP  BY barcode_batch_id, barcode_alias
-      ) AS def_agg ON (
-        (def_agg.barcode_batch_id IS NOT NULL AND def_agg.barcode_batch_id = bb.id)
-        OR
-        (def_agg.barcode_batch_id IS NULL AND def_agg.barcode_alias = bb.barcode_alias_8digit)
-      )
+        SELECT COALESCE(ds.barcode_batch_id, bb_link.id) as consolidated_batch_id, 
+               SUM(ds.quantity) AS defective_qty
+        FROM defective_stock ds
+        LEFT JOIN barcode_batches bb_link ON bb_link.barcode_alias_8digit = ds.barcode_alias
+        WHERE ds.reason != 'Returned to vendor' OR ds.reason IS NULL
+        GROUP BY consolidated_batch_id
+      ) AS def_agg ON def_agg.consolidated_batch_id = bb.id
       LEFT JOIN (
         SELECT item_id, SUM(quantity) AS returned_qty
         FROM   purchase_return_items
@@ -249,6 +260,9 @@ export class InventoryService {
     const params = searchParam
       ? [searchParam, limit, offset]
       : [limit, offset];
+
+    console.log("SQL QUERY DEBUG:", dataSql);
+    console.log("SQL QUERY PARAMS:", params);
 
     const [countRes, dataRes] = await Promise.all([
       db.query(countSql, searchParam ? [searchParam] : []),

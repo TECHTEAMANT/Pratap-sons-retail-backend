@@ -66,6 +66,9 @@ export class PurchaseOrder {
   notes: string;
 
   @Column({ type: 'uuid', nullable: true })
+  reference_po_id: string;
+
+  @Column({ type: 'uuid', nullable: true })
   created_by: string;
 
   @Column({ type: 'uuid', nullable: true })

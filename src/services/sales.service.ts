@@ -263,7 +263,14 @@ export class SalesService {
   async getInvoiceItems(filters: any) {
     const qb = AppDataSource.getRepository(SalesInvoiceItem).createQueryBuilder('sii')
       .leftJoinAndSelect('sii.invoice', 'si');
-    if (filters.invoice_id) qb.andWhere('sii.invoice_id = :id', { id: filters.invoice_id });
+    if (filters.invoice_id) {
+      const ids = filters.invoice_id.split(',').map((id: string) => id.trim()).filter(Boolean);
+      if (ids.length === 1) {
+        qb.andWhere('sii.invoice_id = :id', { id: ids[0] });
+      } else if (ids.length > 1) {
+        qb.andWhere('sii.invoice_id IN (:...ids)', { ids });
+      }
+    }
     if (filters.barcode_8digit) qb.andWhere('sii.barcode_8digit = :barcode', { barcode: filters.barcode_8digit });
     if (filters.delivered !== undefined) {
       qb.andWhere('sii.delivered = :delivered', { delivered: filters.delivered === 'true' || filters.delivered === true });
