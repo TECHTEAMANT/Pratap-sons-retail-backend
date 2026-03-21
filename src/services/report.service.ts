@@ -188,25 +188,27 @@ export class ReportService {
   }
 
   async floorwiseSalesReport(filters: { startDate: string, endDate: string }) {
-    const qb = AppDataSource.getRepository(SalesInvoice)
-      .createQueryBuilder('si')
-      .leftJoin('si.floor', 'f')
+    const qb = AppDataSource.getRepository(SalesInvoiceItem)
+      .createQueryBuilder('sii')
+      .innerJoin('sii.invoice', 'si')
+      .leftJoin('sii.product_item', 'bb')
+      .leftJoin('bb.floor', 'f')
       .select([
         'COALESCE(f.name, \'Unknown\') as floor',
-        'COUNT(*) as invoiceCount',
-        'COALESCE(SUM(si.net_payable), 0) as totalSales',
-        'COALESCE(SUM(CAST(si.total_discount AS NUMERIC) + CAST(si.voucher_discount AS NUMERIC)), 0) as totalDiscount'
+        'COUNT(DISTINCT si.id) as "invoiceCount"',
+        'COALESCE(SUM(sii.total_value), 0) as "totalSales"',
+        'COALESCE(SUM(sii.discount), 0) as "totalDiscount"'
       ])
       .where('si.invoice_date >= :start AND si.invoice_date <= :end', { 
         start: `${filters.startDate}T00:00:00.000Z`, 
         end: `${filters.endDate}T23:59:59.999Z` 
       })
       .groupBy('f.name')
-      .orderBy('totalSales', 'DESC');
+      .orderBy('"totalSales"', 'DESC');
 
     const results = await qb.getRawMany();
     return results.map(r => ({
-      ...r,
+      floor: r.floor,
       invoiceCount: parseInt(r.invoiceCount),
       totalSales: parseFloat(r.totalSales),
       totalDiscount: parseFloat(r.totalDiscount)

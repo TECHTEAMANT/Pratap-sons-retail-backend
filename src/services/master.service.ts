@@ -151,18 +151,29 @@ export class MasterService {
   }
 
   // ===== Product Masters =====
-  async getProductMasters(filters: { search?: string; product_group?: string; design_no?: string; vendor?: string }) {
+  async getProductMasters(filters: { search?: string; product_group?: string; design_no?: string; vendor?: string; page?: string | number; limit?: string | number }) {
     const repo = AppDataSource.getRepository(ProductMaster);
-    const where: any = {};
-    if (filters.product_group) where.product_group = { id: filters.product_group };
-    if (filters.design_no) where.design_no = filters.design_no;
-    if (filters.vendor) where.vendor = { id: filters.vendor };
-    if (filters.search) where.design_no = ILike(`%${filters.search}%`);
-    return repo.find({ 
-      where, 
-      relations: ['product_group', 'color', 'vendor', 'floor'],
-      order: { created_at: 'DESC' } 
-    });
+    const page = parseInt(filters.page?.toString() || '1', 10);
+    const limit = parseInt(filters.limit?.toString() || '50', 10);
+    const skip = (page - 1) * limit;
+
+    const query = repo.createQueryBuilder('pm')
+      .leftJoinAndSelect('pm.product_group', 'pg')
+      .leftJoinAndSelect('pm.color', 'cl')
+      .leftJoinAndSelect('pm.vendor', 'vd')
+      .leftJoinAndSelect('pm.floor', 'fl');
+
+    if (filters.product_group) query.andWhere('pm.product_group = :pg', { pg: filters.product_group });
+    if (filters.design_no) query.andWhere('pm.design_no = :design', { design: filters.design_no });
+    if (filters.vendor) query.andWhere('pm.vendor = :vendor', { vendor: filters.vendor });
+    if (filters.search) query.andWhere('pm.design_no ILIKE :search', { search: `%${filters.search}%` });
+
+    query.orderBy('pm.created_at', 'DESC')
+         .skip(skip)
+         .take(limit);
+
+    const [data, total] = await query.getManyAndCount();
+    return { data, total, page, limit };
   }
   async createProductMaster(data: any) {
     const repo = AppDataSource.getRepository(ProductMaster);

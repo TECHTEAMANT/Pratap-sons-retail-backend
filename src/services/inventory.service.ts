@@ -193,6 +193,19 @@ export class InventoryService {
     `;
 
     const dataSql = `
+      WITH def_agg AS (
+        SELECT COALESCE(ds.barcode_batch_id, bb_link.id) as batch_id, 
+               SUM(ds.quantity) AS defective_qty
+        FROM defective_stock ds
+        LEFT JOIN barcode_batches bb_link ON bb_link.barcode_alias_8digit = ds.barcode_alias
+        WHERE ds.reason != 'Returned to vendor' OR ds.reason IS NULL
+        GROUP BY batch_id
+      ),
+      ret_agg AS (
+        SELECT item_id, SUM(quantity) AS returned_qty
+        FROM purchase_return_items
+        GROUP BY item_id
+      )
       SELECT
         bb.design_no,
         vd.id          AS vendor_id,
@@ -204,7 +217,7 @@ export class InventoryService {
         cl.name        AS color_name,
         SUM(bb.available_quantity) AS total_available,
         SUM(bb.total_quantity)     AS total_quantity,
-        SUM(COALESCE(ret_agg.returned_qty, 0)) AS total_returned,
+        SUM(COALESCE(r.returned_qty, 0)) AS total_returned,
         MAX(bb.mrp)                AS mrp,
         MAX(bb.cost_actual)        AS cost,
         MAX(bb.order_number)       AS order_number,
@@ -223,8 +236,8 @@ export class InventoryService {
             'total',          bb.total_quantity,
             'floor_name',     COALESCE(fl.name, 'Unassigned'),
             'floor_id',       COALESCE(fl.id::text, ''),
-            'defective_qty',  COALESCE(def_agg.defective_qty, 0),
-            'returned_qty',   COALESCE(ret_agg.returned_qty, 0),
+            'defective_qty',  COALESCE(d.defective_qty, 0),
+            'returned_qty',   COALESCE(r.returned_qty, 0),
             'cost',           bb.cost_actual,
             'mrp',            bb.mrp,
             'invoice_no',     COALESCE(po.po_number, ''),
@@ -238,19 +251,8 @@ export class InventoryService {
       LEFT JOIN sizes          sz  ON sz.id  = bb.size
       LEFT JOIN floors         fl  ON fl.id  = bb.floor
       LEFT JOIN purchase_orders po ON po.id  = bb.po_id
-      LEFT JOIN (
-        SELECT COALESCE(ds.barcode_batch_id, bb_link.id) as consolidated_batch_id, 
-               SUM(ds.quantity) AS defective_qty
-        FROM defective_stock ds
-        LEFT JOIN barcode_batches bb_link ON bb_link.barcode_alias_8digit = ds.barcode_alias
-        WHERE ds.reason != 'Returned to vendor' OR ds.reason IS NULL
-        GROUP BY consolidated_batch_id
-      ) AS def_agg ON def_agg.consolidated_batch_id = bb.id
-      LEFT JOIN (
-        SELECT item_id, SUM(quantity) AS returned_qty
-        FROM   purchase_return_items
-        GROUP  BY item_id
-      ) AS ret_agg ON ret_agg.item_id = bb.id
+      LEFT JOIN def_agg        d   ON d.batch_id = bb.id
+      LEFT JOIN ret_agg        r   ON r.item_id = bb.id
       WHERE bb.status IN ('active', 'Available', 'returned', 'defective', 'Sold', 'Returned') ${searchCond}
       GROUP BY bb.design_no, vd.id, vd.name, vd.vendor_code, pg.id, pg.name, cl.id, cl.name
       ORDER BY MAX(bb.created_at) DESC
