@@ -221,7 +221,7 @@ export class ReportService {
       .select([
         'COALESCE(SUM(po.total_amount), 0) as total_purchase',
         'COALESCE(SUM(po.total_items), 0) as total_items',
-        'COALESCE(SUM(po.total_amount - po.taxable_value), 0) as total_gst',
+        'COALESCE(SUM(po.total_amount - po.taxable_value - COALESCE(po.ledger_freight, 0)), 0) as total_gst',
         'COUNT(po.id) as po_count',
         'COALESCE(AVG(po.total_amount), 0) as avg_po_value',
       ])

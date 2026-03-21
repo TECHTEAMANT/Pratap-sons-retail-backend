@@ -10,7 +10,7 @@ import { ProductMaster } from '../entities/ProductMaster';
 import { encodeCost } from '../utils/costEncoding';
 
 function ensureId(val: any): string | undefined {
-  if (!val) return undefined;
+  if (!val || val === 'undefined') return undefined;
   if (typeof val === 'object' && val.id) return val.id;
   if (typeof val === 'string' && val.startsWith('{')) {
     try {
