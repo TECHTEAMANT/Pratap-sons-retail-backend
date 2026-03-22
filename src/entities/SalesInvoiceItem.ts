@@ -74,6 +74,9 @@ export class SalesInvoiceItem {
   @Column({ type: 'boolean', default: false })
   delivered: boolean;
 
+  @Column({ type: 'boolean', default: false })
+  on_approval: boolean;
+
   @Column({ type: 'date', nullable: true })
   delivery_date: Date;
 

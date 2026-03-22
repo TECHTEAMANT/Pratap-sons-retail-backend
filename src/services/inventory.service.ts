@@ -166,18 +166,64 @@ export class InventoryService {
    * Returns inventory already grouped by (design_no, vendor, product_group, color).
    * The DB does the heavy aggregation — no raw-row fan-out to the frontend.
    */
-  async getGrouped(filters: { search?: string; page?: number; limit?: number }) {
+  async getGrouped(filters: { 
+    search?: string; 
+    searchDesign?: string; 
+    searchBarcode?: string; 
+    searchVendor?: string; 
+    page?: number; 
+    limit?: number 
+  }) {
     const page = Number(filters.page) || 1;
     const limit = Number(filters.limit) || 20;
     const offset = (page - 1) * limit;
 
     const db = AppDataSource;
 
-    // Build search condition
-    const searchParam = filters.search ? `%${filters.search.toLowerCase()}%` : null;
-    const searchCond = searchParam
-      ? `AND (bb.design_no ILIKE $1 OR vd.name ILIKE $1 OR vd.vendor_code ILIKE $1 OR pg.name ILIKE $1 OR cl.name ILIKE $1 OR bb.barcode_alias_8digit ILIKE $1)`
-      : '';
+    // Build dynamic search conditions
+    const conditions: string[] = [];
+    const queryParams: any[] = [];
+    let paramIdx = 1;
+
+    // Legacy general search
+    if (filters.search) {
+      conditions.push(`(bb.design_no ILIKE $${paramIdx} OR vd.name ILIKE $${paramIdx} OR vd.vendor_code ILIKE $${paramIdx} OR pg.name ILIKE $${paramIdx} OR cl.name ILIKE $${paramIdx} OR bb.barcode_alias_8digit ILIKE $${paramIdx})`);
+      queryParams.push(`%${filters.search.toLowerCase()}%`);
+      paramIdx++;
+    }
+
+    // New specific filters
+    if (filters.searchDesign) {
+      conditions.push(`bb.design_no ILIKE $${paramIdx}`);
+      queryParams.push(`%${filters.searchDesign.toLowerCase()}%`);
+      paramIdx++;
+    }
+
+    if (filters.searchBarcode) {
+      conditions.push(`bb.barcode_alias_8digit ILIKE $${paramIdx}`);
+      queryParams.push(`%${filters.searchBarcode.toLowerCase()}%`);
+      paramIdx++;
+    }
+
+    if (filters.searchVendor) {
+      // If it looks like a UUID, match exact vendor ID, else fuzzy match name/code
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(filters.searchVendor);
+      if (isUuid) {
+        conditions.push(`bb.vendor = $${paramIdx}`);
+        queryParams.push(filters.searchVendor);
+      } else {
+        conditions.push(`(vd.name ILIKE $${paramIdx} OR vd.vendor_code ILIKE $${paramIdx})`);
+        queryParams.push(`%${filters.searchVendor.toLowerCase()}%`);
+      }
+      paramIdx++;
+    }
+
+    const searchCond = conditions.length > 0 ? `AND ${conditions.join(' AND ')}` : '';
+
+    // Index of limit and offset for params array
+    const limitIdx = paramIdx;
+    const offsetIdx = paramIdx + 1;
+    queryParams.push(limit, offset);
 
     // Count distinct groups for pagination
     const countSql = `
@@ -256,19 +302,15 @@ export class InventoryService {
       WHERE bb.status IN ('active', 'Available', 'returned', 'defective', 'Sold', 'Returned') ${searchCond}
       GROUP BY bb.design_no, vd.id, vd.name, vd.vendor_code, pg.id, pg.name, cl.id, cl.name
       ORDER BY MAX(bb.created_at) DESC
-      LIMIT $${searchParam ? '2' : '1'} OFFSET $${searchParam ? '3' : '2'}
+      LIMIT $${limitIdx} OFFSET $${offsetIdx}
     `;
 
-    const params = searchParam
-      ? [searchParam, limit, offset]
-      : [limit, offset];
-
     console.log("SQL QUERY DEBUG:", dataSql);
-    console.log("SQL QUERY PARAMS:", params);
+    console.log("SQL QUERY PARAMS:", queryParams);
 
     const [countRes, dataRes] = await Promise.all([
-      db.query(countSql, searchParam ? [searchParam] : []),
-      db.query(dataSql, params),
+      db.query(countSql, queryParams.slice(0, paramIdx - 1)),
+      db.query(dataSql, queryParams),
     ]);
 
     const total = parseInt(countRes[0]?.total || '0', 10);

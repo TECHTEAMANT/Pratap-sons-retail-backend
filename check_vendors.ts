@@ -1,35 +1,27 @@
-import 'reflect-metadata';
-import { initializeDatabase, closeDatabase, AppDataSource } from './src/config/data-source';
+import { AppDataSource, initializeDatabase } from './src/config/data-source';
 import { Vendor } from './src/entities/Vendor';
-import { City } from './src/entities/City';
-import { ILike } from 'typeorm';
 
 async function checkVendors() {
   try {
     await initializeDatabase();
-    
-    const cityRepo = AppDataSource.getRepository(City);
-    const mumbai = await cityRepo.findOne({ where: { name: 'Mumbai' } });
-    
-    if (!mumbai) {
-      console.log('Mumbai not found');
-      return;
-    }
-    
-    console.log(`Found Mumbai with city_code: ${mumbai.city_code}`);
-    
     const vendorRepo = AppDataSource.getRepository(Vendor);
-    const vendors = await vendorRepo.find({
-      where: { vendor_code: ILike(`${mumbai.city_code}%`) },
-      order: { vendor_code: 'ASC' }
+    
+    const vendors = await vendorRepo.createQueryBuilder('v')
+      .leftJoinAndSelect('v.city', 'c')
+      .where("v.state IS NULL OR v.state = ''")
+      .orWhere("v.city_id IS NULL")
+      .select(['v.vendor_code', 'v.name', 'v.state', 'v.city_id', 'c.name'])
+      .getMany();
+
+    console.log('--- Vendors with empty state or city ---');
+    vendors.forEach((v, i) => {
+      console.log(`${i + 1}. [${v.vendor_code}] ${v.name} (State: ${v.state || 'N/A'}, City: ${v.city?.name || 'N/A'})`);
     });
-    
-    console.log(`Found ${vendors.length} vendors starting with ${mumbai.city_code}`);
-    console.log(JSON.stringify(vendors.map(v => ({ vendor_code: v.vendor_code, city_id: v.city_id })), null, 2));
-    
-    await closeDatabase();
-  } catch (err) {
-    console.error(err);
+    console.log(`\nTotal: ${vendors.length}`);
+
+    await AppDataSource.destroy();
+  } catch (error) {
+    console.error('Error:', error);
     process.exit(1);
   }
 }

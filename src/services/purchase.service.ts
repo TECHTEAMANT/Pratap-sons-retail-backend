@@ -448,6 +448,17 @@ export class PurchaseService {
       }
       const poNumber = `${prefix}${nextNum.toString().padStart(6, '0')}`;
       t = lap('Step 1 — Generate PO number', t);
+ 
+      // ── 1b. Check for duplicate vendor invoice number ─────────────────────
+      if (header.invoice_number) {
+        const existingVal = await manager.query(
+          `SELECT id FROM purchase_orders WHERE vendor = $1 AND invoice_number = $2 AND status != 'Cancelled' LIMIT 1`,
+          [vendor, header.invoice_number]
+        );
+        if (existingVal.length > 0) {
+          throw new Error(`Invoice number "${header.invoice_number}" already exists for this vendor.`);
+        }
+      }
 
       // ── 2. Insert purchase_orders ──────────────────────────────────────────
       const poResult = await manager.query(
@@ -699,6 +710,17 @@ export class PurchaseService {
       if (!currentPO) throw new Error('Purchase invoice not found');
       t = lap(`Step 1 — Fetch PO + ${dbItemsRaw.length} existing purchase_items (parallel)`, t);
 
+      // ── 1b. Check for duplicate vendor invoice number ─────────────────────
+      if (payload.invoice_number) {
+        const existingVal = await manager.query(
+          `SELECT id FROM purchase_orders WHERE vendor = $1 AND invoice_number = $2 AND id != $3 AND status != 'Cancelled' LIMIT 1`,
+          [vendor, payload.invoice_number, poId]
+        );
+        if (existingVal.length > 0) {
+          throw new Error(`Invoice number "${payload.invoice_number}" already exists for this vendor.`);
+        }
+      }
+ 
       // ── 2. Update purchase_orders header ──────────────────────────────────
       await manager.query(
         `UPDATE purchase_orders SET

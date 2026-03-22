@@ -57,21 +57,25 @@ export class CreditCouponService {
    * Find coupon by number
    */
   async getByCouponNo(couponNo: string) {
-    return this.repo.findOne({ where: { coupon_no: couponNo } });
+    return this.repo.findOne({ 
+      where: { coupon_no: couponNo },
+      relations: ['customer']
+    });
   }
 
   /**
    * Find coupons with filters
    */
   async findAll(filters: { search?: string; status?: string }) {
-    const qb = this.repo.createQueryBuilder('cc');
+    const qb = this.repo.createQueryBuilder('cc')
+      .leftJoinAndSelect('cc.customer', 'customer');
 
     if (filters.status && filters.status !== 'all') {
       qb.andWhere('cc.status = :status', { status: filters.status });
     }
 
     if (filters.search) {
-      qb.andWhere('(cc.coupon_no ILIKE :search OR cc.customer_mobile ILIKE :search)', { 
+      qb.andWhere('(cc.coupon_no ILIKE :search OR cc.customer_mobile ILIKE :search OR customer.name ILIKE :search)', { 
         search: `%${filters.search}%` 
       });
     }

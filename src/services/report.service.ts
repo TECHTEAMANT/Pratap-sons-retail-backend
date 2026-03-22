@@ -4,6 +4,7 @@ import { SalesInvoiceItem } from '../entities/SalesInvoiceItem';
 import { BarcodeBatch } from '../entities/BarcodeBatch';
 import { Customer } from '../entities/Customer';
 import { PurchaseOrder } from '../entities/PurchaseOrder';
+import { SalesReturn } from '../entities/SalesReturn';
 import { SalesReturnItem } from '../entities/SalesReturnItem';
 import { Between, MoreThanOrEqual, LessThanOrEqual } from 'typeorm';
 
@@ -76,41 +77,83 @@ export class ReportService {
   }
 
   async salesReport(filters: { startDate: string, endDate: string }) {
-    const qb = AppDataSource.getRepository(SalesInvoice)
+    const invoices = await AppDataSource.getRepository(SalesInvoice)
       .createQueryBuilder('si')
-      .select([
-        'COALESCE(SUM(si.net_payable), 0) as total_sales',
-        'COALESCE(SUM(si.total_mrp), 0) as total_mrp',
-        'COALESCE(SUM(CAST(si.total_discount AS NUMERIC) + CAST(si.voucher_discount AS NUMERIC)), 0) as total_discount',
-        'COALESCE(SUM(si.total_gst), 0) as total_gst',
-        'COALESCE(SUM(si.taxable_value), 0) as taxable_value',
-        'COUNT(si.id) as invoice_count',
-        'COALESCE(SUM(si.cgst_5), 0) as cgst_5',
-        'COALESCE(SUM(si.sgst_5), 0) as sgst_5',
-        'COALESCE(SUM(si.cgst_18), 0) as cgst_18',
-        'COALESCE(SUM(si.sgst_18), 0) as sgst_18',
-        'COALESCE(AVG(si.net_payable), 0) as avg_invoice_value',
-      ])
+      .leftJoinAndSelect('si.items', 'items')
       .where('si.invoice_date >= :start AND si.invoice_date <= :end', { 
         start: `${filters.startDate}T00:00:00.000Z`, 
         end: `${filters.endDate}T23:59:59.999Z` 
-      });
+      })
+      .getMany();
 
-    const result = await qb.getRawOne();
-    
-    // Convert string results to numbers to prevent frontend concatenation
+    const result = {
+      totalSales: 0,
+      totalMRP: 0,
+      totalDiscount: 0,
+      totalGST: 0,
+      taxableValue: 0,
+      invoiceCount: invoices.length,
+      cgst_5: 0,
+      sgst_5: 0,
+      cgst_18: 0,
+      sgst_18: 0,
+      paymentBreakdown: {
+        Cash: 0,
+        UPI: 0,
+        Card: 0,
+        Online: 0,
+        Approval: 0,
+        Others: 0
+      },
+      approvalItemCount: 0
+    };
+
+    invoices.forEach(inv => {
+      result.totalSales += parseFloat(inv.net_payable as any) || 0;
+      result.totalMRP += parseFloat(inv.total_mrp as any) || 0;
+      result.totalDiscount += (parseFloat(inv.total_discount as any) || 0) + (parseFloat(inv.voucher_discount as any) || 0);
+      result.totalGST += parseFloat(inv.total_gst as any) || 0;
+      result.taxableValue += parseFloat(inv.taxable_value as any) || 0;
+      result.cgst_5 += parseFloat(inv.cgst_5 as any) || 0;
+      result.sgst_5 += parseFloat(inv.sgst_5 as any) || 0;
+      result.cgst_18 += parseFloat(inv.cgst_18 as any) || 0;
+      result.sgst_18 += parseFloat(inv.sgst_18 as any) || 0;
+
+      if (inv.payment_details && Array.isArray(inv.payment_details)) {
+        inv.payment_details.forEach((pd: any) => {
+          const mode = pd.mode;
+          const amount = parseFloat(pd.amount) || 0;
+          if (mode === 'Cash') result.paymentBreakdown.Cash += amount;
+          else if (mode === 'UPI') result.paymentBreakdown.UPI += amount;
+          else if (mode === 'Card') result.paymentBreakdown.Card += amount;
+          else if (mode === 'Online') result.paymentBreakdown.Online += amount;
+          else if (mode === 'Approval') result.paymentBreakdown.Approval += amount;
+          else result.paymentBreakdown.Others += amount;
+        });
+      } else {
+        // Fallback to primary payment_mode if details missing
+        const mode = inv.payment_mode || 'Others';
+        const amount = parseFloat(inv.net_payable as any) || 0;
+        if (mode === 'Cash') result.paymentBreakdown.Cash += amount;
+        else if (mode === 'UPI') result.paymentBreakdown.UPI += amount;
+        else if (mode === 'Card') result.paymentBreakdown.Card += amount;
+        else if (mode === 'Online') result.paymentBreakdown.Online += amount;
+        else if (mode === 'Approval') result.paymentBreakdown.Approval += amount;
+        else result.paymentBreakdown.Others += amount;
+      }
+
+      if (inv.items) {
+        inv.items.forEach(item => {
+          if (item.on_approval) {
+            result.approvalItemCount += Number(item.quantity) || 0;
+          }
+        });
+      }
+    });
+
     return {
-      totalSales: parseFloat(result.total_sales),
-      totalMRP: parseFloat(result.total_mrp),
-      totalDiscount: parseFloat(result.total_discount),
-      totalGST: parseFloat(result.total_gst),
-      taxableValue: parseFloat(result.taxable_value),
-      invoiceCount: parseInt(result.invoice_count),
-      avgInvoiceValue: parseFloat(result.avg_invoice_value),
-      cgst_5: parseFloat(result.cgst_5),
-      sgst_5: parseFloat(result.sgst_5),
-      cgst_18: parseFloat(result.cgst_18),
-      sgst_18: parseFloat(result.sgst_18),
+      ...result,
+      avgInvoiceValue: result.invoiceCount > 0 ? result.totalSales / result.invoiceCount : 0
     };
   }
 
@@ -504,21 +547,40 @@ export class ReportService {
     return qb.getRawMany();
   }
 
-  // Purchase Summary
-  async purchaseSummary(startDate: string, endDate: string) {
-    const qb = AppDataSource.getRepository(PurchaseOrder)
-      .createQueryBuilder('po')
-      .leftJoin('po.vendor', 'v')
+  // Sales Return Report
+  async salesReturnReport(filters: { startDate: string, endDate: string }) {
+    const qb = AppDataSource.getRepository(SalesReturn)
+      .createQueryBuilder('sr')
+      .leftJoin('sr.salesman', 's')
+      .leftJoin('sr.invoice', 'si')
       .select([
-        'v.name as vendor_name',
-        'COUNT(*) as total_orders',
-        'COALESCE(SUM(po.total_amount), 0) as total_amount',
+        'sr.id as id',
+        'sr.return_number as return_number',
+        'sr.return_date as return_date',
+        'sr.invoice_number as invoice_number',
+        'sr.customer_name as customer_name',
+        'sr.customer_mobile as customer_mobile',
+        'sr.total_return_amount as total_return_amount',
+        'sr.return_reason as return_reason',
+        'sr.status as status',
+        's.name as salesman_name',
+        'sr.credit_coupon_no as credit_coupon_no',
+        'sr.credit_note_number as credit_note_number'
       ])
-      .where('po.order_date >= :start AND po.order_date <= :end', { start: startDate, end: endDate })
-      .groupBy('v.name')
-      .orderBy('total_amount', 'DESC');
+      .where('sr.return_date >= :start AND sr.return_date <= :end', { 
+        start: `${filters.startDate}T00:00:00.000Z`, 
+        end: `${filters.endDate}T23:59:59.999Z` 
+      })
+      .orderBy('sr.return_date', 'DESC');
 
-    return qb.getRawMany();
+    const details = await qb.getRawMany();
+
+    const summary = details.reduce((acc, d) => ({
+      totalReturnAmount: acc.totalReturnAmount + parseFloat(d.total_return_amount),
+      returnCount: acc.returnCount + 1,
+    }), { totalReturnAmount: 0, returnCount: 0 });
+
+    return { summary, details };
   }
 }
 
