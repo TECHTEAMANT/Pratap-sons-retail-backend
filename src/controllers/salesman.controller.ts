@@ -40,7 +40,8 @@ export class SalesmanController {
 
   async getNextCode(req: Request, res: Response) {
     try {
-      const code = await salesmanService.getNextCode();
+      const { firstName, lastName } = req.query as { firstName?: string; lastName?: string };
+      const code = await salesmanService.getNextCode(firstName, lastName);
       sendSuccess(res, { code });
     } catch (e: any) { 
         sendError(res, e.message); 

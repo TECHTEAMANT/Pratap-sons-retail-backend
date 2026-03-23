@@ -58,6 +58,9 @@ export class ProductMaster {
   @Column({ type: 'int', default: 1 })
   barcodes_per_item: number;
 
+  @Column({ type: 'text', nullable: true })
+  payout_code: string;
+
   @Column({ type: 'uuid', nullable: true })
   created_by: string;
 

@@ -68,14 +68,15 @@ export class CreditCouponService {
    */
   async findAll(filters: { search?: string; status?: string }) {
     const qb = this.repo.createQueryBuilder('cc')
-      .leftJoinAndSelect('cc.customer', 'customer');
+      .leftJoinAndSelect('cc.customer', 'customer')
+      .leftJoinAndSelect('cc.original_return', 'original_return');
 
     if (filters.status && filters.status !== 'all') {
       qb.andWhere('cc.status = :status', { status: filters.status });
     }
 
     if (filters.search) {
-      qb.andWhere('(cc.coupon_no ILIKE :search OR cc.customer_mobile ILIKE :search OR customer.name ILIKE :search)', { 
+      qb.andWhere('(cc.coupon_no ILIKE :search OR cc.customer_mobile ILIKE :search OR customer.name ILIKE :search OR original_return.invoice_number ILIKE :search)', { 
         search: `%${filters.search}%` 
       });
     }

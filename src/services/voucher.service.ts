@@ -2,6 +2,7 @@ import { AppDataSource } from '../config/data-source';
 import { Voucher } from '../entities/Voucher';
 import { DiscountMaster } from '../entities/DiscountMaster';
 import { SalesInvoice } from '../entities/SalesInvoice';
+import { ILike } from 'typeorm';
 
 export class VoucherService {
   private voucherRepo = AppDataSource.getRepository(Voucher);
@@ -9,7 +10,7 @@ export class VoucherService {
 
   async validateVoucher(code: string) {
     const voucher = await this.voucherRepo.findOne({
-      where: { voucher_code: code },
+      where: { voucher_code: ILike(code) },
       relations: ['discount_master']
     });
 
@@ -35,7 +36,7 @@ export class VoucherService {
 
   async redeemVoucher(code: string, invoiceId: string, manager?: any) {
     const repo = manager ? manager.getRepository(Voucher) : this.voucherRepo;
-    const voucher = await repo.findOne({ where: { voucher_code: code } });
+    const voucher = await repo.findOne({ where: { voucher_code: ILike(code) } });
     
     if (!voucher) throw new Error('Voucher not found');
     if (voucher.is_redeemed) throw new Error('Voucher already redeemed');

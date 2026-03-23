@@ -44,18 +44,16 @@ export class SalesmanService {
     return this.salesmanRepo.save(salesman);
   }
 
-  async getNextCode(): Promise<string> {
-    const lastSalesman = await this.salesmanRepo.find({
-      order: { salesman_code: 'DESC' },
-      take: 1,
-    });
+  async getNextCode(firstName?: string, lastName?: string): Promise<string> {
+    if (!firstName || !firstName.trim() || !lastName || !lastName.trim()) return 'PSHE1';
 
-    if (lastSalesman.length === 0) return 'PSHE1';
+    const initials = (firstName.trim()[0] + lastName.trim()[0]).toUpperCase();
+    if (!initials) return 'PSHE1';
 
-    const lastCode = lastSalesman[0].salesman_code;
-    const match = lastCode.match(/\d+$/);
-    const nextNum = match ? parseInt(match[0]) + 1 : 1;
-    return `PSHE${nextNum}`;
+    const count = await this.salesmanRepo.count();
+    const nextNum = count + 1;
+
+    return `${initials}${String(nextNum).padStart(2, '0')}`;
   }
 }
 

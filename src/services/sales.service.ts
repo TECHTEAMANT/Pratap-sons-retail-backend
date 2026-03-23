@@ -113,7 +113,7 @@ export class SalesService {
         payment_mode: data.payment_mode || (data.payment_details && data.payment_details.length > 0 ? data.payment_details[0].mode : null),
         amount_paid: data.amount_paid || 0,
         payment_details: data.payment_details || null,
-        amount_pending: data.amount_paid !== undefined ? (data.net_payable - data.amount_paid) : (data.net_payable || 0),
+        amount_pending: data.amount_paid !== undefined ? Math.max(0, data.net_payable - data.amount_paid) : (data.net_payable || 0),
         payment_status: data.amount_paid >= data.net_payable ? 'paid' : data.amount_paid > 0 ? 'partial' : 'pending',
         sales_order_id: data.sales_order_id || null,
         voucher_id: data.voucher_id || null,
@@ -165,6 +165,7 @@ export class SalesService {
             selling_price: item.selling_price || item.mrp || 0,
             salesman_id: item.salesman_id || null,
             delivered: item.delivered || false,
+            on_approval: item.on_approval || false,
             delivery_date: item.delivery_date || null,
             expected_delivery_date: item.expected_delivery_date || null,
           });

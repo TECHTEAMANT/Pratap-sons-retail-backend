@@ -103,6 +103,7 @@ export class ReportService {
         Card: 0,
         Online: 0,
         Approval: 0,
+        'Credit Coupon': 0,
         Others: 0
       },
       approvalItemCount: 0
@@ -120,6 +121,7 @@ export class ReportService {
       result.sgst_18 += parseFloat(inv.sgst_18 as any) || 0;
 
       if (inv.payment_details && Array.isArray(inv.payment_details)) {
+        let hasCreditCoupon = false;
         inv.payment_details.forEach((pd: any) => {
           const mode = pd.mode;
           const amount = parseFloat(pd.amount) || 0;
@@ -127,9 +129,24 @@ export class ReportService {
           else if (mode === 'UPI') result.paymentBreakdown.UPI += amount;
           else if (mode === 'Card') result.paymentBreakdown.Card += amount;
           else if (mode === 'Online') result.paymentBreakdown.Online += amount;
-          else if (mode === 'Approval') result.paymentBreakdown.Approval += amount;
+          else if (mode === 'Approval') {
+            // Only count approval as pending if the invoice itself is still pending
+            const actualApprovalPending = Math.min(amount, Number(inv.amount_pending || 0));
+            result.paymentBreakdown.Approval += actualApprovalPending;
+          }
+          else if (mode === 'Credit Coupon') { result.paymentBreakdown['Credit Coupon'] += amount; hasCreditCoupon = true; }
           else result.paymentBreakdown.Others += amount;
         });
+
+        // Fallback: infer coupon amount for older invoices saved before auto-sync
+        if (!hasCreditCoupon && (inv as any).coupon_no) {
+          const totalMrp = parseFloat(inv.total_mrp as any) || 0;
+          const totalDiscount = (parseFloat(inv.total_discount as any) || 0) + (parseFloat((inv as any).voucher_discount as any) || 0);
+          const loyalty = parseFloat((inv as any).loyalty_redemption_amount as any) || 0;
+          const netPayable = parseFloat(inv.net_payable as any) || 0;
+          const inferredCoupon = totalMrp - totalDiscount - loyalty - netPayable;
+          if (inferredCoupon > 0) result.paymentBreakdown['Credit Coupon'] += inferredCoupon;
+        }
       } else {
         // Fallback to primary payment_mode if details missing
         const mode = inv.payment_mode || 'Others';
@@ -139,12 +156,14 @@ export class ReportService {
         else if (mode === 'Card') result.paymentBreakdown.Card += amount;
         else if (mode === 'Online') result.paymentBreakdown.Online += amount;
         else if (mode === 'Approval') result.paymentBreakdown.Approval += amount;
+        else if (mode === 'Credit Coupon') result.paymentBreakdown['Credit Coupon'] += amount;
         else result.paymentBreakdown.Others += amount;
       }
 
-      if (inv.items) {
+      if (inv.items && Number(inv.amount_pending || 0) > 0) {
         inv.items.forEach(item => {
           if (item.on_approval) {
+            // Only count items as "on approval" if there is still a pending balance
             result.approvalItemCount += Number(item.quantity) || 0;
           }
         });
@@ -158,6 +177,8 @@ export class ReportService {
   }
 
   async inventoryReport(filters: { vendorId?: string; floorId?: string } = {}) {
+    // Determine GST rate and amount based on cost_actual and gst_logic
+    // Logic: if AUTO_5_18 then (if cost < 2500 then 5% else 18%), else 5%
     const qb = AppDataSource.getRepository(BarcodeBatch)
       .createQueryBuilder('bb')
       .leftJoin('bb.product_group', 'pg')
@@ -170,9 +191,8 @@ export class ReportService {
         'COALESCE(bb.total_quantity - bb.available_quantity, 0) as "soldQty"',
         'COALESCE(bb.cost_actual, 0) as cost',
         'COALESCE(bb.mrp, 0) as mrp',
-        'COALESCE(bb.available_quantity * bb.cost_actual, 0) as "inventoryValue"',
-        'COALESCE(bb.available_quantity * (bb.mrp - bb.cost_actual), 0) as "potentialProfit"',
-        'COALESCE((bb.total_quantity - bb.available_quantity) * (bb.mrp - bb.cost_actual), 0) as "soldProfit"'
+        'CASE WHEN bb.gst_logic = \'AUTO_5_18\' THEN (CASE WHEN bb.cost_actual < 2500 THEN 5 ELSE 18 END) ELSE 5 END as "gstRate"',
+        'COALESCE(bb.available_quantity * bb.cost_actual, 0) as "inventoryValue"'
       ]);
 
     qb.where('bb.status IN (:...statuses)', { statuses: ['active', 'Available', 'defective', 'Sold', 'Returned'] });
@@ -187,16 +207,31 @@ export class ReportService {
     qb.orderBy('bb.design_no', 'ASC');
 
     const results = await qb.getRawMany();
-    return results.map(r => ({
-      ...r,
-      availableQty: parseFloat(r.availableQty),
-      soldQty: parseFloat(r.soldQty),
-      cost: parseFloat(r.cost),
-      mrp: parseFloat(r.mrp),
-      inventoryValue: parseFloat(r.inventoryValue),
-      potentialProfit: parseFloat(r.potentialProfit),
-      soldProfit: parseFloat(r.soldProfit)
-    }));
+    return results.map(r => {
+      const cost = parseFloat(r.cost);
+      const mrp = parseFloat(r.mrp);
+      const availableQty = parseFloat(r.availableQty);
+      const soldQty = parseFloat(r.soldQty);
+      const gstRate = parseFloat(r.gstRate);
+      
+      const purchaseGstAmount = (cost * gstRate) / 100;
+      const landedCost = cost + purchaseGstAmount;
+      const actualProfitPerUnit = mrp - landedCost;
+
+      return {
+        ...r,
+        availableQty,
+        soldQty,
+        cost,
+        mrp,
+        gstRate,
+        purchaseGstAmount,
+        landedCost,
+        inventoryValue: parseFloat(r.inventoryValue),
+        potentialProfit: availableQty * actualProfitPerUnit,
+        soldProfit: soldQty * actualProfitPerUnit
+      };
+    });
   }
 
   async salesmanReport(filters: any) {
