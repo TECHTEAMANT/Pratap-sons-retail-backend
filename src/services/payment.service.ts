@@ -39,6 +39,7 @@ export class PaymentService {
         receipt_date: data.receipt_date,
         customer_mobile: data.customer_mobile,
         customer_name: data.customer_name,
+        customer_gstin: data.customer_gstin || null,
         amount_received: data.amount_received,
         payment_mode: data.payment_mode,
         payment_details: data.payment_details,

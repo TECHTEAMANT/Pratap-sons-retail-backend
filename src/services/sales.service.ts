@@ -53,7 +53,10 @@ export class SalesService {
       qb.andWhere('si.customer_name = :name', { name: filters.customer_name });
     }
 
-    qb.leftJoinAndSelect('si.salesman', 'salesman');
+    qb.leftJoinAndSelect('si.salesman', 'salesman')
+      .leftJoinAndSelect('si.items', 'items')
+      .leftJoinAndSelect('items.product_item', 'product_item')
+      .leftJoinAndSelect('product_item.product_group', 'product_group');
 
     qb.orderBy('si.created_at', 'DESC').skip(skip).take(limit);
 
@@ -69,7 +72,8 @@ export class SalesService {
         'salesman', 
         'items.salesman', 
         'items.product_item', 
-        'items.product_item.product_group'
+        'items.product_item.product_group',
+        'customer'
       ] 
     });
   }
@@ -120,6 +124,7 @@ export class SalesService {
         voucher_discount: data.voucher_discount || 0,
         pan_no: data.pan_no || null,
         aadhar_no: data.aadhar_no || null,
+        customer_gstin: data.customer_gstin || null,
         salesman_id: data.salesman_id || null,
         created_by: userId,
       });

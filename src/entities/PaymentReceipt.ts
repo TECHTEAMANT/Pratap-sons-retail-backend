@@ -25,6 +25,9 @@ export class PaymentReceipt {
   @Column({ type: 'text', nullable: true })
   customer_name: string;
 
+  @Column({ type: 'text', nullable: true })
+  customer_gstin: string;
+
   @Column({ type: 'numeric' })
   amount_received: number;
 

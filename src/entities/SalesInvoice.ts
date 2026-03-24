@@ -101,6 +101,9 @@ export class SalesInvoice {
   @Column({ type: 'text', nullable: true })
   aadhar_no: string;
 
+  @Column({ type: 'text', nullable: true })
+  customer_gstin: string;
+
   @Column({ type: 'jsonb', nullable: true })
   payment_details: any;
 

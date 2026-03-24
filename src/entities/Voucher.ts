@@ -10,7 +10,7 @@ export class Voucher {
   @Column({ type: 'text', unique: true })
   voucher_code: string;
 
-  @ManyToOne(() => DiscountMaster)
+  @ManyToOne(() => DiscountMaster, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'discount_master_id' })
   discount_master: DiscountMaster;
 

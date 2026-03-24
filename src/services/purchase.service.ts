@@ -178,7 +178,10 @@ export class PurchaseService {
     const limit = Number(filters.limit) || 20;
     const skip = (page - 1) * limit;
 
-    const qb = this.poRepo.createQueryBuilder('po').leftJoinAndSelect('po.vendor', 'v');
+    const qb = this.poRepo.createQueryBuilder('po')
+      .leftJoinAndSelect('po.vendor', 'v')
+      .leftJoinAndSelect('po.purchase_items', 'items')
+      .leftJoinAndSelect('items.product_group', 'product_group');
 
     if (filters.vendor || filters.vendor_id) {
       qb.andWhere('po.vendor_id = :vid', { vid: filters.vendor || filters.vendor_id });
@@ -257,7 +260,7 @@ export class PurchaseService {
     const repo = AppDataSource.getRepository(PurchaseInvoice);
     const where: any = {};
     if (filters.vendor_id) where.vendor_id = filters.vendor_id;
-    return repo.find({ where, order: { created_at: 'DESC' } });
+    return repo.find({ where, relations: ['vendor'], order: { created_at: 'DESC' } });
   }
 
   async createInvoice(data: any, userId: string) {

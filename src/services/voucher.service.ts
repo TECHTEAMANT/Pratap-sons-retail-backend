@@ -2,7 +2,7 @@ import { AppDataSource } from '../config/data-source';
 import { Voucher } from '../entities/Voucher';
 import { DiscountMaster } from '../entities/DiscountMaster';
 import { SalesInvoice } from '../entities/SalesInvoice';
-import { ILike } from 'typeorm';
+import { ILike, In } from 'typeorm';
 
 export class VoucherService {
   private voucherRepo = AppDataSource.getRepository(Voucher);
@@ -58,16 +58,28 @@ export class VoucherService {
     const dm = await this.discountRepo.findOneBy({ id: data.discount_master_id });
     if (!dm) throw new Error('Discount master not found');
 
-    const vouchers: Voucher[] = [];
+    const codes = [];
     for (let i = data.start_no; i <= data.end_no; i++) {
-      const code = `${data.prefix}${i.toString().padStart(4, '0')}`;
-      const voucher = this.voucherRepo.create({
+      codes.push(`${data.prefix}${i.toString().padStart(4, '0')}`);
+    }
+
+    // Check for existing vouchers in the range to prevent duplicate key errors
+    const existing = await this.voucherRepo.find({
+      where: { voucher_code: In(codes) }
+    });
+
+    if (existing.length > 0) {
+      const dups = existing.map(v => v.voucher_code).slice(0, 5).join(', ');
+      throw new Error(`Duplicate voucher(s) found: ${dups}${existing.length > 5 ? '...' : ''}. Please use a different range or prefix.`);
+    }
+
+    const vouchers: Voucher[] = codes.map(code => 
+      this.voucherRepo.create({
         voucher_code: code,
         discount_master_id: dm.id,
         expiry_date: data.expiry_date ? new Date(data.expiry_date) : undefined
-      });
-      vouchers.push(voucher);
-    }
+      })
+    );
 
     return this.voucherRepo.save(vouchers);
   }
