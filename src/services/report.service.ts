@@ -106,7 +106,8 @@ export class ReportService {
         'Credit Coupon': 0,
         Others: 0
       },
-      approvalItemCount: 0
+      approvalItemCount: 0,
+      totalQuantity: 0
     };
 
     invoices.forEach(inv => {
@@ -160,9 +161,10 @@ export class ReportService {
         else result.paymentBreakdown.Others += amount;
       }
 
-      if (inv.items && Number(inv.amount_pending || 0) > 0) {
+      if (inv.items) {
         inv.items.forEach(item => {
-          if (item.on_approval) {
+          result.totalQuantity += Number(item.quantity) || 0;
+          if (Number(inv.amount_pending || 0) > 0 && item.on_approval) {
             // Only count items as "on approval" if there is still a pending balance
             result.approvalItemCount += Number(item.quantity) || 0;
           }
@@ -587,7 +589,7 @@ export class ReportService {
     const qb = AppDataSource.getRepository(SalesReturn)
       .createQueryBuilder('sr')
       .leftJoin('sr.salesman', 's')
-      .leftJoin('sr.invoice', 'si')
+      .leftJoin(SalesReturnItem, 'sri', 'sri.return_id = sr.id')
       .select([
         'sr.id as id',
         'sr.return_number as return_number',
@@ -600,12 +602,25 @@ export class ReportService {
         'sr.status as status',
         's.name as salesman_name',
         'sr.credit_coupon_no as credit_coupon_no',
-        'sr.credit_note_number as credit_note_number'
+        'sr.credit_note_number as credit_note_number',
+        'COALESCE(SUM(sri.quantity), 0) as total_quantity'
       ])
       .where('sr.return_date >= :start AND sr.return_date <= :end', { 
         start: `${filters.startDate}T00:00:00.000Z`, 
         end: `${filters.endDate}T23:59:59.999Z` 
       })
+      .groupBy('sr.id')
+      .addGroupBy('sr.return_number')
+      .addGroupBy('sr.return_date')
+      .addGroupBy('sr.invoice_number')
+      .addGroupBy('sr.customer_name')
+      .addGroupBy('sr.customer_mobile')
+      .addGroupBy('sr.total_return_amount')
+      .addGroupBy('sr.return_reason')
+      .addGroupBy('sr.status')
+      .addGroupBy('s.name')
+      .addGroupBy('sr.credit_coupon_no')
+      .addGroupBy('sr.credit_note_number')
       .orderBy('sr.return_date', 'DESC');
 
     const details = await qb.getRawMany();
@@ -613,7 +628,8 @@ export class ReportService {
     const summary = details.reduce((acc, d) => ({
       totalReturnAmount: acc.totalReturnAmount + parseFloat(d.total_return_amount),
       returnCount: acc.returnCount + 1,
-    }), { totalReturnAmount: 0, returnCount: 0 });
+      totalQuantity: acc.totalQuantity + parseInt(d.total_quantity || 0)
+    }), { totalReturnAmount: 0, returnCount: 0, totalQuantity: 0 });
 
     return { summary, details };
   }

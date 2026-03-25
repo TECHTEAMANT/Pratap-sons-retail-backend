@@ -54,6 +54,13 @@ export class UserService {
     if (data.mapped_salesman !== undefined) user.mapped_salesman = data.mapped_salesman;
     if (data.active !== undefined) user.active = data.active;
 
+    // Handle password update
+    const anyData = data as any;
+    if (anyData.password) {
+      const salt = await bcrypt.genSalt(10);
+      user.password_hash = await bcrypt.hash(anyData.password, salt);
+    }
+
     const saved = await this.userRepo.save(user);
     const { password_hash: _, ...result } = saved;
     return result;

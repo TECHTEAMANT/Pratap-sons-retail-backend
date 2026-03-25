@@ -22,8 +22,8 @@ export class SalesController {
   async getInvoiceItems(req: Request, res: Response) {
     try { sendSuccess(res, await salesService.getInvoiceItems(req.query)); } catch (e: any) { sendError(res, e.message); }
   }
-  async updateInvoiceItems(req: Request, res: Response) {
-    try { sendSuccess(res, await salesService.updateInvoiceItems(req.query, req.body)); } catch (e: any) { sendError(res, e.message); }
+  async updateInvoice(req: AuthenticatedRequest, res: Response) {
+    try { sendSuccess(res, await salesService.updateInvoice(req.params.id, req.body, req.user!.id)); } catch (e: any) { sendError(res, e.message, 400); }
   }
 }
 

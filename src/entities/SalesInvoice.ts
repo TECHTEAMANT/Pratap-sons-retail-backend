@@ -89,6 +89,9 @@ export class SalesInvoice {
   @Column({ type: 'numeric', default: 0 })
   loyalty_redemption_amount: number;
 
+  @Column({ type: 'numeric', default: 0 })
+  special_discount: number;
+
   @Column({ type: 'uuid', nullable: true })
   created_by: string;
 
