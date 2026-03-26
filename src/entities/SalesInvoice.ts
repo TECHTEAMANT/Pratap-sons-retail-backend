@@ -60,10 +60,16 @@ export class SalesInvoice {
   net_payable: number;
 
   @Column({ type: 'uuid', nullable: true })
-  voucher_id: string;
+  voucher_id: string | null;
 
   @Column({ type: 'numeric', default: 0 })
   voucher_discount: number;
+
+  @Column({ type: 'text', nullable: true })
+  voucher_code: string | null;
+
+  @Column({ type: 'text', nullable: true })
+  coupon_no: string | null;
 
   @Column({ type: 'text', nullable: true })
   payment_mode: string;

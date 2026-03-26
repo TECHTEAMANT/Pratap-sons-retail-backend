@@ -122,6 +122,8 @@ export class SalesService {
         sales_order_id: data.sales_order_id || null,
         voucher_id: data.voucher_id || null,
         voucher_discount: data.voucher_discount || 0,
+        voucher_code: data.voucher_code || null,
+        coupon_no: data.coupon_no || null,
         pan_no: data.pan_no || null,
         aadhar_no: data.aadhar_no || null,
         customer_gstin: data.customer_gstin || null,
@@ -377,7 +379,26 @@ export class SalesService {
         loyalty_points_redeemed: data.loyalty_points_redeemed || 0,
         loyalty_redemption_amount: data.loyalty_redemption_amount || 0,
         special_discount: data.special_discount || 0,
+        voucher_id: data.voucher_id || null,
+        voucher_discount: data.voucher_discount || 0,
+        voucher_code: data.voucher_code || null,
+        coupon_no: data.coupon_no || null,
       };
+
+      // 5. Handle Voucher/Coupon changes
+      if (oldInvoice.voucher_code && oldInvoice.voucher_code !== data.voucher_code) {
+        await voucherService.releaseVoucher(oldInvoice.id, manager);
+      }
+      if (oldInvoice.coupon_no && oldInvoice.coupon_no !== data.coupon_no) {
+        await creditCouponService.releaseCoupon(oldInvoice.id, manager);
+      }
+
+      if (data.voucher_code && data.voucher_code !== oldInvoice.voucher_code) {
+        await voucherService.redeemVoucher(data.voucher_code, oldInvoice.id, manager);
+      }
+      if (data.coupon_no && data.coupon_no !== oldInvoice.coupon_no) {
+        await creditCouponService.redeem(data.coupon_no, oldInvoice.id, manager);
+      }
 
       await manager.update(SalesInvoice, id, updateData);
       

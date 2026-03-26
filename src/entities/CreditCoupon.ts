@@ -32,7 +32,7 @@ export class CreditCoupon {
   original_return: SalesReturn;
 
   @Column({ type: 'uuid', nullable: true })
-  redeemed_invoice_id: string;
+  redeemed_invoice_id: string | null;
 
   @ManyToOne(() => SalesInvoice, { nullable: true })
   @JoinColumn({ name: 'redeemed_invoice_id' })

@@ -54,6 +54,20 @@ export class CreditCouponService {
   }
 
   /**
+   * Release a credit coupon (make it active again)
+   */
+  async releaseCoupon(invoiceId: string, manager: EntityManager) {
+    const repo = manager.getRepository(CreditCoupon);
+    const coupon = await repo.findOne({ where: { redeemed_invoice_id: invoiceId } });
+    if (coupon) {
+      coupon.status = 'active';
+      coupon.redeemed_invoice_id = null;
+      coupon.updated_at = new Date();
+      await repo.save(coupon);
+    }
+  }
+
+  /**
    * Find coupon by number
    */
   async getByCouponNo(couponNo: string) {

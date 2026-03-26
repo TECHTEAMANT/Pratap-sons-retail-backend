@@ -81,8 +81,8 @@ export class ReportService {
       .createQueryBuilder('si')
       .leftJoinAndSelect('si.items', 'items')
       .where('si.invoice_date >= :start AND si.invoice_date <= :end', { 
-        start: `${filters.startDate}T00:00:00.000Z`, 
-        end: `${filters.endDate}T23:59:59.999Z` 
+        start: `${filters.startDate.split('T')[0]}T00:00:00.000Z`, 
+        end: `${filters.endDate.split('T')[0]}T23:59:59.999Z` 
       })
       .getMany();
 
@@ -92,6 +92,10 @@ export class ReportService {
       totalDiscount: 0,
       totalGST: 0,
       taxableValue: 0,
+      totalSpecialDiscount: 0,
+      totalLoyalty: 0,
+      totalVoucher: 0,
+      totalPending: 0,
       invoiceCount: invoices.length,
       cgst_5: 0,
       sgst_5: 0,
@@ -116,6 +120,10 @@ export class ReportService {
       result.totalDiscount += (parseFloat(inv.total_discount as any) || 0) + (parseFloat(inv.voucher_discount as any) || 0);
       result.totalGST += parseFloat(inv.total_gst as any) || 0;
       result.taxableValue += parseFloat(inv.taxable_value as any) || 0;
+      result.totalSpecialDiscount += parseFloat(inv.special_discount as any) || 0;
+      result.totalLoyalty += parseFloat(inv.loyalty_redemption_amount as any) || 0;
+      result.totalVoucher += parseFloat(inv.voucher_discount as any) || 0;
+      result.totalPending += parseFloat(inv.amount_pending as any) || 0;
       result.cgst_5 += parseFloat(inv.cgst_5 as any) || 0;
       result.sgst_5 += parseFloat(inv.sgst_5 as any) || 0;
       result.cgst_18 += parseFloat(inv.cgst_18 as any) || 0;
@@ -606,8 +614,8 @@ export class ReportService {
         'COALESCE(SUM(sri.quantity), 0) as total_quantity'
       ])
       .where('sr.return_date >= :start AND sr.return_date <= :end', { 
-        start: `${filters.startDate}T00:00:00.000Z`, 
-        end: `${filters.endDate}T23:59:59.999Z` 
+        start: `${filters.startDate.split('T')[0]}T00:00:00.000Z`, 
+        end: `${filters.endDate.split('T')[0]}T23:59:59.999Z` 
       })
       .groupBy('sr.id')
       .addGroupBy('sr.return_number')

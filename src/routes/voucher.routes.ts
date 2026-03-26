@@ -9,6 +9,7 @@ router.use(authenticate);
 
 router.get('/', requirePermission('can_manage_masters'), (req, res) => voucherController.findAll(req, res));
 router.get('/validate/:code', (req, res) => voucherController.validate(req, res));
+router.get('/:code', (req, res) => voucherController.getByCode(req, res));
 router.post('/generate', requirePermission('can_manage_masters'), (req, res) => voucherController.generate(req, res));
 
 export default router;

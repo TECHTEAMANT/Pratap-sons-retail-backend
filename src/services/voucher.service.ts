@@ -34,6 +34,13 @@ export class VoucherService {
     return voucher;
   }
 
+  async findByCode(code: string) {
+    return this.voucherRepo.findOne({
+      where: { voucher_code: ILike(code) },
+      relations: ['discount_master']
+    });
+  }
+
   async redeemVoucher(code: string, invoiceId: string, manager?: any) {
     const repo = manager ? manager.getRepository(Voucher) : this.voucherRepo;
     const voucher = await repo.findOne({ where: { voucher_code: ILike(code) } });
@@ -46,6 +53,17 @@ export class VoucherService {
     voucher.redeemed_in_invoice_id = invoiceId;
 
     return repo.save(voucher);
+  }
+
+  async releaseVoucher(invoiceId: string, manager: any) {
+    const repo = manager.getRepository(Voucher);
+    const voucher = await repo.findOne({ where: { redeemed_in_invoice_id: invoiceId } });
+    if (voucher) {
+      voucher.is_redeemed = false;
+      voucher.redeemed_at = null;
+      voucher.redeemed_in_invoice_id = null;
+      await repo.save(voucher);
+    }
   }
 
   async generateVouchers(data: { 

@@ -23,6 +23,16 @@ export class VoucherController {
     }
   }
 
+  async getByCode(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { code } = req.params;
+      const voucher = await voucherService.findByCode(code);
+      voucher ? sendSuccess(res, voucher) : sendNotFound(res, 'Voucher');
+    } catch (e: any) {
+      sendError(res, e.message);
+    }
+  }
+
   async generate(req: AuthenticatedRequest, res: Response) {
     try {
       const vouchers = await voucherService.generateVouchers(req.body);
