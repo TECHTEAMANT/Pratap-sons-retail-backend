@@ -25,6 +25,15 @@ export class SalesController {
   async updateInvoice(req: AuthenticatedRequest, res: Response) {
     try { sendSuccess(res, await salesService.updateInvoice(req.params.id, req.body, req.user!.id)); } catch (e: any) { sendError(res, e.message, 400); }
   }
+  async updateInvoiceItems(req: Request, res: Response) {
+    try {
+      const id = req.query.id as string;
+      if (!id) throw new Error('Item IDs are required');
+      const ids = id.split(',').map(i => i.trim()).filter(Boolean);
+      await salesService.updateInvoiceItems(ids, req.body);
+      sendSuccess(res, { message: 'Items updated successfully' });
+    } catch (e: any) { sendError(res, e.message); }
+  }
 }
 
 export const salesController = new SalesController();

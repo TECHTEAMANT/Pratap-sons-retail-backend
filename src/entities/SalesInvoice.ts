@@ -2,6 +2,7 @@ import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateCol
 import { SalesInvoiceItem } from './SalesInvoiceItem';
 import { Customer } from './Customer';
 import { Salesman } from './Salesman';
+import { User } from './User';
 
 @Entity('sales_invoices')
 export class SalesInvoice {
@@ -136,4 +137,12 @@ export class SalesInvoice {
   @ManyToOne(() => Salesman, { nullable: true })
   @JoinColumn({ name: 'salesman_id' })
   salesman: Salesman;
+
+  @ManyToOne(() => User, { nullable: true })
+  @JoinColumn({ name: 'created_by' })
+  creator: User;
+
+  @ManyToOne(() => User, { nullable: true })
+  @JoinColumn({ name: 'modified_by' })
+  modifier: User;
 }

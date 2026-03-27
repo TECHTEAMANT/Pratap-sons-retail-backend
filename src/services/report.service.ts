@@ -6,7 +6,10 @@ import { Customer } from '../entities/Customer';
 import { PurchaseOrder } from '../entities/PurchaseOrder';
 import { SalesReturn } from '../entities/SalesReturn';
 import { SalesReturnItem } from '../entities/SalesReturnItem';
+import { SalesOrderAdvance } from '../entities/SalesOrderAdvance';
+import { PaymentReceipt } from '../entities/PaymentReceipt';
 import { Between, MoreThanOrEqual, LessThanOrEqual } from 'typeorm';
+import logger from '../utils/logger';
 
 export class ReportService {
   // Daily Sales Report
@@ -108,11 +111,24 @@ export class ReportService {
         Online: 0,
         Approval: 0,
         'Credit Coupon': 0,
-        Others: 0
+        'Exchange': 0,
+        'Others': 0
       },
       approvalItemCount: 0,
-      totalQuantity: 0
+      totalQuantity: 0,
+      totalReturns: 0
     };
+
+    const returns = await AppDataSource.getRepository(SalesReturn).find({
+      where: {
+        return_date: Between(
+          new Date(`${filters.startDate.split('T')[0]}T00:00:00.000Z`),
+          new Date(`${filters.endDate.split('T')[0]}T23:59:59.999Z`)
+        )
+      }
+    });
+
+    result.totalReturns = returns.reduce((sum, ret) => sum + (parseFloat(ret.total_return_amount as any) || 0), 0);
 
     invoices.forEach(inv => {
       result.totalSales += parseFloat(inv.net_payable as any) || 0;
@@ -129,51 +145,74 @@ export class ReportService {
       result.cgst_18 += parseFloat(inv.cgst_18 as any) || 0;
       result.sgst_18 += parseFloat(inv.sgst_18 as any) || 0;
 
-      if (inv.payment_details && Array.isArray(inv.payment_details)) {
+      let paymentDetails = inv.payment_details;
+      if (typeof paymentDetails === 'string') {
+        try {
+          paymentDetails = JSON.parse(paymentDetails);
+        } catch (e: any) {
+          logger.warn(`Failed to parse payment_details for invoice ${inv.invoice_number}: ${e.message}`);
+          paymentDetails = null;
+        }
+      }
+
+      let totalPaidFromDetails = 0;
+      if (paymentDetails && Array.isArray(paymentDetails) && paymentDetails.length > 0) {
         let hasCreditCoupon = false;
-        inv.payment_details.forEach((pd: any) => {
+        paymentDetails.forEach((pd: any) => {
           const mode = pd.mode;
           const amount = parseFloat(pd.amount) || 0;
+          totalPaidFromDetails += amount;
+
           if (mode === 'Cash') result.paymentBreakdown.Cash += amount;
           else if (mode === 'UPI') result.paymentBreakdown.UPI += amount;
           else if (mode === 'Card') result.paymentBreakdown.Card += amount;
-          else if (mode === 'Online') result.paymentBreakdown.Online += amount;
+          else if (mode === 'Online' || mode === 'Bank Transfer') result.paymentBreakdown.Online += amount;
+          else if (mode === 'Exchange') (result.paymentBreakdown as any).Exchange += amount;
           else if (mode === 'Approval') {
-            // Only count approval as pending if the invoice itself is still pending
             const actualApprovalPending = Math.min(amount, Number(inv.amount_pending || 0));
             result.paymentBreakdown.Approval += actualApprovalPending;
           }
-          else if (mode === 'Credit Coupon') { result.paymentBreakdown['Credit Coupon'] += amount; hasCreditCoupon = true; }
-          else result.paymentBreakdown.Others += amount;
+          else if (mode === 'Credit Coupon') { 
+            result.paymentBreakdown['Credit Coupon'] += amount; 
+            hasCreditCoupon = true; 
+          }
+          else (result.paymentBreakdown as any).Others += amount;
         });
 
-        // Fallback: infer coupon amount for older invoices saved before auto-sync
         if (!hasCreditCoupon && (inv as any).coupon_no) {
           const totalMrp = parseFloat(inv.total_mrp as any) || 0;
           const totalDiscount = (parseFloat(inv.total_discount as any) || 0) + (parseFloat((inv as any).voucher_discount as any) || 0);
           const loyalty = parseFloat((inv as any).loyalty_redemption_amount as any) || 0;
           const netPayable = parseFloat(inv.net_payable as any) || 0;
           const inferredCoupon = totalMrp - totalDiscount - loyalty - netPayable;
-          if (inferredCoupon > 0) result.paymentBreakdown['Credit Coupon'] += inferredCoupon;
+          if (inferredCoupon > 0) {
+            result.paymentBreakdown['Credit Coupon'] += inferredCoupon;
+            totalPaidFromDetails += inferredCoupon;
+          }
         }
-      } else {
-        // Fallback to primary payment_mode if details missing
-        const mode = inv.payment_mode || 'Others';
-        const amount = parseFloat(inv.net_payable as any) || 0;
-        if (mode === 'Cash') result.paymentBreakdown.Cash += amount;
-        else if (mode === 'UPI') result.paymentBreakdown.UPI += amount;
-        else if (mode === 'Card') result.paymentBreakdown.Card += amount;
-        else if (mode === 'Online') result.paymentBreakdown.Online += amount;
-        else if (mode === 'Approval') result.paymentBreakdown.Approval += amount;
-        else if (mode === 'Credit Coupon') result.paymentBreakdown['Credit Coupon'] += amount;
-        else result.paymentBreakdown.Others += amount;
+      }
+
+      // SMART FALLBACK: If total from details is less than actual paid amount (Net - Pending),
+      // attribute the difference to the primary payment mode.
+      const actualTotalPaid = (parseFloat(inv.net_payable as any) || 0) - (parseFloat(inv.amount_pending as any) || 0);
+      const missingAmount = Math.max(0, actualTotalPaid - totalPaidFromDetails);
+      
+      if (missingAmount > 0) {
+        const mode = inv.payment_mode || 'Cash'; // Fallback to Cash if no primary mode
+        if (mode === 'Cash') result.paymentBreakdown.Cash += missingAmount;
+        else if (mode === 'UPI') result.paymentBreakdown.UPI += missingAmount;
+        else if (mode === 'Card') result.paymentBreakdown.Card += missingAmount;
+        else if (mode === 'Online' || mode === 'Bank Transfer') result.paymentBreakdown.Online += missingAmount;
+        else if (mode === 'Exchange') (result.paymentBreakdown as any).Exchange += missingAmount;
+        else if (mode === 'Approval') result.paymentBreakdown.Approval += missingAmount;
+        else if (mode === 'Credit Coupon') result.paymentBreakdown['Credit Coupon'] += missingAmount;
+        else (result.paymentBreakdown as any).Others += missingAmount;
       }
 
       if (inv.items) {
         inv.items.forEach(item => {
           result.totalQuantity += Number(item.quantity) || 0;
           if (Number(inv.amount_pending || 0) > 0 && item.on_approval) {
-            // Only count items as "on approval" if there is still a pending balance
             result.approvalItemCount += Number(item.quantity) || 0;
           }
         });
@@ -640,6 +679,110 @@ export class ReportService {
     }), { totalReturnAmount: 0, returnCount: 0, totalQuantity: 0 });
 
     return { summary, details };
+  }
+
+  async cashReport(filters: { startDate: string, endDate: string }) {
+    const start = new Date(`${filters.startDate.split('T')[0]}T00:00:00.000Z`);
+    const end = new Date(`${filters.endDate.split('T')[0]}T23:59:59.999Z`);
+
+    const result = {
+      summary: {
+        totalCash: 0,
+        salesCash: 0,
+        receiptCash: 0,
+        advanceCash: 0
+      },
+      details: [] as any[]
+    };
+
+    // 1. Cash from Direct Sales (Invoices)
+    const invoices = await AppDataSource.getRepository(SalesInvoice).find({
+      where: { invoice_date: Between(start as any, end as any) }
+    });
+
+    invoices.forEach(inv => {
+      let paymentDetails = inv.payment_details;
+      if (typeof paymentDetails === 'string') {
+        try { paymentDetails = JSON.parse(paymentDetails); } catch (e) { paymentDetails = null; }
+      }
+
+      let cashAmount = 0;
+      if (paymentDetails && Array.isArray(paymentDetails)) {
+        paymentDetails.forEach((pd: any) => {
+          if (pd.mode === 'Cash') cashAmount += (parseFloat(pd.amount) || 0);
+        });
+      }
+
+      // Smart Fallback for Cash only invoices if breakdown is missing
+      if (cashAmount === 0 && inv.payment_mode === 'Cash') {
+        cashAmount = (parseFloat(inv.net_payable as any) || 0) - (parseFloat(inv.amount_pending as any) || 0);
+      }
+
+      if (cashAmount > 0) {
+        result.summary.salesCash += cashAmount;
+        result.details.push({
+          id: inv.id,
+          date: inv.invoice_date,
+          source: 'Sales Invoice',
+          reference: inv.invoice_number,
+          customer: inv.customer_name,
+          mobile: inv.customer_mobile,
+          amount: cashAmount
+        });
+      }
+    });
+
+    // 2. Pending Payment Receipts (Cash)
+    const receipts = await AppDataSource.getRepository(PaymentReceipt).find({
+      where: { 
+        receipt_date: Between(start as any, end as any),
+        payment_mode: 'Cash'
+      }
+    });
+
+    receipts.forEach(receipt => {
+      const amount = parseFloat(receipt.amount_received as any) || 0;
+      result.summary.receiptCash += amount;
+      result.details.push({
+        id: receipt.id,
+        date: receipt.receipt_date,
+        source: 'Pending Payment',
+        reference: receipt.receipt_number,
+        customer: receipt.customer_name,
+        mobile: receipt.customer_mobile,
+        amount: amount
+      });
+    });
+
+    // 3. Sales Order Advances (Cash)
+    const advances = await AppDataSource.getRepository(SalesOrderAdvance).find({
+      where: {
+        created_at: Between(start as any, end as any),
+        payment_mode: 'Cash'
+      },
+      relations: ['salesOrder', 'salesOrder.customer']
+    });
+
+    advances.forEach(adv => {
+      const amount = parseFloat(adv.amount as any) || 0;
+      result.summary.advanceCash += amount;
+      result.details.push({
+        id: adv.id,
+        date: adv.created_at,
+        source: 'Order Advance',
+        reference: adv.salesOrder?.order_number || 'N/A',
+        customer: adv.salesOrder?.customer?.name || 'Customer',
+        mobile: adv.salesOrder?.customer?.mobile || '',
+        amount: amount
+      });
+    });
+
+    result.summary.totalCash = result.summary.salesCash + result.summary.receiptCash + result.summary.advanceCash;
+    
+    // Sort details by date descending
+    result.details.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+    return result;
   }
 }
 

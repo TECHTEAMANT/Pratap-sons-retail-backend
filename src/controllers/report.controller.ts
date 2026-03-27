@@ -14,6 +14,7 @@ export class ReportController {
   async slowMovingReport(req: Request, res: Response) { try { const { days } = req.query as any; sendSuccess(res, await reportService.slowMovingReport(days ? parseInt(days) : undefined)); } catch (e: any) { sendError(res, e.message); } }
   async floorwiseReport(req: Request, res: Response) { try { sendSuccess(res, await reportService.floorwiseSalesReport(req.query as any)); } catch (e: any) { sendError(res, e.message); } }
   async salesReturnReport(req: Request, res: Response) { try { sendSuccess(res, await reportService.salesReturnReport(req.query as any)); } catch (e: any) { sendError(res, e.message); } }
+  async cashReport(req: Request, res: Response) { try { sendSuccess(res, await reportService.cashReport(req.query as any)); } catch (e: any) { sendError(res, e.message); } }
 }
 
 export const reportController = new ReportController();

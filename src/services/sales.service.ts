@@ -6,7 +6,7 @@ import { Customer } from '../entities/Customer';
 import { EBooking } from '../entities/EBooking';
 import { Voucher } from '../entities/Voucher';
 import { voucherService } from './voucher.service';
-import { ILike } from 'typeorm';
+import { ILike, In } from 'typeorm';
 import { LoyaltyConfig, LoyaltyHistory, LoyaltyTransactionType } from './../entities';
 import { creditCouponService } from './creditCoupon.service';
 import logger from '../utils/logger';
@@ -34,8 +34,8 @@ export class SalesService {
 
     const qb = this.invoiceRepo.createQueryBuilder('si');
 
-    if (filters.start_date || filters.gte_invoice_date) qb.andWhere('DATE(si.invoice_date) >= :start', { start: filters.start_date || filters.gte_invoice_date });
-    if (filters.end_date || filters.lte_invoice_date) qb.andWhere('DATE(si.invoice_date) <= :end', { end: filters.end_date || filters.lte_invoice_date });
+    if (filters.start_date || filters.gte_invoice_date) qb.andWhere('si.invoice_date >= :start', { start: filters.start_date || filters.gte_invoice_date });
+    if (filters.end_date || filters.lte_invoice_date) qb.andWhere('si.invoice_date <= :end', { end: filters.end_date || filters.lte_invoice_date });
     if (filters.payment_status) qb.andWhere('si.payment_status = :ps', { ps: filters.payment_status });
     if (filters.search) {
       qb.andWhere('(si.invoice_number ILIKE :search OR si.customer_name ILIKE :search OR si.customer_mobile ILIKE :search)', { search: `%${filters.search}%` });
@@ -53,14 +53,38 @@ export class SalesService {
       qb.andWhere('si.customer_name = :name', { name: filters.customer_name });
     }
 
+    // Join only first-level relations directly
     qb.leftJoinAndSelect('si.salesman', 'salesman')
-      .leftJoinAndSelect('si.items', 'items')
-      .leftJoinAndSelect('items.product_item', 'product_item')
-      .leftJoinAndSelect('product_item.product_group', 'product_group');
+      .leftJoinAndSelect('si.creator', 'creator')
+      .leftJoinAndSelect('si.customer', 'customer');
 
+    // Use take/skip with distinct query if there are many relations (though now we removed deep joins)
     qb.orderBy('si.created_at', 'DESC').skip(skip).take(limit);
 
     const [data, total] = await qb.getManyAndCount();
+
+    // Fetch items separately for the retrieved invoices to avoid Cartesian product explosion
+    if (data.length > 0) {
+      const invoiceIds = data.map(inv => inv.id);
+      const allItems = await AppDataSource.getRepository(SalesInvoiceItem).find({
+        where: { invoice_id: In(invoiceIds) },
+        relations: ['product_item', 'product_item.product_group', 'salesman']
+      });
+
+      // Group items by invoice_id
+      const itemMap = new Map<string, SalesInvoiceItem[]>();
+      allItems.forEach(item => {
+        const list = itemMap.get(item.invoice_id) || [];
+        list.push(item);
+        itemMap.set(item.invoice_id, list);
+      });
+
+      // Attach items back to invoices
+      data.forEach(inv => {
+        inv.items = itemMap.get(inv.id) || [];
+      });
+    }
+
     return { data, total, page, limit };
   }
 
@@ -70,6 +94,7 @@ export class SalesService {
       relations: [
         'items', 
         'salesman', 
+        'creator',
         'items.salesman', 
         'items.product_item', 
         'items.product_item.product_group',
@@ -115,9 +140,9 @@ export class SalesService {
         igst_18: data.igst_18 || 0,
         net_payable: data.net_payable || 0,
         payment_mode: data.payment_mode || (data.payment_details && data.payment_details.length > 0 ? data.payment_details[0].mode : null),
-        amount_paid: data.amount_paid || 0,
+        amount_paid: Math.min(Number(data.amount_paid) || 0, Number(data.net_payable) || 0),
         payment_details: data.payment_details || null,
-        amount_pending: data.amount_paid !== undefined ? Math.max(0, data.net_payable - data.amount_paid) : (data.net_payable || 0),
+        amount_pending: data.amount_paid !== undefined ? Math.max(0, Number(data.net_payable) - Number(data.amount_paid)) : (Number(data.net_payable) || 0),
         payment_status: data.amount_paid >= data.net_payable ? 'paid' : data.amount_paid > 0 ? 'partial' : 'pending',
         sales_order_id: data.sales_order_id || null,
         voucher_id: data.voucher_id || null,
@@ -129,6 +154,10 @@ export class SalesService {
         customer_gstin: data.customer_gstin || null,
         salesman_id: data.salesman_id || null,
         created_by: userId,
+        special_discount: data.special_discount || 0,
+        loyalty_points_earned: data.loyalty_points_earned || 0,
+        loyalty_points_redeemed: data.loyalty_points_redeemed || 0,
+        loyalty_redemption_amount: data.loyalty_redemption_amount || 0,
       });
 
       const savedInvoice = await manager.save(invoice);
@@ -288,6 +317,20 @@ export class SalesService {
     if (filters.limit) qb.take(parseInt(filters.limit, 10));
     return qb.getMany();
   }
+  async updateInvoiceItems(ids: string[], data: any) {
+    const itemRepo = AppDataSource.getRepository(SalesInvoiceItem);
+    const allowedFields = ['delivered', 'delivery_date', 'expected_delivery_date'];
+    const updatePayload: any = {};
+    for (const field of allowedFields) {
+      if (data[field] !== undefined) {
+        updatePayload[field] = data[field];
+      }
+    }
+    
+    if (Object.keys(updatePayload).length === 0) return;
+
+    await itemRepo.update(ids, updatePayload);
+  }
   async updateInvoice(id: string, data: any, userId: string) {
     return AppDataSource.transaction(async (manager) => {
       // 1. Fetch old invoice and its items
@@ -366,7 +409,7 @@ export class SalesService {
         igst_18: data.igst_18 || 0,
         net_payable: data.net_payable || 0,
         payment_mode: data.payment_mode || (data.payment_details && data.payment_details.length > 0 ? data.payment_details[0].mode : oldInvoice.payment_mode),
-        amount_paid: data.amount_paid || 0,
+        amount_paid: Math.min(Number(data.amount_paid) || 0, Number(data.net_payable) || 0),
         payment_details: data.payment_details || null,
         amount_pending: data.amount_paid !== undefined ? Math.max(0, Number(data.net_payable) - Number(data.amount_paid)) : (Number(data.net_payable) || 0),
         payment_status: Number(data.amount_paid) >= Number(data.net_payable) ? 'paid' : Number(data.amount_paid) > 0 ? 'partial' : 'pending',
