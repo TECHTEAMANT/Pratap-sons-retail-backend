@@ -36,6 +36,12 @@ export class SalesReturnItem {
   @Column({ type: 'numeric', default: 0 })
   return_amount: number;
 
+  @Column({ type: 'numeric', default: 0 })
+  discount_amount: number;
+
+  @Column({ type: 'numeric', default: 0 })
+  loyalty_amount: number;
+
   @Column({ type: 'text', nullable: true })
   reason: string;
 

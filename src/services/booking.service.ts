@@ -30,6 +30,7 @@ export class BookingService {
 
     const qb = this.repo.createQueryBuilder('b')
       .leftJoinAndSelect('b.items', 'items')
+      .leftJoinAndSelect('items.salesman', 'item_salesman')
       .leftJoinAndSelect('b.floor_details', 'floor')
       .leftJoinAndSelect('b.created_by_details', 'user')
       .leftJoinAndSelect('b.discount_given_by_details', 'discount_user');
@@ -46,7 +47,7 @@ export class BookingService {
   async findById(id: string) {
     return this.repo.findOne({
       where: { id },
-      relations: ['items', 'floor_details', 'created_by_details', 'salesman_master']
+      relations: ['items', 'items.salesman', 'floor_details', 'created_by_details', 'salesman_master']
     });
   }
 
@@ -82,16 +83,27 @@ export class BookingService {
     const savedBooking = await this.repo.save(booking);
 
     if (data.items && Array.isArray(data.items)) {
-      const items = data.items.map((barcode: string) => ({
-        e_booking_id: savedBooking.id,
-        barcode_8digit: barcode
-      }));
+      const items = data.items.map((item: any) => {
+        if (typeof item === 'string') {
+          return {
+            e_booking_id: savedBooking.id,
+            barcode_8digit: item,
+            salesman_id: data.salesman_id || null
+          };
+        }
+        return {
+          e_booking_id: savedBooking.id,
+          barcode_8digit: item.barcode_8digit,
+          salesman_id: item.salesman_id || data.salesman_id || null
+        };
+      });
       await AppDataSource.getRepository(EBookingItem).insert(items);
     } else if (data.barcode_8digit) {
       // Fallback for single item
       await AppDataSource.getRepository(EBookingItem).insert({
         e_booking_id: savedBooking.id,
-        barcode_8digit: data.barcode_8digit
+        barcode_8digit: data.barcode_8digit,
+        salesman_id: data.salesman_id || null
       });
     }
 

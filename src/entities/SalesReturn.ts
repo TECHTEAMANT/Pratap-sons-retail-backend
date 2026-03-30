@@ -32,6 +32,12 @@ export class SalesReturn {
   @Column({ type: 'numeric', default: 0 })
   total_return_amount: number;
 
+  @Column({ type: 'numeric', default: 0 })
+  total_discount_amount: number;
+
+  @Column({ type: 'numeric', default: 0 })
+  total_loyalty_amount: number;
+
   @Column({ type: 'text', nullable: true })
   credit_note_number: string;
 

@@ -54,6 +54,8 @@ export class SalesReturnService {
         customer_name: data.customer_name,
         return_reason: data.return_reason,
         total_return_amount: data.total_return_amount,
+        total_discount_amount: data.total_discount_amount || 0,
+        total_loyalty_amount: data.total_loyalty_amount || 0,
         status: 'completed',
         created_by: userId,
         salesman_id: data.salesman_id || null,
@@ -75,6 +77,8 @@ export class SalesReturnService {
           taxable_value: item.taxable_value,
           gst_amount: item.gst_amount || 0,
           return_amount: item.return_amount,
+          discount_amount: item.discount_amount || 0,
+          loyalty_amount: item.loyalty_amount || 0,
           reason: item.reason || null,
           salesman_id: item.salesman_id || null,
           on_approval: !!item.on_approval,
@@ -188,13 +192,22 @@ export class SalesReturnService {
           const initialPending = Number(invoice.amount_pending);
           let currentPending = initialPending;
 
-          // 1. Calculate Regular Pending portion
-          // regularPending = Value of all regular items - amount_paid
           const totalRegularValue = invoice.items
             .filter(i => !i.on_approval)
-            .reduce((sum, i) => sum + (Number(i.selling_price || i.mrp) * Number(i.quantity)), 0);
+            .reduce((sum, i) => {
+              const itemTotal = Number(i.total_value) || (Number(i.selling_price || i.mrp) * Number(i.quantity));
+              return sum + itemTotal;
+            }, 0);
           
-          const regularPending = Math.max(0, totalRegularValue - Number(invoice.amount_paid));
+          const totalItemsValue = invoice.items.reduce((sum, item) => {
+            const itemTotal = Number(item.total_value) || (Number(item.selling_price || item.mrp || 0) * Number(item.quantity || 1));
+            return sum + itemTotal;
+          }, 0);
+          const effectiveSubtotal = Number(invoice.total_mrp) || totalItemsValue;
+          const invoiceRatio = effectiveSubtotal > 0 ? (Number(invoice.net_payable) / effectiveSubtotal) : 1;
+          
+          const adjustedRegularValue = totalRegularValue * invoiceRatio;
+          const regularPending = Math.max(0, adjustedRegularValue - Number(invoice.amount_paid));
 
           // 2. Handle Approval Returns: Offset against total pending first
           const offsetFromApproval = Math.min(currentPending, returnAmountApproval);

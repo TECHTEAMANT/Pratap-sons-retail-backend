@@ -650,7 +650,9 @@ export class ReportService {
         's.name as salesman_name',
         'sr.credit_coupon_no as credit_coupon_no',
         'sr.credit_note_number as credit_note_number',
-        'COALESCE(SUM(sri.quantity), 0) as total_quantity'
+        'COALESCE(SUM(sri.quantity), 0) as total_quantity',
+        'sr.total_discount_amount as total_discount_amount',
+        'sr.total_loyalty_amount as total_loyalty_amount'
       ])
       .where('sr.return_date >= :start AND sr.return_date <= :end', { 
         start: `${filters.startDate.split('T')[0]}T00:00:00.000Z`, 
@@ -668,15 +670,19 @@ export class ReportService {
       .addGroupBy('s.name')
       .addGroupBy('sr.credit_coupon_no')
       .addGroupBy('sr.credit_note_number')
+      .addGroupBy('sr.total_discount_amount')
+      .addGroupBy('sr.total_loyalty_amount')
       .orderBy('sr.return_date', 'DESC');
 
     const details = await qb.getRawMany();
 
     const summary = details.reduce((acc, d) => ({
       totalReturnAmount: acc.totalReturnAmount + parseFloat(d.total_return_amount),
+      totalDiscountAmount: acc.totalDiscountAmount + parseFloat(d.total_discount_amount || 0),
+      totalLoyaltyAmount: acc.totalLoyaltyAmount + parseFloat(d.total_loyalty_amount || 0),
       returnCount: acc.returnCount + 1,
       totalQuantity: acc.totalQuantity + parseInt(d.total_quantity || 0)
-    }), { totalReturnAmount: 0, returnCount: 0, totalQuantity: 0 });
+    }), { totalReturnAmount: 0, totalDiscountAmount: 0, totalLoyaltyAmount: 0, returnCount: 0, totalQuantity: 0 });
 
     return { summary, details };
   }
