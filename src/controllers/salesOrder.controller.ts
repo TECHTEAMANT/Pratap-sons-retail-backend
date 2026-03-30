@@ -37,6 +37,12 @@ export class SalesOrderController {
   async getItems(req: Request, res: Response) { try { sendSuccess(res, await salesOrderService.getItems(req.query as any)); } catch (e: any) { console.error('GET ITEMS ERROR:', e); sendError(res, e.message); } }
   async createItem(req: Request, res: Response) { try { sendCreated(res, await salesOrderService.createItem(req.body)); } catch (e: any) { sendError(res, e.message, 400); } }
   async getAdvances(req: Request, res: Response) { try { sendSuccess(res, await salesOrderService.getAdvances(req.query as any)); } catch (e: any) { sendError(res, e.message); } }
+  async findAdvanceById(req: Request, res: Response) { 
+    try { 
+      const advance = await salesOrderService.findAdvanceById(req.params.id);
+      advance ? sendSuccess(res, advance) : sendNotFound(res, 'Advance record');
+    } catch (e: any) { sendError(res, e.message); } 
+  }
 }
 
 export const salesOrderController = new SalesOrderController();

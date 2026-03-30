@@ -152,10 +152,20 @@ export class SalesOrderService {
     const repo = AppDataSource.getRepository(SalesOrderAdvance);
     const where: any = {};
     if (filters.sales_order_id) where.sales_order_id = filters.sales_order_id;
+    if (filters.order_id) where.sales_order_id = filters.order_id;
     
     return repo.find({ 
       where, 
+      relations: ['salesOrder', 'salesOrder.customer'],
       order: { created_at: 'DESC' } 
+    });
+  }
+
+  async findAdvanceById(id: string) {
+    const repo = AppDataSource.getRepository(SalesOrderAdvance);
+    return repo.findOne({
+      where: { id },
+      relations: ['salesOrder', 'salesOrder.customer']
     });
   }
 }

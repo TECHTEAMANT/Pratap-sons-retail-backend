@@ -784,6 +784,54 @@ export class ReportService {
 
     return result;
   }
+
+  async advanceAnalysis(filters: { startDate: string, endDate: string }) {
+    const start = new Date(`${filters.startDate.split('T')[0]}T00:00:00.000Z`);
+    const end = new Date(`${filters.endDate.split('T')[0]}T23:59:59.999Z`);
+
+    const advances = await AppDataSource.getRepository(SalesOrderAdvance).find({
+      where: {
+        created_at: Between(start as any, end as any)
+      },
+      relations: ['salesOrder', 'salesOrder.customer'],
+      order: { created_at: 'DESC' }
+    });
+
+    const summary = {
+      total: 0,
+      cash: 0,
+      upi: 0,
+      card: 0,
+      bank: 0,
+      count: advances.length
+    };
+
+    const details = advances.map(adv => {
+      const amount = parseFloat(adv.amount as any) || 0;
+      const mode = (adv.payment_mode || 'Cash').toLowerCase();
+      
+      summary.total += amount;
+      if (mode.includes('cash')) summary.cash += amount;
+      else if (mode.includes('upi')) summary.upi += amount;
+      else if (mode.includes('card')) summary.card += amount;
+      else if (mode.includes('bank') || mode.includes('transfer')) summary.bank += amount;
+
+      return {
+        id: adv.id,
+        date: adv.created_at,
+        amount: amount,
+        payment_mode: adv.payment_mode,
+        reference_number: adv.reference_number,
+        notes: adv.notes,
+        order_number: adv.salesOrder?.order_number,
+        customer_name: adv.salesOrder?.customer?.name,
+        customer_mobile: adv.salesOrder?.customer?.mobile,
+        status: adv.salesOrder?.status
+      };
+    });
+
+    return { summary, details };
+  }
 }
 
 export const reportService = new ReportService();

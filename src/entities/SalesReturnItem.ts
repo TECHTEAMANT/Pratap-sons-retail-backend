@@ -42,6 +42,9 @@ export class SalesReturnItem {
   @Column({ type: 'uuid', nullable: true })
   salesman_id: string;
 
+  @Column({ type: 'boolean', default: false })
+  on_approval: boolean;
+
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
 

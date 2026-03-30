@@ -19,5 +19,6 @@ router.get('/slow-moving', (req, res) => reportController.slowMovingReport(req, 
 router.get('/floorwise-sales', (req, res) => reportController.floorwiseReport(req, res));
 router.get('/sales-returns', (req, res) => reportController.salesReturnReport(req, res));
 router.get('/cash', (req, res) => reportController.cashReport(req, res));
+router.get('/advances', (req, res) => reportController.advanceAnalysis(req, res));
 
 export default router;

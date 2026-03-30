@@ -61,6 +61,9 @@ export class SalesReturnService {
       const savedReturn = await manager.save(ret);
 
       // Create return items & restore inventory
+      let returnAmountApproval = 0;
+      let returnAmountRegular = 0;
+
       for (const item of data.items) {
         const retItem = manager.create(SalesReturnItem, {
           return_id: savedReturn.id,
@@ -74,8 +77,16 @@ export class SalesReturnService {
           return_amount: item.return_amount,
           reason: item.reason || null,
           salesman_id: item.salesman_id || null,
+          on_approval: !!item.on_approval,
         });
         await manager.save(retItem);
+
+        const itemAmt = Number(item.return_amount) || 0;
+        if (item.on_approval) {
+          returnAmountApproval += itemAmt;
+        } else {
+          returnAmountRegular += itemAmt;
+        }
 
         // Restore inventory — cap available at total to prevent available > total
         const batch = await manager.findOne(BarcodeBatch, { where: { barcode_alias_8digit: item.barcode_8digit } });
@@ -89,6 +100,7 @@ export class SalesReturnService {
       }
 
       // Create credit note
+      // ... (existing CN logic remains same)
       let cnNum = data.credit_note_number;
       if (!cnNum) {
         const year = new Date().getFullYear();
@@ -123,7 +135,10 @@ export class SalesReturnService {
         customer.total_returns = Number(customer.total_returns) + Number(data.total_return_amount);
         customer.return_count = (customer.return_count || 0) + 1;
 
-        const invoice = await manager.findOne(SalesInvoice, { where: { id: data.invoice_id } });
+        const invoice = await manager.findOne(SalesInvoice, { 
+          where: { id: data.invoice_id },
+          relations: ['items']
+        });
         
         // Deduct loyalty points earned
         const loyaltyConfig = await manager.findOne(LoyaltyConfig, { where: { active: true } });
@@ -167,19 +182,40 @@ export class SalesReturnService {
         await manager.save(customer);
 
         // Calculate Excess Payment for Credit Coupon
-        const returnAmount = Number(data.total_return_amount);
         let refundAmount = 0;
         
         if (invoice) {
-          if (Number(invoice.amount_pending) >= returnAmount) {
-            invoice.amount_pending = Number(invoice.amount_pending) - returnAmount;
-          } else {
-            refundAmount = returnAmount - Number(invoice.amount_pending);
-            invoice.amount_pending = 0;
-          }
+          const initialPending = Number(invoice.amount_pending);
+          let currentPending = initialPending;
+
+          // 1. Calculate Regular Pending portion
+          // regularPending = Value of all regular items - amount_paid
+          const totalRegularValue = invoice.items
+            .filter(i => !i.on_approval)
+            .reduce((sum, i) => sum + (Number(i.selling_price || i.mrp) * Number(i.quantity)), 0);
           
+          const regularPending = Math.max(0, totalRegularValue - Number(invoice.amount_paid));
+
+          // 2. Handle Approval Returns: Offset against total pending first
+          const offsetFromApproval = Math.min(currentPending, returnAmountApproval);
+          currentPending -= offsetFromApproval;
+          refundAmount += (returnAmountApproval - offsetFromApproval);
+
+          // 3. Handle Regular Returns: Offset against regularPending portion first
+          const offsetFromRegular = Math.min(regularPending, returnAmountRegular);
+          currentPending -= offsetFromRegular;
+          refundAmount += (returnAmountRegular - offsetFromRegular);
+
+          invoice.amount_pending = currentPending;
+          invoice.net_payable = Number(invoice.net_payable) - Number(data.total_return_amount);
+          invoice.amount_paid = Number(invoice.amount_paid) - refundAmount;
+
           if (Number(invoice.amount_pending) <= 0) {
             invoice.payment_status = 'paid';
+          } else if (Number(invoice.amount_paid) > 0) {
+            invoice.payment_status = 'partial';
+          } else {
+            invoice.payment_status = 'pending';
           }
 
           await manager.save(SalesInvoice, invoice);
