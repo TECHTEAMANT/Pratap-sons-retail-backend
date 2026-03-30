@@ -204,7 +204,12 @@ export class SalesReturnService {
             return sum + itemTotal;
           }, 0);
           const effectiveSubtotal = Number(invoice.total_mrp) || totalItemsValue;
-          const invoiceRatio = effectiveSubtotal > 0 ? (Number(invoice.net_payable) / effectiveSubtotal) : 1;
+          
+          // Deduce true net payable to handle cases where recorded net_payable is inaccurate
+          const totalDiscounts = Number(invoice.total_discount || 0) + Number(invoice.voucher_discount || 0) + Number(invoice.special_discount || 0);
+          const actualNetPayable = Math.min(Number(invoice.net_payable), Math.max(0, effectiveSubtotal - totalDiscounts - Number(invoice.loyalty_redemption_amount || 0)));
+          
+          const invoiceRatio = effectiveSubtotal > 0 ? (actualNetPayable / effectiveSubtotal) : 1;
           
           const adjustedRegularValue = totalRegularValue * invoiceRatio;
           const regularPending = Math.max(0, adjustedRegularValue - Number(invoice.amount_paid));
