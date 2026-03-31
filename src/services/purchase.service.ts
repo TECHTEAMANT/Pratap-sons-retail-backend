@@ -7,6 +7,7 @@ import { PurchaseItem } from '../entities/PurchaseItem';
 import { BarcodeBatch } from '../entities/BarcodeBatch';
 import { BarcodeSequence } from '../entities/BarcodeSequence';
 import { ProductMaster } from '../entities/ProductMaster';
+import { getFiscalYearPrefix } from '../utils/fiscalYear';
 import { encodeCost } from '../utils/costEncoding';
 
 function ensureId(val: any): string | undefined {
@@ -223,7 +224,8 @@ export class PurchaseService {
 
   async createOrder(data: any, userId: string) {
     const count = await this.poRepo.count();
-    const defaultPoNum = `PO${new Date().getFullYear()}${(count + 1).toString().padStart(6, '0')}`;
+    const prefix = `PO${getFiscalYearPrefix()}`;
+    const defaultPoNum = `${prefix}${(count + 1).toString().padStart(6, '0')}`;
     
     const entityData = { ...data };
     
@@ -438,8 +440,7 @@ export class PurchaseService {
       }
 
       // ── 1. Generate PO number ──────────────────────────────────────────────
-      const year = new Date().getFullYear();
-      const prefix = `PI${year}`;
+      const prefix = `PI${getFiscalYearPrefix()}`;
       const maxRes = await manager.query(
         `SELECT po_number FROM purchase_orders WHERE po_number LIKE $1 ORDER BY po_number DESC LIMIT 1`,
         [`${prefix}%`]

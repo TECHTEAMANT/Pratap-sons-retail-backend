@@ -3,6 +3,7 @@ import { SalesOrder } from '../entities/SalesOrder';
 import { SalesOrderItem } from '../entities/SalesOrderItem';
 import { SalesOrderAdvance } from '../entities/SalesOrderAdvance';
 import { ILike } from 'typeorm';
+import { getFiscalYearPrefix } from '../utils/fiscalYear';
 
 export class SalesOrderService {
   private orderRepo = AppDataSource.getRepository(SalesOrder);
@@ -26,8 +27,7 @@ export class SalesOrderService {
       // Generate order number
       let orderNum = data.order_number;
       if (!orderNum) {
-        const year = new Date().getFullYear();
-        const prefix = `ORD${year}`;
+        const prefix = `ORD${getFiscalYearPrefix()}`;
         const records = await manager.query(`SELECT order_number FROM sales_orders WHERE order_number LIKE $1 ORDER BY order_number DESC LIMIT 1`, [`${prefix}%`]);
         let nextNum = 1;
         if (records.length > 0 && records[0].order_number) {

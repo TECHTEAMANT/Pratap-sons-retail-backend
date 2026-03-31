@@ -8,6 +8,7 @@ import { BarcodeBatch } from '../entities/BarcodeBatch';
 import { Customer, LoyaltyConfig, LoyaltyHistory, LoyaltyTransactionType } from '../entities';
 import { ILike, In } from 'typeorm';
 import { creditCouponService } from './creditCoupon.service';
+import { getFiscalYearPrefix } from '../utils/fiscalYear';
 
 export class SalesReturnService {
   private returnRepo = AppDataSource.getRepository(SalesReturn);
@@ -33,8 +34,7 @@ export class SalesReturnService {
     return AppDataSource.transaction(async (manager) => {
       let retNum = data.return_number;
       if (!retNum) {
-        const year = new Date().getFullYear();
-        const prefix = `SRET${year}`;
+        const prefix = `SRET${getFiscalYearPrefix()}`;
         const records = await manager.query(`SELECT return_number FROM sales_returns WHERE return_number LIKE $1 ORDER BY return_number DESC LIMIT 1`, [`${prefix}%`]);
         let nextNum = 1;
         if (records.length > 0 && records[0].return_number) {
@@ -107,8 +107,7 @@ export class SalesReturnService {
       // ... (existing CN logic remains same)
       let cnNum = data.credit_note_number;
       if (!cnNum) {
-        const year = new Date().getFullYear();
-        const prefix = `CN${year}`;
+        const prefix = `CN${getFiscalYearPrefix()}`;
         const records = await manager.query(`SELECT credit_note_number FROM credit_notes WHERE credit_note_number LIKE $1 ORDER BY credit_note_number DESC LIMIT 1`, [`${prefix}%`]);
         let nextNum = 1;
         if (records.length > 0 && records[0].credit_note_number) {

@@ -318,19 +318,20 @@ export class ReportService {
     const qb = AppDataSource.getRepository(SalesInvoiceItem)
       .createQueryBuilder('sii')
       .innerJoin('sii.invoice', 'si')
+      .leftJoin('si.floor_details', 'f_sale')
       .leftJoin('sii.product_item', 'bb')
-      .leftJoin('bb.floor', 'f')
+      .leftJoin('bb.floor', 'f_stock')
       .select([
-        'COALESCE(f.name, \'Unknown\') as floor',
+        'COALESCE(f_sale.name, f_stock.name, \'Unknown\') as floor',
         'COUNT(DISTINCT si.id) as "invoiceCount"',
         'COALESCE(SUM(sii.total_value), 0) as "totalSales"',
         'COALESCE(SUM(sii.discount), 0) as "totalDiscount"'
       ])
       .where('si.invoice_date >= :start AND si.invoice_date <= :end', { 
-        start: `${filters.startDate}T00:00:00.000Z`, 
-        end: `${filters.endDate}T23:59:59.999Z` 
+        start: filters.startDate, 
+        end: filters.endDate
       })
-      .groupBy('f.name')
+      .groupBy('COALESCE(f_sale.name, f_stock.name, \'Unknown\')')
       .orderBy('"totalSales"', 'DESC');
 
     const results = await qb.getRawMany();

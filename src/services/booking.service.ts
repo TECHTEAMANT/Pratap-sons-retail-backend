@@ -2,6 +2,7 @@ import { AppDataSource } from '../config/data-source';
 import { EBooking } from '../entities/EBooking';
 import { EBookingItem } from '../entities/EBookingItem';
 import { LessThan } from 'typeorm';
+import { getFiscalYearPrefix } from '../utils/fiscalYear';
 
 export class BookingService {
   private repo = AppDataSource.getRepository(EBooking);
@@ -54,8 +55,7 @@ export class BookingService {
   async create(data: any, userId: string) {
     let bkNum = data.booking_number;
     if (!bkNum) {
-      const year = new Date().getFullYear();
-      const prefix = `BK${year}`;
+      const prefix = `BK${getFiscalYearPrefix()}`;
       const records = await this.repo.query(`SELECT booking_number FROM e_bookings WHERE booking_number LIKE $1 ORDER BY booking_number DESC LIMIT 1`, [`${prefix}%`]);
       let nextNum = 1;
       if (records.length > 0 && records[0].booking_number) {

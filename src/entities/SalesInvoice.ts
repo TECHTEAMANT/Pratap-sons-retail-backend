@@ -3,6 +3,7 @@ import { SalesInvoiceItem } from './SalesInvoiceItem';
 import { Customer } from './Customer';
 import { Salesman } from './Salesman';
 import { User } from './User';
+import { Floor } from './Floor';
 
 @Entity('sales_invoices')
 export class SalesInvoice {
@@ -97,6 +98,18 @@ export class SalesInvoice {
   loyalty_redemption_amount: number;
 
   @Column({ type: 'numeric', default: 0 })
+  additional_charges_base: number;
+
+  @Column({ type: 'numeric', default: 0 })
+  additional_charges_gst_rate: number;
+
+  @Column({ type: 'numeric', default: 0 })
+  additional_charges_gst: number;
+
+  @Column({ type: 'numeric', default: 0 })
+  additional_charges_total: number;
+
+  @Column({ type: 'numeric', default: 0 })
   special_discount: number;
 
   @Column({ type: 'uuid', nullable: true })
@@ -119,6 +132,9 @@ export class SalesInvoice {
 
   @Column({ type: 'uuid', nullable: true })
   salesman_id: string;
+
+  @Column({ type: 'uuid', nullable: true })
+  floor_id: string;
 
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
@@ -145,4 +161,8 @@ export class SalesInvoice {
   @ManyToOne(() => User, { nullable: true })
   @JoinColumn({ name: 'modified_by' })
   modifier: User;
+
+  @ManyToOne(() => Floor, { nullable: true })
+  @JoinColumn({ name: 'floor_id' })
+  floor_details: Floor;
 }

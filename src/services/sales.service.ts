@@ -1,14 +1,14 @@
 import { AppDataSource } from '../config/data-source';
 import { SalesInvoice } from '../entities/SalesInvoice';
 import { SalesInvoiceItem } from '../entities/SalesInvoiceItem';
+import { getFiscalYearPrefix } from '../utils/fiscalYear';
 import { BarcodeBatch } from '../entities/BarcodeBatch';
 import { Customer } from '../entities/Customer';
-import { EBooking } from '../entities/EBooking';
+import { EBooking, EBookingItem, LoyaltyConfig, LoyaltyHistory, LoyaltyTransactionType } from '../entities';
 import { Voucher } from '../entities/Voucher';
 import { voucherService } from './voucher.service';
-import { ILike, In } from 'typeorm';
-import { LoyaltyConfig, LoyaltyHistory, LoyaltyTransactionType } from './../entities';
 import { creditCouponService } from './creditCoupon.service';
+import { ILike, In } from 'typeorm';
 import logger from '../utils/logger';
 
 export class SalesService {
@@ -108,8 +108,7 @@ export class SalesService {
       // Generate invoice number
       let invoiceNumber = data.invoice_number;
       if (!invoiceNumber) {
-        const year = new Date().getFullYear();
-        const prefix = `INV${year}`;
+        const prefix = `INV${getFiscalYearPrefix()}`;
         const records = await manager.query(`SELECT invoice_number FROM sales_invoices WHERE invoice_number LIKE $1 ORDER BY invoice_number DESC LIMIT 1`, [`${prefix}%`]);
         let nextNum = 1;
         if (records.length > 0 && records[0].invoice_number) {
@@ -158,6 +157,11 @@ export class SalesService {
         loyalty_points_earned: data.loyalty_points_earned || 0,
         loyalty_points_redeemed: data.loyalty_points_redeemed || 0,
         loyalty_redemption_amount: data.loyalty_redemption_amount || 0,
+        additional_charges_base: Number(data.additional_charges_base) || 0,
+        additional_charges_gst_rate: Number(data.additional_charges_gst_rate) || 0,
+        additional_charges_gst: Number(data.additional_charges_gst) || 0,
+        additional_charges_total: Number(data.additional_charges_total) || 0,
+        floor_id: data.floor_id || null,
       });
 
       const savedInvoice = await manager.save(invoice);
@@ -190,6 +194,7 @@ export class SalesService {
             discount: item.discount || 0,
             taxable_value: item.taxable_value || 0,
             gst_percentage: item.gst_percentage || 0,
+            gst_logic: item.gst_logic || null,
             gst_type: item.gst_type || 'CGST_SGST',
             cgst_percentage: item.cgst_percentage || 0,
             cgst_amount: item.cgst_amount || 0,
@@ -270,12 +275,41 @@ export class SalesService {
         }
       }
 
-      // Mark bookings as invoiced
+      // Mark bookings/items as handled
       if (data.booking_ids && data.booking_ids.length > 0) {
+        // Collect all barcodes in the current invoice for matching
+        const invoiceBarcodes = (data.items || []).map((item: any) => item.barcode_8digit).filter(Boolean);
+        const usedBarcodes = new Map<string, number>();
+
         for (const bookingId of data.booking_ids) {
-          const booking = await manager.findOne(EBooking, { where: { id: bookingId } });
+          const booking = await manager.findOne(EBooking, { 
+            where: { id: bookingId },
+            relations: ['items'] 
+          });
+          
           if (booking) {
-            booking.status = 'invoiced';
+            // Update individual item statuses
+            if (booking.items && booking.items.length > 0) {
+              for (const bookingItem of booking.items) {
+                const bc = bookingItem.barcode_8digit;
+                // Check if this item exists in the current invoice
+                const currentCount = usedBarcodes.get(bc) || 0;
+                const matchesInInvoice = invoiceBarcodes.filter((b: string) => b === bc).length;
+
+                if (currentCount < matchesInInvoice) {
+                  // Item was purchased
+                  bookingItem.status = 'invoiced';
+                  bookingItem.invoice_id = savedInvoice.id;
+                  usedBarcodes.set(bc, currentCount + 1);
+                } else {
+                  // Item was booked but not purchased in this invoice -> mark as cancelled
+                  bookingItem.status = 'cancelled';
+                }
+                await manager.save(bookingItem);
+              }
+            }
+
+            booking.status = 'invoiced'; // The overall booking is now handled
             booking.invoice_number = invoiceNumber;
             await manager.save(booking);
           }
@@ -426,6 +460,10 @@ export class SalesService {
         voucher_discount: data.voucher_discount || 0,
         voucher_code: data.voucher_code || null,
         coupon_no: data.coupon_no || null,
+        additional_charges_base: Number(data.additional_charges_base) || 0,
+        additional_charges_gst_rate: Number(data.additional_charges_gst_rate) || 0,
+        additional_charges_gst: Number(data.additional_charges_gst) || 0,
+        additional_charges_total: Number(data.additional_charges_total) || 0,
       };
 
       // 5. Handle Voucher/Coupon changes
@@ -478,6 +516,7 @@ export class SalesService {
             discount: Number(item.discount) || 0,
             taxable_value: Number(item.taxable_value) || 0,
             gst_percentage: Number(item.gst_percentage) || 0,
+            gst_logic: item.gst_logic || null,
             gst_type: item.gst_type || 'CGST_SGST',
             cgst_percentage: Number(item.cgst_percentage) || 0,
             cgst_amount: Number(item.cgst_amount) || 0,

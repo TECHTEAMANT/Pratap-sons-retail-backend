@@ -44,6 +44,9 @@ export class SalesInvoiceItem {
   @Column({ type: 'text', default: 'CGST_SGST' })
   gst_type: string;
 
+  @Column({ type: 'text', nullable: true })
+  gst_logic: string;
+
   @Column({ type: 'numeric', default: 0 })
   cgst_percentage: number;
 

@@ -2,6 +2,7 @@ import { AppDataSource } from '../config/data-source';
 import { PurchaseReturn } from '../entities/PurchaseReturn';
 import { PurchaseReturnItem } from '../entities/PurchaseReturnItem';
 import { In } from 'typeorm';
+import { getFiscalYearPrefix } from '../utils/fiscalYear';
 
 export class PurchaseReturnService {
   private repo = AppDataSource.getRepository(PurchaseReturn);
@@ -68,8 +69,7 @@ export class PurchaseReturnService {
   async create(data: any, userId: string) {
     let retNum = data.return_number;
     if (!retNum) {
-      const year = new Date().getFullYear();
-      const prefix = `PRET${year}`;
+      const prefix = `PRET${getFiscalYearPrefix()}`;
       const records = await this.repo.query(`SELECT return_number FROM purchase_returns WHERE return_number LIKE $1 ORDER BY return_number DESC LIMIT 1`, [`${prefix}%`]);
       let nextNum = 1;
       if (records.length > 0 && records[0].return_number) {
@@ -162,8 +162,7 @@ export class PurchaseReturnService {
       // 1. Generate return ID
       let retNum = payload.return_number;
       if (!retNum) {
-        const year = new Date().getFullYear();
-        const prefix = `PRET${year}`;
+        const prefix = `PRET${getFiscalYearPrefix()}`;
         const records = await manager.query(`SELECT return_number FROM purchase_returns WHERE return_number LIKE $1 ORDER BY return_number DESC LIMIT 1`, [`${prefix}%`]);
         let nextNum = 1;
         if (records.length > 0 && records[0].return_number) {
