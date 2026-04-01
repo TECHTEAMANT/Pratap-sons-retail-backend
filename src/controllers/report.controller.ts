@@ -16,6 +16,7 @@ export class ReportController {
   async salesReturnReport(req: Request, res: Response) { try { sendSuccess(res, await reportService.salesReturnReport(req.query as any)); } catch (e: any) { sendError(res, e.message); } }
   async cashReport(req: Request, res: Response) { try { sendSuccess(res, await reportService.cashReport(req.query as any)); } catch (e: any) { sendError(res, e.message); } }
   async advanceAnalysis(req: Request, res: Response) { try { sendSuccess(res, await reportService.advanceAnalysis(req.query as any)); } catch (e: any) { sendError(res, e.message); } }
+  async approvalReport(req: Request, res: Response) { try { sendSuccess(res, await reportService.approvalReport(req.query as any)); } catch (e: any) { sendError(res, e.message); } }
 }
 
 export const reportController = new ReportController();

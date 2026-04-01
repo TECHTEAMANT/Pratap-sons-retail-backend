@@ -848,6 +848,70 @@ export class ReportService {
 
     return { summary, details };
   }
+
+  async approvalReport(filters: { startDate?: string, endDate?: string }) {
+    const qb = AppDataSource.getRepository(SalesInvoiceItem)
+      .createQueryBuilder('sii')
+      .innerJoinAndSelect('sii.invoice', 'si')
+      .leftJoinAndSelect('si.customer', 'c')
+      .where('sii.on_approval = :on_approval', { on_approval: true })
+      .andWhere('si.amount_pending > 0');
+
+    if (filters.startDate && filters.endDate) {
+       qb.andWhere('si.invoice_date BETWEEN :start AND :end', {
+         start: `${filters.startDate.split('T')[0]}T00:00:00.000Z`,
+         end: `${filters.endDate.split('T')[0]}T23:59:59.999Z`
+       });
+    }
+
+    qb.orderBy('si.invoice_date', 'DESC');
+
+    const items = await qb.getMany();
+
+    // Grouping by Invoice ID to resolve confusion between Item Value vs Invoice Pending
+    const groupedMap = new Map();
+
+    items.forEach(item => {
+      const invId = item.invoice_id;
+      if (!groupedMap.has(invId)) {
+        groupedMap.set(invId, {
+          invoice_id: invId,
+          invoice_number: item.invoice.invoice_number,
+          invoice_date: item.invoice.invoice_date,
+          customer_name: item.invoice.customer_name || item.invoice.customer?.name,
+          customer_mobile: item.invoice.customer_mobile || item.invoice.customer?.mobile,
+          amount_pending: item.invoice.amount_pending,
+          payment_status: item.invoice.payment_status,
+          items: []
+        });
+      }
+
+      // Calculate safe total value (fallback if DB has 0 for some reason)
+      const itemVal = parseFloat(item.total_value as any) || (parseFloat(item.selling_price as any || item.mrp as any || 0) * (Number(item.quantity) || 1));
+
+      groupedMap.get(invId).items.push({
+        id: item.id,
+        barcode_8digit: item.barcode_8digit,
+        design_no: item.design_no,
+        product_description: item.product_description,
+        quantity: item.quantity,
+        total_value: itemVal
+      });
+    });
+
+    const details = Array.from(groupedMap.values());
+
+    const summary = {
+      totalItems: items.reduce((sum, d) => sum + (Number(d.quantity) || 0), 0),
+      totalValue: items.reduce((sum, d) => {
+        const itemVal = parseFloat(d.total_value as any) || (parseFloat(d.selling_price as any || d.mrp as any || 0) * (Number(d.quantity) || 1));
+        return sum + itemVal;
+      }, 0),
+      count: details.length
+    };
+
+    return { summary, details };
+  }
 }
 
 export const reportService = new ReportService();
