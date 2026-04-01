@@ -714,15 +714,24 @@ export class ReportService {
       }
 
       let cashAmount = 0;
+      let totalPaidFromDetails = 0;
+
       if (paymentDetails && Array.isArray(paymentDetails)) {
         paymentDetails.forEach((pd: any) => {
-          if (pd.mode === 'Cash') cashAmount += (parseFloat(pd.amount) || 0);
+          const amount = parseFloat(pd.amount) || 0;
+          totalPaidFromDetails += amount;
+          if (pd.mode === 'Cash') cashAmount += amount;
         });
       }
 
-      // Smart Fallback for Cash only invoices if breakdown is missing
-      if (cashAmount === 0 && inv.payment_mode === 'Cash') {
-        cashAmount = (parseFloat(inv.net_payable as any) || 0) - (parseFloat(inv.amount_pending as any) || 0);
+      // Smart Fallback: match salesReport logic exactly.
+      // If payment_details total is less than what was actually paid (net_payable - amount_pending),
+      // attribute the gap to Cash when payment_mode is 'Cash' OR is not set (NULL/undefined).
+      const actualTotalPaid = (parseFloat(inv.net_payable as any) || 0) - (parseFloat(inv.amount_pending as any) || 0);
+      const missingAmount = Math.max(0, actualTotalPaid - totalPaidFromDetails);
+      if (missingAmount > 0) {
+        const mode = inv.payment_mode || 'Cash'; // NULL defaults to Cash (same as salesReport)
+        if (mode === 'Cash') cashAmount += missingAmount;
       }
 
       if (cashAmount > 0) {
