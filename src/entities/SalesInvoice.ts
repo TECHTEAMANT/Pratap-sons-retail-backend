@@ -110,6 +110,9 @@ export class SalesInvoice {
   additional_charges_total: number;
 
   @Column({ type: 'numeric', default: 0 })
+  coupon_amount: number;
+
+  @Column({ type: 'numeric', default: 0 })
   special_discount: number;
 
   @Column({ type: 'uuid', nullable: true })

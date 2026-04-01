@@ -33,6 +33,15 @@ export class SalesReturn {
   total_return_amount: number;
 
   @Column({ type: 'numeric', default: 0 })
+  additional_charges_returned: number;
+
+  @Column({ type: 'numeric', default: 0 })
+  additional_charges_gst_returned: number;
+
+  @Column({ type: 'numeric', default: 0 })
+  additional_charges_total_returned: number;
+
+  @Column({ type: 'numeric', default: 0 })
   total_discount_amount: number;
 
   @Column({ type: 'numeric', default: 0 })

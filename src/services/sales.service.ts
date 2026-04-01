@@ -161,6 +161,7 @@ export class SalesService {
         additional_charges_gst_rate: Number(data.additional_charges_gst_rate) || 0,
         additional_charges_gst: Number(data.additional_charges_gst) || 0,
         additional_charges_total: Number(data.additional_charges_total) || 0,
+        coupon_amount: Number(data.coupon_amount) || 0,
         floor_id: data.floor_id || null,
       });
 
@@ -464,6 +465,7 @@ export class SalesService {
         additional_charges_gst_rate: Number(data.additional_charges_gst_rate) || 0,
         additional_charges_gst: Number(data.additional_charges_gst) || 0,
         additional_charges_total: Number(data.additional_charges_total) || 0,
+        coupon_amount: Number(data.coupon_amount) || 0,
       };
 
       // 5. Handle Voucher/Coupon changes
