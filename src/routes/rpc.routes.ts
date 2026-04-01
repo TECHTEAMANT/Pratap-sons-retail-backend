@@ -2,6 +2,7 @@ import { Router, Response } from 'express';
 import { authenticate, AuthenticatedRequest } from '../middleware/auth';
 import { sendSuccess, sendError } from '../utils/response';
 import { AppDataSource } from '../config/data-source';
+import { getFiscalYearPrefix } from '../utils/fiscalYear';
 
 const router = Router();
 
@@ -24,8 +25,8 @@ router.post('/:functionName', authenticate, async (req: AuthenticatedRequest, re
     }
 
     if (functionName === 'generate_booking_number') {
-      const year = new Date().getFullYear();
-      const prefix = `BK${year}`;
+      const fy = getFiscalYearPrefix();
+      const prefix = `BK${fy}`;
       const records = await AppDataSource.query(`SELECT booking_number FROM e_bookings WHERE booking_number LIKE $1 ORDER BY booking_number DESC LIMIT 1`, [`${prefix}%`]);
       let nextNum = 1;
       if (records.length > 0 && records[0].booking_number) {
@@ -90,8 +91,8 @@ router.post('/:functionName', authenticate, async (req: AuthenticatedRequest, re
     }
 
     if (functionName === 'generate_purchase_return_number') {
-      const year = new Date().getFullYear();
-      const prefix = `PRET${year}`;
+      const fy = getFiscalYearPrefix();
+      const prefix = `PRET${fy}`;
       const records = await AppDataSource.query(`SELECT return_number FROM purchase_returns WHERE return_number LIKE $1 ORDER BY return_number DESC LIMIT 1`, [`${prefix}%`]);
       let nextNum = 1;
       if (records.length > 0 && records[0].return_number) {
@@ -103,8 +104,8 @@ router.post('/:functionName', authenticate, async (req: AuthenticatedRequest, re
     }
 
     if (functionName === 'generate_sales_return_number') {
-      const year = new Date().getFullYear();
-      const prefix = `SRET${year}`;
+      const fy = getFiscalYearPrefix();
+      const prefix = `SRET${fy}`;
       const records = await AppDataSource.query(`SELECT return_number FROM sales_returns WHERE return_number LIKE $1 ORDER BY return_number DESC LIMIT 1`, [`${prefix}%`]);
       let nextNum = 1;
       if (records.length > 0 && records[0].return_number) {
@@ -116,8 +117,8 @@ router.post('/:functionName', authenticate, async (req: AuthenticatedRequest, re
     }
 
     if (functionName === 'generate_credit_note_number') {
-      const year = new Date().getFullYear();
-      const prefix = `CN${year}`;
+      const fy = getFiscalYearPrefix();
+      const prefix = `CN${fy}`;
       const records = await AppDataSource.query(`SELECT credit_note_number FROM credit_notes WHERE credit_note_number LIKE $1 ORDER BY credit_note_number DESC LIMIT 1`, [`${prefix}%`]);
       let nextNum = 1;
       if (records.length > 0 && records[0].credit_note_number) {
@@ -129,8 +130,8 @@ router.post('/:functionName', authenticate, async (req: AuthenticatedRequest, re
     }
 
     if (functionName === 'generate_sales_invoice_number') {
-      const year = new Date().getFullYear();
-      const prefix = `INV${year}`;
+      const fy = getFiscalYearPrefix();
+      const prefix = `INV${fy}`;
       const records = await AppDataSource.query(`SELECT invoice_number FROM sales_invoices WHERE invoice_number LIKE $1 ORDER BY invoice_number DESC LIMIT 1`, [`${prefix}%`]);
       let nextNum = 1;
       if (records.length > 0 && records[0].invoice_number) {
@@ -142,8 +143,8 @@ router.post('/:functionName', authenticate, async (req: AuthenticatedRequest, re
     }
 
     if (functionName === 'generate_sales_order_number') {
-      const year = new Date().getFullYear();
-      const prefix = `ORD${year}`;
+      const fy = getFiscalYearPrefix();
+      const prefix = `ORD${fy}`;
       const records = await AppDataSource.query(`SELECT order_number FROM sales_orders WHERE order_number LIKE $1 ORDER BY order_number DESC LIMIT 1`, [`${prefix}%`]);
       let nextNum = 1;
       if (records.length > 0 && records[0].order_number) {
