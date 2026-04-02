@@ -1,5 +1,6 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, ManyToOne, JoinColumn } from 'typeorm';
 import { SalesOrder } from './SalesOrder';
+import { Salesman } from './Salesman';
 
 @Entity('sales_order_items')
 export class SalesOrderItem {
@@ -36,8 +37,11 @@ export class SalesOrderItem {
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
 
-  // Relations
   @ManyToOne(() => SalesOrder, order => order.items, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'sales_order_id' })
   salesOrder: SalesOrder;
+
+  @ManyToOne(() => Salesman, { nullable: true })
+  @JoinColumn({ name: 'salesman_id' })
+  salesman: Salesman;
 }

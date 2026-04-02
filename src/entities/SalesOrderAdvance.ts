@@ -21,6 +21,9 @@ export class SalesOrderAdvance {
   @Column({ type: 'text', nullable: true })
   notes?: string;
 
+  @Column({ type: 'text', unique: true, nullable: true })
+  receipt_number: string;
+
   @Column({ type: 'uuid', nullable: true })
   created_by?: string;
 

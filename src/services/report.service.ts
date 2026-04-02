@@ -131,15 +131,29 @@ export class ReportService {
     result.totalReturns = returns.reduce((sum, ret) => sum + (parseFloat(ret.total_return_amount as any) || 0), 0);
 
     invoices.forEach(inv => {
-      result.totalSales += parseFloat(inv.net_payable as any) || 0;
+      // Robust Net Calculation for Summary Card Consistency
+      const totalDisc = (parseFloat(inv.total_discount as any) || 0) + 
+                       (parseFloat(inv.voucher_discount as any) || 0) + 
+                       (parseFloat(inv.special_discount as any) || 0) + 
+                       (parseFloat(inv.loyalty_redemption_amount as any) || 0) + 
+                       (parseFloat((inv as any).coupon_amount as any) || 0);
+      const calculatedNet = (parseFloat(inv.total_mrp as any) || 0) - totalDisc + (parseFloat(inv.additional_charges_total as any) || 0);
+      const storedNet = parseFloat(inv.net_payable as any) || 0;
+      const moneyPaidTotal = (parseFloat(inv.amount_paid as any) || 0) + (parseFloat(inv.amount_pending as any) || 0);
+      // Unified Smart Net: Trust the actual financial intent (Payments + Pending) over inconsistent DB fields
+      const finalNet = (moneyPaidTotal > 0) ? moneyPaidTotal : (storedNet > 0 ? storedNet : Math.max(Math.round(calculatedNet), 0));
+
+      result.totalSales += finalNet;
       result.totalMRP += parseFloat(inv.total_mrp as any) || 0;
-      result.totalDiscount += (parseFloat(inv.total_discount as any) || 0) + (parseFloat(inv.voucher_discount as any) || 0);
+      result.totalDiscount += totalDisc;
       result.totalGST += parseFloat(inv.total_gst as any) || 0;
       result.taxableValue += parseFloat(inv.taxable_value as any) || 0;
       result.totalSpecialDiscount += parseFloat(inv.special_discount as any) || 0;
       result.totalLoyalty += parseFloat(inv.loyalty_redemption_amount as any) || 0;
       result.totalVoucher += parseFloat(inv.voucher_discount as any) || 0;
-      result.totalPending += parseFloat(inv.amount_pending as any) || 0;
+      
+      const amountPending = parseFloat(inv.amount_pending as any) || 0;
+      result.totalPending += amountPending;
       result.cgst_5 += parseFloat(inv.cgst_5 as any) || 0;
       result.sgst_5 += parseFloat(inv.sgst_5 as any) || 0;
       result.cgst_18 += parseFloat(inv.cgst_18 as any) || 0;
@@ -194,7 +208,7 @@ export class ReportService {
 
       // SMART FALLBACK: If total from details is less than actual paid amount (Net - Pending),
       // attribute the difference to the primary payment mode.
-      const actualTotalPaid = (parseFloat(inv.net_payable as any) || 0) - (parseFloat(inv.amount_pending as any) || 0);
+      const actualTotalPaid = finalNet - amountPending;
       const missingAmount = Math.max(0, actualTotalPaid - totalPaidFromDetails);
       
       if (missingAmount > 0) {

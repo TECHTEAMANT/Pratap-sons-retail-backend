@@ -2,6 +2,7 @@ import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateCol
 import { SalesOrderItem } from './SalesOrderItem';
 import { SalesOrderAdvance } from './SalesOrderAdvance';
 import { Customer } from './Customer';
+import { Salesman } from './Salesman';
 
 @Entity('sales_orders')
 export class SalesOrder {
@@ -60,7 +61,7 @@ export class SalesOrder {
   @JoinColumn({ name: 'customer_id' })
   customer: Customer;
 
-  @ManyToOne('Salesman', { nullable: true })
+  @ManyToOne(() => Salesman, { nullable: true })
   @JoinColumn({ name: 'salesman_id' })
-  salesman: any;
+  salesman: Salesman;
 }

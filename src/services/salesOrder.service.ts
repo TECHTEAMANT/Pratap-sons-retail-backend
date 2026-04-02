@@ -10,16 +10,20 @@ export class SalesOrderService {
 
   async findAll(filters: { status?: string; customer_id?: string; search?: string }) {
     const qb = this.orderRepo.createQueryBuilder('so')
-      .leftJoinAndSelect('so.customer', 'c');
+      .leftJoinAndSelect('so.customer', 'c')
+      .leftJoinAndSelect('so.salesman', 's');
     if (filters.status) qb.andWhere('so.status = :status', { status: filters.status });
     if (filters.customer_id) qb.andWhere('so.customer_id = :cid', { cid: filters.customer_id });
-    if (filters.search) qb.andWhere('(so.order_number ILIKE :s OR c.name ILIKE :s)', { s: `%${filters.search}%` });
+    if (filters.search) qb.andWhere('(so.order_number ILIKE :s OR c.name ILIKE :s OR s.name ILIKE :s)', { s: `%${filters.search}%` });
     qb.orderBy('so.created_at', 'DESC');
     return qb.getMany();
   }
 
   async findById(id: string) {
-    return this.orderRepo.findOne({ where: { id }, relations: ['items', 'advances', 'customer'] });
+    return this.orderRepo.findOne({ 
+      where: { id }, 
+      relations: ['items', 'advances', 'customer', 'salesman', 'items.salesman'] 
+    });
   }
 
   async create(data: any, userId: string) {
@@ -47,6 +51,7 @@ export class SalesOrderService {
         advance_received: data.advance_received || 0,
         balance_amount: data.total_amount - (data.advance_received || 0),
         notes: data.notes || '',
+        salesman_id: data.salesman_id || null,
         created_by: userId,
       });
       const savedOrder = await manager.save(order);
@@ -69,11 +74,25 @@ export class SalesOrderService {
 
       if (data.advances && Array.isArray(data.advances)) {
         for (const adv of data.advances) {
+          const prefix = `SOA${getFiscalYearPrefix()}`;
+          const records = await manager.query(
+            `SELECT MAX(CAST(SUBSTRING(receipt_number FROM ${prefix.length + 1}) AS integer)) as max_num 
+             FROM sales_order_advances 
+             WHERE receipt_number LIKE $1`,
+            [`${prefix}%`]
+          );
+          let nextNum = 1;
+          if (records.length > 0 && records[0].max_num) {
+            nextNum = parseInt(records[0].max_num, 10) + 1;
+          }
+          const recNum = `${prefix}${nextNum.toString().padStart(6, '0')}`;
+
           const orderAdv = manager.create(SalesOrderAdvance, {
             sales_order_id: savedOrder.id,
             amount: adv.amount,
             payment_mode: adv.mode || adv.payment_mode,
             reference_number: adv.reference || adv.reference_number,
+            receipt_number: recNum,
             notes: adv.notes || '',
             created_by: userId,
           });
@@ -88,7 +107,7 @@ export class SalesOrderService {
   async update(id: string, data: Record<string, any>) {
     const order = await this.orderRepo.findOneBy({ id });
     if (!order) return null;
-    const allowed = ['expected_delivery_date', 'total_amount', 'notes', 'status'];
+    const allowed = ['expected_delivery_date', 'total_amount', 'notes', 'status', 'salesman_id'];
     for (const key of allowed) {
       if (data[key] !== undefined) (order as any)[key] = data[key];
     }
@@ -101,11 +120,25 @@ export class SalesOrderService {
       const savedAdvances = [];
 
       for (const data of advances) {
+        const prefix = `SOA${getFiscalYearPrefix()}`;
+        const records = await manager.query(
+          `SELECT MAX(CAST(SUBSTRING(receipt_number FROM ${prefix.length + 1}) AS integer)) as max_num 
+           FROM sales_order_advances 
+           WHERE receipt_number LIKE $1`,
+          [`${prefix}%`]
+        );
+        let nextNum = 1;
+        if (records.length > 0 && records[0].max_num) {
+          nextNum = parseInt(records[0].max_num, 10) + 1;
+        }
+        const recNum = `${prefix}${nextNum.toString().padStart(6, '0')}`;
+
         const adv = manager.create(SalesOrderAdvance);
         adv.sales_order_id = orderId;
         adv.amount = data.amount;
         adv.payment_mode = (data as any).mode || data.payment_mode;
         adv.reference_number = (data as any).reference || data.reference_number;
+        adv.receipt_number = recNum;
         adv.notes = data.notes;
         adv.created_by = userId;
         const saved = await manager.save(adv);
