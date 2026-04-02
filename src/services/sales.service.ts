@@ -18,6 +18,7 @@ export class SalesService {
   async getInvoices(filters: any) {
     const qb = AppDataSource.getRepository(SalesInvoice).createQueryBuilder('si')
       .leftJoinAndSelect('si.items', 'items')
+      .leftJoinAndSelect('items.salesman', 'itemSalesman')
       .leftJoinAndSelect('si.customer', 'customer')
       .leftJoinAndSelect('si.salesman', 'salesman')
       .leftJoinAndSelect('si.creator', 'creator')
@@ -71,7 +72,7 @@ export class SalesService {
   async getInvoiceById(id: string) {
     return AppDataSource.getRepository(SalesInvoice).findOne({
       where: { id },
-      relations: ['items', 'customer', 'salesman', 'creator', 'floor_details']
+      relations: ['items', 'items.salesman', 'customer', 'salesman', 'creator', 'floor_details']
     });
   }
 
@@ -298,7 +299,9 @@ export class SalesService {
 
   async getInvoiceItems(filters: any) {
     const qb = AppDataSource.getRepository(SalesInvoiceItem).createQueryBuilder('sii')
-      .leftJoinAndSelect('sii.invoice', 'si');
+      .leftJoinAndSelect('sii.invoice', 'si')
+      .leftJoinAndSelect('si.salesman', 'salesman')
+      .leftJoinAndSelect('si.creator', 'creator');
     
     if (filters.invoice_id) {
       const ids = filters.invoice_id.split(',').map((id: string) => id.trim()).filter(Boolean);
