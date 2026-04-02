@@ -13,6 +13,7 @@ import { voucherService } from './voucher.service';
 import { creditCouponService } from './creditCoupon.service';
 import logger from '../utils/logger';
 import { getFiscalYearPrefix } from '../utils/fiscalYear';
+import { customerService } from './customer.service';
 
 export class SalesService {
   async getInvoices(filters: any) {
@@ -102,6 +103,18 @@ export class SalesService {
         }
         invoiceNumber = `${prefix}${nextNum.toString().padStart(6, '0')}`;
       }
+      
+      // Auto-link or Create Customer
+      if (data.customer_mobile) {
+          const customer = await customerService.ensureCustomerExists({
+              mobile: data.customer_mobile,
+              name: data.customer_name || 'Walk-in Customer'
+          });
+          if (customer) {
+              data.customer_id = customer.id;
+          }
+      }
+
 
       // 3. Create the main invoice record
       const invoice = manager.create(SalesInvoice, {

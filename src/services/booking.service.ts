@@ -3,6 +3,7 @@ import { EBooking } from '../entities/EBooking';
 import { EBookingItem } from '../entities/EBookingItem';
 import { LessThan } from 'typeorm';
 import { getFiscalYearPrefix } from '../utils/fiscalYear';
+import { customerService } from './customer.service';
 
 export class BookingService {
   private repo = AppDataSource.getRepository(EBooking);
@@ -65,6 +66,17 @@ export class BookingService {
       }
       bkNum = `${prefix}${nextNum.toString().padStart(6, '0')}`;
     }
+
+    // Auto-link or Create Customer (identity is mobile)
+    if (data.customer_identity) {
+        const customer = await customerService.ensureCustomerExists({
+            mobile: data.customer_identity,
+            name: data.customer_name || 'Walk-in Customer'
+        });
+        // We still keep customer_identity string as the primary key reference in e_bookings table
+        // But the customer record is now guaranteed to exist.
+    }
+
     
     const booking = this.repo.create({
       booking_number: data.booking_number || bkNum,

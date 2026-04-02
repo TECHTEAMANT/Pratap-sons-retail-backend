@@ -163,6 +163,28 @@ export class CustomerService {
     return this.customerRepo.findOneBy({ mobile });
   }
 
+  /** Ensures a customer record exists for a given mobile. Creates it if missing. */
+  async ensureCustomerExists(data: { mobile: string; name: string; card_no?: string }) {
+    if (!data.mobile || data.mobile.length < 9) return null;
+    
+    const mobile = data.mobile.trim();
+    let customer = await this.customerRepo.findOneBy({ mobile });
+    
+    if (customer) {
+      return customer;
+    }
+    
+    // Create new customer record automatically
+    const newCustomer = this.customerRepo.create({
+      mobile,
+      name: data.name || 'Walk-in Customer',
+      card_no: data.card_no || await this.generateCardNo(),
+      status: 'active'
+    });
+    
+    return this.customerRepo.save(newCustomer);
+  }
+
   async findByCard(card_no: string) {
     return this.customerRepo.findOneBy({ card_no });
   }
