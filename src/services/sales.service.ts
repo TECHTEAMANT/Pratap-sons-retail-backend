@@ -37,7 +37,12 @@ export class SalesService {
     }
 
     if (filters.status) {
-      qb.andWhere('si.payment_status = :status', { status: filters.status });
+      if (typeof filters.status === 'string' && filters.status.includes(',')) {
+        const statuses = filters.status.split(',').map((s: string) => s.trim());
+        qb.andWhere('si.payment_status IN (:...statuses)', { statuses });
+      } else {
+        qb.andWhere('si.payment_status = :status', { status: filters.status });
+      }
     }
 
     if (filters.salesman_id) {
