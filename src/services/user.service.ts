@@ -34,6 +34,7 @@ export class UserService {
       role_id: data.role_id,
       mapped_floor: data.mapped_floor,
       mapped_salesman: data.mapped_salesman,
+      token_version: 1,
     });
 
     const saved = await this.userRepo.save(user);
@@ -59,6 +60,7 @@ export class UserService {
     if (anyData.password) {
       const salt = await bcrypt.genSalt(10);
       user.password_hash = await bcrypt.hash(anyData.password, salt);
+      user.token_version++;
     }
 
     const saved = await this.userRepo.save(user);

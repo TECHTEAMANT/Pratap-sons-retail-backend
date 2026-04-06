@@ -11,6 +11,7 @@ export interface JwtPayload {
   email: string;
   role: string;
   roleId: string;
+  tokenVersion: number;
   iat?: number;
   exp?: number;
 }
@@ -78,6 +79,12 @@ export async function authenticate(
 
     if (!user) {
       sendUnauthorized(res, 'User not found or inactive');
+      return;
+    }
+
+    // Check if the token is for an older password version
+    if (decoded.tokenVersion !== user.token_version) {
+      sendUnauthorized(res, 'Session invalidated. Please log in again.');
       return;
     }
 

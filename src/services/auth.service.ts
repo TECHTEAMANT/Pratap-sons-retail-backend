@@ -29,6 +29,7 @@ export class AuthService {
       email: user.email,
       role: user.role,
       roleId: user.role_id,
+      tokenVersion: user.token_version,
     });
 
     logger.info(`User logged in: ${user.mobile} (${user.role})`);
@@ -89,6 +90,7 @@ export class AuthService {
 
     const salt = await bcrypt.genSalt(10);
     user.password_hash = await bcrypt.hash(newPassword, salt);
+    user.token_version++;
     await this.userRepo.save(user);
 
     logger.info(`Password changed for user: ${user.mobile}`);
