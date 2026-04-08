@@ -19,6 +19,9 @@ export class SalesOrderItem {
   @Column({ type: 'text', nullable: true })
   design_no: string;
 
+  @Column({ type: 'text', nullable: true })
+  hsn_code: string;
+
   @Column({ type: 'text', default: '' })
   product_description: string;
 
@@ -31,8 +34,17 @@ export class SalesOrderItem {
   @Column({ type: 'uuid', nullable: true })
   salesman_id: string;
 
+  @Column({ type: 'numeric', default: 0 })
+  discount_percentage: number;
+
+  @Column({ type: 'numeric', default: 5 })
+  gst_percentage: number;
+
   @Column({ type: 'int', default: 0 })
   delivered_quantity: number;
+
+  @Column({ type: 'numeric', default: 0 })
+  total: number;
 
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;

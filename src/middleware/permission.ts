@@ -65,9 +65,9 @@ export function requireAllPermissions(...permissions: PermissionKey[]) {
 }
 
 /**
- * Middleware: require Admin role specifically
+ * Middleware: require Admin or Sub-Admin role specifically
  */
-export function requireAdmin(
+export function requireAdminOrSubAdmin(
   req: AuthenticatedRequest,
   res: Response,
   next: NextFunction
@@ -77,8 +77,9 @@ export function requireAdmin(
     return;
   }
 
-  if (req.user.role !== 'Admin') {
-    sendForbidden(res, 'Admin access required');
+  const role = req.user.role;
+  if (role !== 'Admin' && role !== 'Sub-Admin') {
+    sendForbidden(res, 'Admin or Sub-Admin access required');
     return;
   }
 

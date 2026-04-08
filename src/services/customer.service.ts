@@ -129,9 +129,17 @@ export class CustomerService {
     }
   }
 
-  async findAll(filters: { search?: string; status?: string; mobile?: string; page?: number; limit?: number }) {
-    const page = filters.page || 1;
-    const limit = filters.limit || 50;
+  async findAll(filters: { 
+    search?: string; 
+    status?: string; 
+    mobile?: string; 
+    page?: number; 
+    limit?: number;
+    sort?: string;
+    order?: 'ASC' | 'DESC';
+  }) {
+    const page = Number(filters.page) || 1;
+    const limit = Number(filters.limit) || 50;
     const skip = (page - 1) * limit;
 
     const qb = this.customerRepo.createQueryBuilder('c');
@@ -154,9 +162,39 @@ export class CustomerService {
       );
     }
 
-    qb.orderBy('c.created_at', 'DESC').skip(skip).take(limit);
+    const sortField = filters.sort || 'created_at';
+    const sortOrder = (filters.order?.toUpperCase() as 'ASC' | 'DESC') || 'DESC';
+    qb.orderBy(`c.${sortField}`, sortOrder).skip(skip).take(limit);
+
     const [data, total] = await qb.getManyAndCount();
     return { data, total, page, limit };
+  }
+
+  async syncCustomersFromInvoices(): Promise<{ processed: number; created: number }> {
+    // 1. Find all unique mobile/name pairs in invoices
+    const uniqueInvoices = await AppDataSource.getRepository(SalesInvoice)
+      .createQueryBuilder('si')
+      .select('si.customer_mobile', 'mobile')
+      .addSelect('MAX(si.customer_name)', 'name')
+      .where('si.customer_mobile IS NOT NULL')
+      .groupBy('si.customer_mobile')
+      .getRawMany();
+
+    let created = 0;
+    for (const inv of uniqueInvoices) {
+      if (!inv.mobile || inv.mobile.length < 5) continue;
+      
+      const exists = await this.customerRepo.findOneBy({ mobile: inv.mobile.trim() });
+      if (!exists) {
+        await this.ensureCustomerExists({
+          mobile: inv.mobile.trim(),
+          name: inv.name || 'Walk-in Customer'
+        });
+        created++;
+      }
+    }
+
+    return { processed: uniqueInvoices.length, created };
   }
 
   async findByMobile(mobile: string) {

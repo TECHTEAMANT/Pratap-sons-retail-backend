@@ -15,6 +15,7 @@ export class ReportController {
   async floorwiseReport(req: Request, res: Response) { try { sendSuccess(res, await reportService.floorwiseSalesReport(req.query as any)); } catch (e: any) { sendError(res, e.message); } }
   async salesReturnReport(req: Request, res: Response) { try { sendSuccess(res, await reportService.salesReturnReport(req.query as any)); } catch (e: any) { sendError(res, e.message); } }
   async cashReport(req: Request, res: Response) { try { sendSuccess(res, await reportService.cashReport(req.query as any)); } catch (e: any) { sendError(res, e.message); } }
+  async vendorAnalysisReport(req: Request, res: Response) { try { sendSuccess(res, await reportService.vendorAnalysisReport(req.query as any)); } catch (e: any) { sendError(res, e.message); } }
   async advanceAnalysis(req: Request, res: Response) { try { sendSuccess(res, await reportService.advanceAnalysis(req.query as any)); } catch (e: any) { sendError(res, e.message); } }
   async approvalReport(req: Request, res: Response) { try { sendSuccess(res, await reportService.approvalReport(req.query as any)); } catch (e: any) { sendError(res, e.message); } }
 }

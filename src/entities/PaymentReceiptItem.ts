@@ -24,7 +24,7 @@ export class PaymentReceiptItem {
   @JoinColumn({ name: 'receipt_id' })
   receipt: PaymentReceipt;
 
-  @ManyToOne(() => SalesInvoice)
+  @ManyToOne(() => SalesInvoice, (invoice) => invoice.receipt_items)
   @JoinColumn({ name: 'invoice_id' })
   invoice: SalesInvoice;
 }

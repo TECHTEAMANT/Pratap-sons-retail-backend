@@ -63,9 +63,13 @@ export class SalesOrderService {
             sr_no: item.sr_no,
             barcode_8digit: item.barcode_8digit,
             design_no: item.design_no,
+            hsn_code: item.hsn_code,
             product_description: item.product_description || '',
             quantity: item.quantity || 1,
             mrp: item.mrp,
+            discount_percentage: Number(item.discount_percentage) || 0,
+            gst_percentage: Number(item.gst_percentage) || 5,
+            total: Number(item.total) || 0,
             salesman_id: item.salesman_id || null,
           });
           await manager.save(orderItem);
@@ -104,14 +108,105 @@ export class SalesOrderService {
     });
   }
 
-  async update(id: string, data: Record<string, any>) {
-    const order = await this.orderRepo.findOneBy({ id });
-    if (!order) return null;
-    const allowed = ['expected_delivery_date', 'total_amount', 'notes', 'status', 'salesman_id'];
-    for (const key of allowed) {
-      if (data[key] !== undefined) (order as any)[key] = data[key];
-    }
-    return this.orderRepo.save(order);
+  async update(id: string, data: any) {
+    return AppDataSource.transaction(async (manager) => {
+      // 1. Update Header using raw SQL to bypass TypeORM cascades
+      // Add 'order_number' and 'balance_amount' to allow manual updates
+      const allowed = ['order_number', 'customer_id', 'order_date', 'expected_delivery_date', 'notes', 'status', 'salesman_id', 'attachment_url', 'total_amount', 'advance_received', 'balance_amount'];
+      const updates: string[] = [];
+      const params: any[] = [];
+      
+      let paramIdx = 1;
+      for (const key of allowed) {
+        if (data[key] !== undefined) {
+          updates.push(`"${key}" = $${paramIdx++}`);
+          params.push(data[key]);
+        }
+      }
+
+      if (updates.length > 0) {
+        params.push(id);
+        await manager.query(`
+          UPDATE sales_orders 
+          SET ${updates.join(', ')}, updated_at = NOW() 
+          WHERE id = $${paramIdx}
+        `, params);
+      }
+
+      // 2. Handle Items using raw SQL
+      let itemTotalAmount = 0;
+      if (data.items && Array.isArray(data.items)) {
+        await manager.query(`DELETE FROM sales_order_items WHERE sales_order_id = $1`, [id]);
+   
+        for (let i = 0; i < data.items.length; i++) {
+          const item = data.items[i];
+          const item_total = Number(item.total) || 0;
+          itemTotalAmount += item_total;
+
+          const item_id = require('crypto').randomUUID ? require('crypto').randomUUID() : (require('uuid').v4 ? require('uuid').v4() : id + '-' + i);
+          await manager.query(`
+            INSERT INTO sales_order_items (
+              id, sales_order_id, sr_no, barcode_8digit, design_no, hsn_code, 
+              product_description, quantity, mrp, discount_percentage, 
+              gst_percentage, total, salesman_id, created_at
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW())
+          `, [
+            item_id, id, Number(item.sr_no) || (i + 1),
+            String(item.barcode_8digit || ''), String(item.design_no || ''), String(item.hsn_code || ''),
+            String(item.product_description || ''), Number(item.quantity) || 1, Number(item.mrp) || 0,
+            Number(item.discount_percentage) || 0, Number(item.gst_percentage) || 5, item_total,
+            item.salesman_id || data.salesman_id || null
+          ]);
+        }
+      }
+
+      // 3. Handle NEW Advances if provided
+      if (data.advances && Array.isArray(data.advances)) {
+        const getFiscalYearPrefix = () => {
+          const now = new Date();
+          const year = now.getFullYear();
+          const fiscalYear = now.getMonth() >= 3 ? `${year % 100}${(year + 1) % 100}` : `${(year - 1) % 100}${year % 100}`;
+          return fiscalYear;
+        };
+
+        for (const adv of data.advances) {
+          if (Number(adv.amount) > 0) {
+            const prefix = `SOA${getFiscalYearPrefix()}`;
+            // Simple robust counter fetch
+            const [{ count }] = await manager.query(`SELECT count(id)::int FROM sales_order_advances WHERE receipt_number LIKE $1`, [`${prefix}%`]);
+            const receiptNumber = `${prefix}${String(count + 1).padStart(4, '0')}`;
+            
+            await manager.query(`
+              INSERT INTO sales_order_advances (
+                id, sales_order_id, amount, payment_mode, reference_number, notes, receipt_number, created_at
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+            `, [
+              require('crypto').randomUUID ? require('crypto').randomUUID() : id + Math.random(),
+              id, Number(adv.amount), String(adv.mode || 'Cash'), String(adv.reference || ''), 
+              String(adv.notes || ''), receiptNumber
+            ]);
+          }
+        }
+      }
+
+      // 4. FINAL RECALCULATION: Update advance_received and balance_amount based on ALL records
+      const [{ sum }] = await manager.query(`SELECT SUM(amount) as sum FROM sales_order_advances WHERE sales_order_id = $1`, [id]);
+      const totalAdvances = Number(sum || 0);
+      
+      // Get the order to find the latest total_amount
+      const [{ total_amount }] = await manager.query(`SELECT total_amount FROM sales_orders WHERE id = $1`, [id]);
+      const finalTotal = Number(total_amount);
+      const finalBalance = finalTotal - totalAdvances;
+
+      await manager.query(`
+        UPDATE sales_orders 
+        SET advance_received = $1, balance_amount = $2 
+        WHERE id = $3
+      `, [totalAdvances, finalBalance, id]);
+
+      // Re-fetch to return the updated record
+      return manager.query(`SELECT * FROM sales_orders WHERE id = $1`, [id]).then(rows => rows[0]);
+    });
   }
 
   async addAdvance(orderId: string, advances: { amount: number; payment_mode: string; reference_number?: string; notes?: string }[], userId: string) {
