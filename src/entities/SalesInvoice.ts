@@ -4,6 +4,7 @@ import { Customer } from './Customer';
 import { Salesman } from './Salesman';
 import { User } from './User';
 import { Floor } from './Floor';
+import { PaymentReceiptItem } from './PaymentReceiptItem';
 
 @Entity('sales_invoices')
 export class SalesInvoice {
@@ -168,4 +169,7 @@ export class SalesInvoice {
   @ManyToOne(() => Floor, { nullable: true })
   @JoinColumn({ name: 'floor_id' })
   floor_details: Floor;
+
+  @OneToMany(() => PaymentReceiptItem, item => item.invoice)
+  receipt_items: PaymentReceiptItem[];
 }

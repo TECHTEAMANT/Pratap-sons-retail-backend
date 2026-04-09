@@ -3,12 +3,13 @@ import { SalesInvoice } from '../entities/SalesInvoice';
 import { SalesInvoiceItem } from '../entities/SalesInvoiceItem';
 import { BarcodeBatch } from '../entities/BarcodeBatch';
 import { Customer } from '../entities/Customer';
+import { Vendor } from '../entities/Vendor';
 import { PurchaseOrder } from '../entities/PurchaseOrder';
 import { SalesReturn } from '../entities/SalesReturn';
 import { SalesReturnItem } from '../entities/SalesReturnItem';
 import { SalesOrderAdvance } from '../entities/SalesOrderAdvance';
 import { PaymentReceipt } from '../entities/PaymentReceipt';
-import { Between, MoreThanOrEqual, LessThanOrEqual } from 'typeorm';
+import { Between, MoreThanOrEqual, LessThanOrEqual, Raw } from 'typeorm';
 import logger from '../utils/logger';
 
 export class ReportService {
@@ -79,15 +80,29 @@ export class ReportService {
     return { groups: groupData, totals };
   }
 
-  async salesReport(filters: { startDate: string, endDate: string }) {
-    const invoices = await AppDataSource.getRepository(SalesInvoice)
+  async salesReport(filters: { startDate: string, endDate: string, vendorId?: string, floorId?: string }) {
+    const start = filters.startDate.split('T')[0];
+    const end = filters.endDate.split('T')[0];
+
+    // Note: si.invoice_date is type 'date' (YYYY-MM-DD) in DB.
+    // Querying with date strings is more precise for Postgres than ISO strings with times.
+    const qb = AppDataSource.getRepository(SalesInvoice)
       .createQueryBuilder('si')
       .leftJoinAndSelect('si.items', 'items')
-      .where('si.invoice_date >= :start AND si.invoice_date <= :end', { 
-        start: `${filters.startDate.split('T')[0]}T00:00:00.000Z`, 
-        end: `${filters.endDate.split('T')[0]}T23:59:59.999Z` 
-      })
-      .getMany();
+      .leftJoin('items.product_item', 'bb') // Needed for vendor filtering
+      .where('si.invoice_date BETWEEN :start AND :end', { start, end });
+
+    if (filters.floorId) {
+      qb.andWhere('si.floor_id = :floorId', { floorId: filters.floorId });
+    }
+
+    if (filters.vendorId) {
+      // If filtering by vendor, we only want invoices that have items from this vendor
+      // AND we will filter the items themselves inside the loop for summary accuracy.
+      qb.andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
+    }
+
+    const invoices = await qb.getMany();
 
     const result = {
       totalSales: 0,
@@ -131,6 +146,13 @@ export class ReportService {
     result.totalReturns = returns.reduce((sum, ret) => sum + (parseFloat(ret.total_return_amount as any) || 0), 0);
 
     invoices.forEach(inv => {
+      // If vendorId filter is active, we must ONLY include items from that vendor in the summary math.
+      let invoiceItems = inv.items || [];
+      if (filters.vendorId) {
+        invoiceItems = invoiceItems.filter(item => (item as any).product_item?.vendor === filters.vendorId || (item as any).vendor_id === filters.vendorId);
+        if (invoiceItems.length === 0) return; // Skip invoice if no items match (should be handled by query but extra safety)
+      }
+
       // Robust Net Calculation for Summary Card Consistency
       const totalDisc = (parseFloat(inv.total_discount as any) || 0) + 
                        (parseFloat(inv.voucher_discount as any) || 0) + 
@@ -235,13 +257,15 @@ export class ReportService {
 
     return {
       ...result,
-      avgInvoiceValue: result.invoiceCount > 0 ? result.totalSales / result.invoiceCount : 0
+      avgInvoiceValue: result.invoiceCount > 0 ? result.totalSales / result.invoiceCount : 0,
+      detailedList: invoices.map(inv => ({
+        ...inv,
+        total_quantity: inv.items ? inv.items.reduce((sum, i) => sum + (Number(i.quantity) || 0), 0) : 0
+      }))
     };
   }
 
-  async inventoryReport(filters: { vendorId?: string; floorId?: string } = {}) {
-    // Determine GST rate and amount based on cost_actual and gst_logic
-    // Logic: if AUTO_5_18 then (if cost < 2500 then 5% else 18%), else 5%
+  async inventoryReport(filters: { startDate?: string; endDate?: string; vendorId?: string; floorId?: string } = {}) {
     const qb = AppDataSource.getRepository(BarcodeBatch)
       .createQueryBuilder('bb')
       .leftJoin('bb.product_group', 'pg')
@@ -259,6 +283,12 @@ export class ReportService {
       ]);
 
     qb.where('bb.status IN (:...statuses)', { statuses: ['active', 'Available', 'defective', 'Sold', 'Returned'] });
+
+    if (filters.startDate && filters.endDate) {
+      const start = filters.startDate.split('T')[0];
+      const end = filters.endDate.split('T')[0];
+      qb.andWhere('bb.created_at::date BETWEEN :start AND :end', { start, end });
+    }
 
     if (filters.vendorId) {
       qb.andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
@@ -329,6 +359,9 @@ export class ReportService {
   }
 
   async floorwiseSalesReport(filters: { startDate: string, endDate: string }) {
+    const start = filters.startDate.split('T')[0];
+    const end = filters.endDate.split('T')[0];
+
     const qb = AppDataSource.getRepository(SalesInvoiceItem)
       .createQueryBuilder('sii')
       .innerJoin('sii.invoice', 'si')
@@ -341,10 +374,7 @@ export class ReportService {
         'COALESCE(SUM(sii.total_value), 0) as "totalSales"',
         'COALESCE(SUM(sii.discount), 0) as "totalDiscount"'
       ])
-      .where('si.invoice_date >= :start AND si.invoice_date <= :end', { 
-        start: filters.startDate, 
-        end: filters.endDate
-      })
+      .where('si.invoice_date BETWEEN :start AND :end', { start, end })
       .groupBy('COALESCE(f_sale.name, f_stock.name, \'Unknown\')')
       .orderBy('"totalSales"', 'DESC');
 
@@ -358,6 +388,9 @@ export class ReportService {
   }
 
   async purchaseReport(filters: { startDate: string, endDate: string, vendorId?: string }) {
+    const start = filters.startDate.split('T')[0];
+    const end = filters.endDate.split('T')[0];
+
     const qb = AppDataSource.getRepository(PurchaseOrder)
       .createQueryBuilder('po')
       .select([
@@ -367,10 +400,7 @@ export class ReportService {
         'COUNT(po.id) as po_count',
         'COALESCE(AVG(po.total_amount), 0) as avg_po_value',
       ])
-      .where('po.order_date >= :start AND po.order_date <= :end', { 
-        start: `${filters.startDate}T00:00:00.000Z`, 
-        end: `${filters.endDate}T23:59:59.999Z` 
-      })
+      .where('po.order_date BETWEEN :start AND :end', { start, end })
       .andWhere('po.status != :status', { status: 'Pending' });
 
     if (filters.vendorId) {
@@ -378,6 +408,20 @@ export class ReportService {
     }
 
     const result = await qb.getRawOne();
+    const detailedList = await qb.getRawMany(); // Note: qb might need to be cloned or slightly modified if summary query differs
+
+    // Re-run for detailed list with join to vendor
+    const detailsQb = AppDataSource.getRepository(PurchaseOrder)
+      .createQueryBuilder('po')
+      .leftJoinAndSelect('po.vendor', 'vendor')
+      .where('po.order_date BETWEEN :start AND :end', { start, end })
+      .andWhere('po.status != :status', { status: 'Pending' });
+
+    if (filters.vendorId) {
+      detailsQb.andWhere('po.vendor_id = :vendorId', { vendorId: filters.vendorId });
+    }
+    detailsQb.orderBy('po.order_date', 'DESC').limit(500);
+    const details = await detailsQb.getMany();
 
     return {
       totalPurchase: parseFloat(result.total_purchase),
@@ -385,6 +429,7 @@ export class ReportService {
       totalGST: parseFloat(result.total_gst),
       poCount: parseInt(result.po_count),
       avgPOValue: parseFloat(result.avg_po_value),
+      detailedList: details
     };
   }
 
@@ -403,7 +448,10 @@ export class ReportService {
         'COALESCE(SUM(si.total_gst), 0) as total_gst',
         'COALESCE(SUM(si.net_payable), 0) as total_sales',
       ])
-      .where('si.invoice_date >= :start AND si.invoice_date <= :end', { start: startDate, end: endDate });
+      .where('si.invoice_date BETWEEN :start AND :end', { 
+        start: startDate.split('T')[0], 
+        end: endDate.split('T')[0] 
+      });
 
     const result = await qb.getRawOne();
     return { startDate, endDate, ...result };
@@ -411,6 +459,9 @@ export class ReportService {
 
   // Salesman Performance
   async salesmanPerformance(startDate: string, endDate: string) {
+    const startStr = startDate.split('T')[0];
+    const endStr = endDate.split('T')[0];
+
     // 1. Get Sales
     const salesQb = AppDataSource.getRepository(SalesInvoiceItem)
       .createQueryBuilder('sii')
@@ -421,7 +472,7 @@ export class ReportService {
         'COALESCE(SUM(sii.total_value), 0) as total_sales',
         'COUNT(*) as items_sold',
       ])
-      .where('si.invoice_date >= :start AND si.invoice_date <= :end', { start: startDate, end: endDate })
+      .where('si.invoice_date BETWEEN :start AND :end', { start: startStr, end: endStr })
       .andWhere('sii.salesman_id IS NOT NULL')
       .groupBy('sii.salesman_id');
 
@@ -436,7 +487,7 @@ export class ReportService {
         'COALESCE(SUM(sri.return_amount), 0) as total_returns',
         'COUNT(*) as return_items_count',
       ])
-      .where('sr.return_date >= :start AND sr.return_date <= :end', { start: startDate, end: endDate })
+      .where('sr.return_date BETWEEN :start AND :end', { start: startStr, end: endStr })
       .andWhere('sri.salesman_id IS NOT NULL')
       .groupBy('sri.salesman_id');
 
@@ -484,7 +535,10 @@ export class ReportService {
     return Array.from(performanceMap.values()).sort((a, b) => b.net_sales - a.net_sales);
   }
  
-  async profitabilityReport(filters: { startDate: string, endDate: string }) {
+  async profitabilityReport(filters: { startDate: string, endDate: string, vendorId?: string, floorId?: string }) {
+    const start = filters.startDate.split('T')[0];
+    const end = filters.endDate.split('T')[0];
+
     const qb = AppDataSource.getRepository(SalesInvoiceItem)
       .createQueryBuilder('sii')
       .innerJoin('sii.invoice', 'si')
@@ -503,10 +557,14 @@ export class ReportService {
         'sii.discount as discount',
         'sii.selling_price as revenue'
       ])
-      .where('si.invoice_date >= :start AND si.invoice_date <= :end', { 
-        start: `${filters.startDate}T00:00:00.000Z`, 
-        end: `${filters.endDate}T23:59:59.999Z` 
-      });
+      .where('si.invoice_date BETWEEN :start AND :end', { start, end });
+
+    if (filters.vendorId) {
+      qb.andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
+    }
+    if (filters.floorId) {
+      qb.andWhere('si.floor_id = :floorId', { floorId: filters.floorId });
+    }
 
     const items = await qb.getRawMany();
 
@@ -559,7 +617,10 @@ export class ReportService {
     };
   }
  
-  async topSellingReport(filters: { startDate: string, endDate: string }) {
+  async topSellingReport(filters: { startDate: string, endDate: string, vendorId?: string, floorId?: string }) {
+    const start = filters.startDate.split('T')[0];
+    const end = filters.endDate.split('T')[0];
+
     const qb = AppDataSource.getRepository(SalesInvoiceItem)
       .createQueryBuilder('sii')
       .innerJoin('sii.invoice', 'si')
@@ -573,11 +634,16 @@ export class ReportService {
         'SUM(sii.selling_price) as revenue',
         'AVG(sii.mrp) as mrp'
       ])
-      .where('si.invoice_date >= :start AND si.invoice_date <= :end', { 
-        start: `${filters.startDate}T00:00:00.000Z`, 
-        end: `${filters.endDate}T23:59:59.999Z` 
-      })
-      .groupBy('sii.barcode_8digit')
+      .where('si.invoice_date BETWEEN :start AND :end', { start, end });
+
+    if (filters.vendorId) {
+      qb.andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
+    }
+    if (filters.floorId) {
+      qb.andWhere('si.floor_id = :floorId', { floorId: filters.floorId });
+    }
+
+    qb.groupBy('sii.barcode_8digit')
       .addGroupBy('sii.design_no')
       .addGroupBy('pg.name')
       .orderBy('quantity', 'DESC')
@@ -647,11 +713,15 @@ export class ReportService {
   }
 
   // Sales Return Report
-  async salesReturnReport(filters: { startDate: string, endDate: string }) {
+  async salesReturnReport(filters: { startDate: string, endDate: string, vendorId?: string }) {
+    const start = filters.startDate.split('T')[0];
+    const end = filters.endDate.split('T')[0];
+
     const qb = AppDataSource.getRepository(SalesReturn)
       .createQueryBuilder('sr')
       .leftJoin('sr.salesman', 's')
       .leftJoin(SalesReturnItem, 'sri', 'sri.return_id = sr.id')
+      .leftJoin('sri.product_item', 'bb') // Needed for vendor filtering
       .select([
         'sr.id as id',
         'sr.return_number as return_number',
@@ -669,11 +739,13 @@ export class ReportService {
         'sr.total_discount_amount as total_discount_amount',
         'sr.total_loyalty_amount as total_loyalty_amount'
       ])
-      .where('sr.return_date >= :start AND sr.return_date <= :end', { 
-        start: `${filters.startDate.split('T')[0]}T00:00:00.000Z`, 
-        end: `${filters.endDate.split('T')[0]}T23:59:59.999Z` 
-      })
-      .groupBy('sr.id')
+      .where('sr.return_date BETWEEN :start AND :end', { start, end });
+
+    if (filters.vendorId) {
+      qb.andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
+    }
+
+    qb.groupBy('sr.id')
       .addGroupBy('sr.return_number')
       .addGroupBy('sr.return_date')
       .addGroupBy('sr.invoice_number')
@@ -738,16 +810,9 @@ export class ReportService {
         });
       }
 
-      // Smart Fallback: match salesReport logic exactly.
-      // If payment_details total is less than what was actually paid (net_payable - amount_pending),
-      // attribute the gap to Cash when payment_mode is 'Cash' OR is not set (NULL/undefined).
-      const actualTotalPaid = (parseFloat(inv.net_payable as any) || 0) - (parseFloat(inv.amount_pending as any) || 0);
-      const missingAmount = Math.max(0, actualTotalPaid - totalPaidFromDetails);
-      if (missingAmount > 0) {
-        const mode = inv.payment_mode || 'Cash'; // NULL defaults to Cash (same as salesReport)
-        if (mode === 'Cash') cashAmount += missingAmount;
-      }
-
+      // IMPORTANT: To prevent doubling, Step 1 ONLY counts the Immediate Cash recorded 
+      // in the invoice's original payment_details. 
+      // All subsequent payments must be recorded via PaymentReceipts (Step 2).
       if (cashAmount > 0) {
         result.summary.salesCash += cashAmount;
         result.details.push({
@@ -765,23 +830,37 @@ export class ReportService {
     // 2. Pending Payment Receipts (Cash)
     const receipts = await AppDataSource.getRepository(PaymentReceipt).find({
       where: { 
-        receipt_date: Between(start as any, end as any),
-        payment_mode: 'Cash'
+        receipt_date: Between(start as any, end as any)
       }
     });
-
+    
     receipts.forEach(receipt => {
-      const amount = parseFloat(receipt.amount_received as any) || 0;
-      result.summary.receiptCash += amount;
-      result.details.push({
-        id: receipt.id,
-        date: receipt.receipt_date,
-        source: 'Pending Payment',
-        reference: receipt.receipt_number,
-        customer: receipt.customer_name,
-        mobile: receipt.customer_mobile,
-        amount: amount
-      });
+      let paymentDetails = receipt.payment_details;
+      if (typeof paymentDetails === 'string') {
+        try { paymentDetails = JSON.parse(paymentDetails); } catch (e) { paymentDetails = null; }
+      }
+
+      let cashAmount = 0;
+      if (paymentDetails && Array.isArray(paymentDetails)) {
+        paymentDetails.forEach((pd: any) => {
+          if (pd.mode === 'Cash') cashAmount += parseFloat(pd.amount) || 0;
+        });
+      } else if (receipt.payment_mode === 'Cash') {
+        cashAmount = parseFloat(receipt.amount_received as any) || 0;
+      }
+
+      if (cashAmount > 0) {
+        result.summary.receiptCash += cashAmount;
+        result.details.push({
+          id: receipt.id,
+          date: receipt.receipt_date,
+          source: 'Pending Payment',
+          reference: receipt.receipt_number,
+          customer: receipt.customer_name,
+          mobile: receipt.customer_mobile,
+          amount: cashAmount
+        });
+      }
     });
 
     // 3. Sales Order Advances (Cash)
@@ -815,13 +894,155 @@ export class ReportService {
     return result;
   }
 
+  async vendorAnalysisReport(filters: { startDate: string, endDate: string, vendorId?: string }) {
+    const start = `${filters.startDate.split('T')[0]}T00:00:00.000Z`;
+    const end = `${filters.endDate.split('T')[0]}T23:59:59.999Z`;
+    const { vendorId } = filters;
+
+    const groupByField = vendorId ? 'bb.design_no' : 'v.id';
+    const selectNameField = vendorId ? 'bb.design_no as name' : 'v.name as name';
+
+    const applyVendorFilter = (qb: any) => {
+      if (vendorId) {
+        qb.andWhere('v.id = :vendorId', { vendorId });
+      }
+      return qb;
+    };
+
+    // 1. OPENING PURCHASES (Before Start)
+    const opQuery = AppDataSource.getRepository(BarcodeBatch)
+      .createQueryBuilder('bb')
+      .leftJoin('bb.vendor', 'v')
+      .select([`${groupByField} as id`, 'COALESCE(SUM(bb.total_quantity), 0) as qty', 'COALESCE(SUM(bb.total_quantity * bb.cost_actual), 0) as value'])
+      .where('bb.created_at < :start', { start });
+    applyVendorFilter(opQuery);
+    const openingPurchases = await opQuery.groupBy(groupByField).getRawMany();
+
+    // 2. OPENING SALES (Before Start)
+    const osQuery = AppDataSource.getRepository(SalesInvoiceItem)
+      .createQueryBuilder('sii')
+      .innerJoin('sii.invoice', 'si')
+      .leftJoin('sii.product_item', 'bb')
+      .leftJoin('bb.vendor', 'v')
+      .select([`${groupByField} as id`, 'COALESCE(SUM(sii.quantity), 0) as qty', 'COALESCE(SUM(sii.total_value), 0) as value'])
+      .where('si.invoice_date < :start', { start });
+    applyVendorFilter(osQuery);
+    const openingSales = await osQuery.groupBy(groupByField).getRawMany();
+
+    // 3. OPENING RETURNS (Before Start)
+    const orQuery = AppDataSource.getRepository(SalesReturnItem)
+      .createQueryBuilder('sri')
+      .innerJoin('sri.salesReturn', 'sr')
+      .leftJoin('sri.product_item', 'bb')
+      .leftJoin('bb.vendor', 'v')
+      .select([`${groupByField} as id`, 'COALESCE(SUM(sri.quantity), 0) as qty', 'COALESCE(SUM(sri.return_amount), 0) as value'])
+      .where('sr.return_date < :start', { start });
+    applyVendorFilter(orQuery);
+    const openingReturns = await orQuery.groupBy(groupByField).getRawMany();
+
+    // 4. PERIOD PURCHASES (In Range)
+    const ppQuery = AppDataSource.getRepository(BarcodeBatch)
+      .createQueryBuilder('bb')
+      .leftJoin('bb.vendor', 'v')
+      .select([`${groupByField} as id`, `${selectNameField}`, 'COALESCE(SUM(bb.total_quantity), 0) as qty', 'COALESCE(SUM(bb.total_quantity * bb.cost_actual), 0) as value'])
+      .where('bb.created_at >= :start AND bb.created_at <= :end', { start, end });
+    applyVendorFilter(ppQuery);
+    const periodPurchases = await ppQuery.groupBy(groupByField).addGroupBy(vendorId ? 'bb.design_no' : 'v.name').getRawMany();
+
+    // 5. PERIOD SALES (In Range)
+    const psQuery = AppDataSource.getRepository(SalesInvoiceItem)
+      .createQueryBuilder('sii')
+      .innerJoin('sii.invoice', 'si')
+      .leftJoin('sii.product_item', 'bb')
+      .leftJoin('bb.vendor', 'v')
+      .select([`${groupByField} as id`, 'COALESCE(SUM(sii.quantity), 0) as qty', 'COALESCE(SUM(sii.total_value), 0) as value'])
+      .where('si.invoice_date >= :start AND si.invoice_date <= :end', { start, end });
+    applyVendorFilter(psQuery);
+    const periodSales = await psQuery.groupBy(groupByField).getRawMany();
+
+    // 6. PERIOD RETURNS (In Range)
+    const prQuery = AppDataSource.getRepository(SalesReturnItem)
+      .createQueryBuilder('sri')
+      .innerJoin('sri.salesReturn', 'sr')
+      .leftJoin('sri.product_item', 'bb')
+      .leftJoin('bb.vendor', 'v')
+      .select([`${groupByField} as id`, 'COALESCE(SUM(sri.quantity), 0) as qty', 'COALESCE(SUM(sri.return_amount), 0) as value'])
+      .where('sr.return_date >= :start AND sr.return_date <= :end', { start, end });
+    applyVendorFilter(prQuery);
+    const periodReturns = await prQuery.groupBy(groupByField).getRawMany();
+
+    const dataMap = new Map<string, any>();
+    
+    // If it's a global report, pre-load all vendors to handle names
+    if (!vendorId) {
+      const allVendors = await AppDataSource.getRepository(Vendor).find();
+      allVendors.forEach(vend => {
+        dataMap.set(vend.id, {
+          vendor_id: vend.id,
+          vendor_name: vend.name,
+          opening_qty: 0, received_qty: 0, sold_qty: 0, returns_qty: 0, closing_qty: 0, sales_value: 0, purchase_value: 0
+        });
+      });
+    }
+
+    const getEntry = (id: string, name?: string) => {
+      if (!id) return null;
+      if (!dataMap.has(id)) {
+        dataMap.set(id, {
+          item_id: id,
+          display_name: name || (vendorId ? id : 'Unknown'), // Use ID (Design No) if name missing
+          opening_qty: 0, received_qty: 0, sold_qty: 0, returns_qty: 0, closing_qty: 0, sales_value: 0, purchase_value: 0
+        });
+      }
+      return dataMap.get(id);
+    };
+
+    openingPurchases.forEach(d => { const v = getEntry(d.id); if (v) v.opening_qty += parseFloat(d.qty); });
+    openingSales.forEach(d => { const v = getEntry(d.id); if (v) v.opening_qty -= parseFloat(d.qty); });
+    openingReturns.forEach(d => { const v = getEntry(d.id); if (v) v.opening_qty += parseFloat(d.qty); });
+
+    periodPurchases.forEach(d => { 
+      const v = getEntry(d.id, d.name); 
+      if (v) {
+        v.received_qty = parseFloat(d.qty);
+        v.purchase_value = parseFloat(d.value);
+        if (vendorId) v.display_name = d.name; // Ensure design name is set
+      }
+    });
+
+    periodSales.forEach(d => { 
+      const v = getEntry(d.id); 
+      if (v) {
+        v.sold_qty = parseFloat(d.qty); 
+        v.sales_value = parseFloat(d.value);
+      }
+    });
+
+    periodReturns.forEach(d => { 
+      const v = getEntry(d.id); 
+      if (v) v.returns_qty = parseFloat(d.qty); 
+    });
+
+    return Array.from(dataMap.values())
+      .map(v => ({
+        ...v,
+        // Ensure both fields exist for frontend compatibility
+        vendor_name: v.vendor_name || v.display_name || 'Unknown',
+        display_name: v.display_name || v.vendor_name || 'Unknown',
+        closing_qty: v.opening_qty + v.received_qty - v.sold_qty + v.returns_qty
+      }))
+      .filter(v => 
+        Math.abs(v.opening_qty) > 0.001 || v.received_qty > 0.001 || v.sold_qty > 0.001 || v.returns_qty > 0.001 || Math.abs(v.closing_qty) > 0.001
+      );
+  }
+
   async advanceAnalysis(filters: { startDate: string, endDate: string }) {
-    const start = new Date(`${filters.startDate.split('T')[0]}T00:00:00.000Z`);
-    const end = new Date(`${filters.endDate.split('T')[0]}T23:59:59.999Z`);
+    const start = filters.startDate.split('T')[0];
+    const end = filters.endDate.split('T')[0];
 
     const advances = await AppDataSource.getRepository(SalesOrderAdvance).find({
       where: {
-        created_at: Between(start as any, end as any)
+        created_at: Raw((alias: string) => `${alias}::date BETWEEN :start AND :end`, { start, end })
       },
       relations: ['salesOrder', 'salesOrder.customer'],
       order: { created_at: 'DESC' }
@@ -873,8 +1094,8 @@ export class ReportService {
 
     if (filters.startDate && filters.endDate) {
        qb.andWhere('si.invoice_date BETWEEN :start AND :end', {
-         start: `${filters.startDate.split('T')[0]}T00:00:00.000Z`,
-         end: `${filters.endDate.split('T')[0]}T23:59:59.999Z`
+         start: filters.startDate.split('T')[0],
+         end: filters.endDate.split('T')[0]
        });
     }
 

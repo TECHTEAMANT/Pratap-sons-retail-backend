@@ -42,6 +42,16 @@ router.post('/backfill-cards', async (req, res) => {
   }
 });
 
+// Sync customers from invoices
+router.post('/sync-from-invoices', async (req, res) => {
+  try {
+    const result = await customerService.syncCustomersFromInvoices();
+    res.json({ success: true, data: result, message: `Synced ${result.processed} unique customers, created ${result.created} new records.` });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 router.get('/:mobile', (req, res) => customerController.findByMobile(req, res));
 router.post('/', (req, res) => customerController.create(req, res));
 router.put('/:id', (req, res) => customerController.update(req, res));

@@ -63,7 +63,11 @@ export class PaymentService {
           // Update invoice balance
           const invoice = await manager.findOne(SalesInvoice, { where: { id: itemData.invoice_id } });
           if (invoice) {
-            invoice.amount_paid = Number(invoice.amount_paid || 0) + Number(itemData.amount_paid);
+            // Safety check: Don't allow paying more than pending amount per item to avoid doubling
+            const maxAllowed = Math.max(0, Number(invoice.net_payable || 0) - Number(invoice.amount_paid || 0));
+            const actualToPay = Math.min(Number(itemData.amount_paid || 0), maxAllowed);
+            
+            invoice.amount_paid = Number(invoice.amount_paid || 0) + actualToPay;
             invoice.amount_pending = Math.max(0, Number(invoice.net_payable) - Number(invoice.amount_paid));
             
             if (invoice.amount_pending <= 0) {

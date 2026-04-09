@@ -78,7 +78,16 @@ export class SalesService {
   async getInvoiceById(id: string) {
     return AppDataSource.getRepository(SalesInvoice).findOne({
       where: { id },
-      relations: ['items', 'items.salesman', 'customer', 'salesman', 'creator', 'floor_details']
+      relations: [
+        'items', 
+        'items.salesman', 
+        'customer', 
+        'salesman', 
+        'creator', 
+        'floor_details',
+        'receipt_items',
+        'receipt_items.receipt'
+      ]
     });
   }
 

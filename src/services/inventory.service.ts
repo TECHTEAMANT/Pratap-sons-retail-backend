@@ -1,6 +1,7 @@
 import { AppDataSource } from '../config/data-source';
 import { BarcodeBatch } from '../entities/BarcodeBatch';
 import { BarcodeSequence } from '../entities/BarcodeSequence';
+import { ProductMaster } from '../entities/ProductMaster';
 import { encodeCost } from '../utils/costEncoding';
 import { ILike } from 'typeorm';
 import logger from '../utils/logger';
@@ -411,6 +412,17 @@ export class InventoryService {
 
     // Handle string IDs safely mapping to TypeORM foreign keys
     if (data.product_group) { batch.product_group_id = data.product_group; delete data.product_group; }
+    if (data.available_quantity !== undefined && data.total_quantity !== undefined) {
+      if (data.available_quantity > data.total_quantity) {
+        throw new Error('Available quantity cannot be greater than total quantity');
+      }
+    } else if (data.available_quantity !== undefined && data.available_quantity > batch.total_quantity) {
+        throw new Error('Available quantity cannot be greater than current total quantity');
+    } else if (data.total_quantity !== undefined && data.total_quantity < batch.available_quantity) {
+        throw new Error('Total quantity cannot be less than current available quantity');
+    }
+
+    if (data.design_no) batch.design_no = data.design_no;
     if (data.size) { batch.size_id = data.size; delete data.size; }
     if (data.color) { batch.color_id = data.color; delete data.color; }
     if (data.vendor) { batch.vendor_id = data.vendor; delete data.vendor; }
@@ -426,7 +438,21 @@ export class InventoryService {
     }
     batch.modified_by = userId;
 
-    return this.batchRepo.save(batch);
+    const saved = await this.batchRepo.save(batch);
+
+    // Sync photos to ProductMaster if matching
+    if (data.photos && Array.isArray(data.photos) && batch.design_no && batch.vendor_id) {
+      try {
+        await AppDataSource.getRepository(ProductMaster).update(
+          { design_no: batch.design_no, vendor_id: batch.vendor_id },
+          { photos: data.photos, updated_at: new Date() }
+        );
+      } catch (err) {
+        logger.warn('Failed to sync photos to product master', { design: batch.design_no, error: err });
+      }
+    }
+
+    return saved;
   }
 
   async adjustQuantity(id: string, adjustment: number, userId: string) {
