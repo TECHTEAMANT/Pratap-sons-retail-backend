@@ -145,6 +145,7 @@ export class ReportService {
 
     result.totalReturns = returns.reduce((sum, ret) => sum + (parseFloat(ret.total_return_amount as any) || 0), 0);
 
+    const detailedList: any[] = [];
     invoices.forEach(inv => {
       // If vendorId filter is active, we must ONLY include items from that vendor in the summary math.
       let invoiceItems = inv.items || [];
@@ -153,20 +154,32 @@ export class ReportService {
         if (invoiceItems.length === 0) return; // Skip invoice if no items match (should be handled by query but extra safety)
       }
 
-      // Robust Net Calculation for Summary Card Consistency
-      const totalDisc = (parseFloat(inv.total_discount as any) || 0) + 
+      // Robust Reconstruction from Item-Level Data
+      const reconstructedMRP = invoiceItems.reduce((s, i) => s + (Number(i.mrp || i.selling_price || 0) * Number(i.quantity || 1)), 0);
+      const reconstructedItemDisc = invoiceItems.reduce((s, i) => s + (Number(i.discount || 0) * Number(i.quantity || 1)), 0);
+      
+      // Some old invoices have the discount ONLY at the header total_discount field.
+      // Newer ones have it distributed to items. We take the max to be safe.
+      const storedTotalDisc = parseFloat(inv.total_discount as any) || 0;
+      const baseDisc = Math.max(reconstructedItemDisc, storedTotalDisc);
+
+      const totalDisc = baseDisc + 
                        (parseFloat(inv.voucher_discount as any) || 0) + 
                        (parseFloat(inv.special_discount as any) || 0) + 
                        (parseFloat(inv.loyalty_redemption_amount as any) || 0) + 
                        (parseFloat((inv as any).coupon_amount as any) || 0);
-      const calculatedNet = (parseFloat(inv.total_mrp as any) || 0) - totalDisc + (parseFloat(inv.additional_charges_total as any) || 0);
-      const storedNet = parseFloat(inv.net_payable as any) || 0;
-      const moneyPaidTotal = (parseFloat(inv.amount_paid as any) || 0) + (parseFloat(inv.amount_pending as any) || 0);
-      // Unified Smart Net: Trust the actual financial intent (Payments + Pending) over inconsistent DB fields
-      const finalNet = (moneyPaidTotal > 0) ? moneyPaidTotal : (storedNet > 0 ? storedNet : Math.max(Math.round(calculatedNet), 0));
+
+      const calculatedNet = reconstructedMRP - totalDisc + (parseFloat(inv.additional_charges_total as any) || 0);
+      const amountPaid = parseFloat(inv.amount_paid as any) || 0;
+
+      // Unified Smart Net: Trust reconstructed math (calculatedNet) as the source of truth for Sales Value
+      const finalNet = Math.round(calculatedNet);
+      
+      // Smart Pending: What is legally owed - what has been physically paid
+      const finalPending = Math.max(0, finalNet - amountPaid);
 
       result.totalSales += finalNet;
-      result.totalMRP += parseFloat(inv.total_mrp as any) || 0;
+      result.totalMRP += reconstructedMRP;
       result.totalDiscount += totalDisc;
       result.totalGST += parseFloat(inv.total_gst as any) || 0;
       result.taxableValue += parseFloat(inv.taxable_value as any) || 0;
@@ -174,8 +187,14 @@ export class ReportService {
       result.totalLoyalty += parseFloat(inv.loyalty_redemption_amount as any) || 0;
       result.totalVoucher += parseFloat(inv.voucher_discount as any) || 0;
       
-      const amountPending = parseFloat(inv.amount_pending as any) || 0;
-      result.totalPending += amountPending;
+      result.totalPending += finalPending;
+
+      // Update the invoice object fields so detailedList also shows corrected values
+      inv.total_mrp = reconstructedMRP;
+      inv.total_discount = totalDisc;
+      inv.net_payable = finalNet;
+      inv.amount_pending = finalPending;
+
       result.cgst_5 += parseFloat(inv.cgst_5 as any) || 0;
       result.sgst_5 += parseFloat(inv.sgst_5 as any) || 0;
       result.cgst_18 += parseFloat(inv.cgst_18 as any) || 0;
@@ -205,7 +224,7 @@ export class ReportService {
           else if (mode === 'Online' || mode === 'Bank Transfer') result.paymentBreakdown.Online += amount;
           else if (mode === 'Exchange') (result.paymentBreakdown as any).Exchange += amount;
           else if (mode === 'Approval') {
-            const actualApprovalPending = Math.min(amount, Number(inv.amount_pending || 0));
+            const actualApprovalPending = Math.min(amount, finalPending);
             result.paymentBreakdown.Approval += actualApprovalPending;
           }
           else if (mode === 'Credit Coupon') { 
@@ -216,10 +235,10 @@ export class ReportService {
         });
 
         if (!hasCreditCoupon && (inv as any).coupon_no) {
-          const totalMrp = parseFloat(inv.total_mrp as any) || 0;
-          const totalDiscount = (parseFloat(inv.total_discount as any) || 0) + (parseFloat((inv as any).voucher_discount as any) || 0);
+          const totalMrp = reconstructedMRP;
+          const totalDiscount = totalDisc;
           const loyalty = parseFloat((inv as any).loyalty_redemption_amount as any) || 0;
-          const netPayable = parseFloat(inv.net_payable as any) || 0;
+          const netPayable = finalNet;
           const inferredCoupon = totalMrp - totalDiscount - loyalty - netPayable;
           if (inferredCoupon > 0) {
             result.paymentBreakdown['Credit Coupon'] += inferredCoupon;
@@ -230,7 +249,7 @@ export class ReportService {
 
       // SMART FALLBACK: If total from details is less than actual paid amount (Net - Pending),
       // attribute the difference to the primary payment mode.
-      const actualTotalPaid = finalNet - amountPending;
+      const actualTotalPaid = finalNet - finalPending;
       const missingAmount = Math.max(0, actualTotalPaid - totalPaidFromDetails);
       
       if (missingAmount > 0) {
@@ -248,20 +267,27 @@ export class ReportService {
       if (inv.items) {
         inv.items.forEach(item => {
           result.totalQuantity += Number(item.quantity) || 0;
-          if (Number(inv.amount_pending || 0) > 0 && item.on_approval) {
+          if (finalPending > 0 && item.on_approval) {
             result.approvalItemCount += Number(item.quantity) || 0;
           }
         });
       }
+
+      // Add to detailed list as a plain object to ensure field visibility
+      detailedList.push({
+        ...inv,
+        total_mrp: reconstructedMRP,
+        total_discount: totalDisc,
+        net_payable: finalNet,
+        amount_pending: finalPending,
+        total_quantity: inv.items ? inv.items.reduce((sum, i) => sum + (Number(i.quantity) || 0), 0) : 0
+      });
     });
 
     return {
       ...result,
       avgInvoiceValue: result.invoiceCount > 0 ? result.totalSales / result.invoiceCount : 0,
-      detailedList: invoices.map(inv => ({
-        ...inv,
-        total_quantity: inv.items ? inv.items.reduce((sum, i) => sum + (Number(i.quantity) || 0), 0) : 0
-      }))
+      detailedList
     };
   }
 
@@ -372,7 +398,7 @@ export class ReportService {
         'COALESCE(f_sale.name, f_stock.name, \'Unknown\') as floor',
         'COUNT(DISTINCT si.id) as "invoiceCount"',
         'COALESCE(SUM(sii.total_value), 0) as "totalSales"',
-        'COALESCE(SUM(sii.discount), 0) as "totalDiscount"'
+        'COALESCE(SUM(sii.discount * sii.quantity), 0) as "totalDiscount"'
       ])
       .where('si.invoice_date BETWEEN :start AND :end', { start, end })
       .groupBy('COALESCE(f_sale.name, f_stock.name, \'Unknown\')')
@@ -584,10 +610,10 @@ export class ReportService {
       const profit = revenue - itemCost;
       const profitMargin = revenue > 0 ? (profit / revenue) * 100 : 0;
 
-      totalRevenue += revenue;
+      totalRevenue += revenue * quantity;
       totalCost += itemCost;
-      totalMRP += mrp;
-      totalDiscount += discount;
+      totalMRP += mrp * quantity;
+      totalDiscount += discount * quantity;
       totalQuantitySold += quantity;
 
       return {
