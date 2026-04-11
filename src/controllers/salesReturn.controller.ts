@@ -16,6 +16,9 @@ export class SalesReturnController {
   async create(req: AuthenticatedRequest, res: Response) {
     try { sendCreated(res, await salesReturnService.create(req.body, req.user!.id)); } catch (e: any) { sendError(res, e.message, 400); }
   }
+  async update(req: AuthenticatedRequest, res: Response) {
+    try { sendSuccess(res, await salesReturnService.update(req.params.id, req.body, req.user!.id)); } catch (e: any) { sendError(res, e.message, 400); }
+  }
   async getCreditNotes(req: Request, res: Response) {
     try { sendSuccess(res, await salesReturnService.getCreditNotes(req.query as any)); } catch (e: any) { sendError(res, e.message); }
   }

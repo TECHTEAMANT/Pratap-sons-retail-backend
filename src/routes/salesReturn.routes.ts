@@ -12,6 +12,7 @@ router.get('/credit-notes', (req, res) => salesReturnController.getCreditNotes(r
 router.get('/items', (req, res) => salesReturnController.getReturnItems(req, res));
 router.get('/:id', (req, res) => salesReturnController.findById(req, res));
 router.post('/', (req, res) => salesReturnController.create(req, res));
+router.put('/:id', (req, res) => salesReturnController.update(req as any, res));
 router.post('/credit-notes/:id/apply', (req, res) => salesReturnController.applyCreditNote(req, res));
 
 export default router;
