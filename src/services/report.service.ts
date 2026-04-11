@@ -194,6 +194,7 @@ export class ReportService {
       inv.total_discount = totalDisc;
       inv.net_payable = finalNet;
       inv.amount_pending = finalPending;
+      inv.payment_status = (finalPending <= 0) ? 'paid' : (amountPaid > 0 ? 'partial' : 'pending');
 
       result.cgst_5 += parseFloat(inv.cgst_5 as any) || 0;
       result.sgst_5 += parseFloat(inv.sgst_5 as any) || 0;
@@ -280,6 +281,7 @@ export class ReportService {
         total_discount: totalDisc,
         net_payable: finalNet,
         amount_pending: finalPending,
+        payment_status: (finalPending <= 0) ? 'paid' : (amountPaid > 0 ? 'partial' : 'pending'),
         total_quantity: inv.items ? inv.items.reduce((sum, i) => sum + (Number(i.quantity) || 0), 0) : 0
       });
     });
