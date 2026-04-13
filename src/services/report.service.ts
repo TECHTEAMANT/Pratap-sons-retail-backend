@@ -158,16 +158,18 @@ export class ReportService {
       const reconstructedMRP = invoiceItems.reduce((s, i) => s + (Number(i.mrp || i.selling_price || 0) * Number(i.quantity || 1)), 0);
       const reconstructedItemDisc = invoiceItems.reduce((s, i) => s + (Number(i.discount || 0) * Number(i.quantity || 1)), 0);
       
-      // Some old invoices have the discount ONLY at the header total_discount field.
-      // Newer ones have it distributed to items. We take the max to be safe.
-      const storedTotalDisc = parseFloat(inv.total_discount as any) || 0;
-      const baseDisc = Math.max(reconstructedItemDisc, storedTotalDisc);
+      // --- Fix Discount Doubling ---
+      // We reconcile the sum of item-level discounts against the total header-level discount bundle.
+      // Since modern invoices prorate Special, Voucher, and Loyalty into the item 'discount' field, 
+      // adding the header fields again would cause double counting. 
+      // We trust the Maximum of the two approaches (Item Reconstruction vs Header Totals).
+      const totalHeaderBundle = (parseFloat(inv.total_discount as any) || 0) + 
+                               (parseFloat(inv.special_discount as any) || 0) + 
+                               (parseFloat(inv.voucher_discount as any) || 0) + 
+                               (parseFloat(inv.loyalty_redemption_amount as any) || 0) + 
+                               (parseFloat((inv as any).coupon_amount as any) || 0);
 
-      const totalDisc = baseDisc + 
-                       (parseFloat(inv.voucher_discount as any) || 0) + 
-                       (parseFloat(inv.special_discount as any) || 0) + 
-                       (parseFloat(inv.loyalty_redemption_amount as any) || 0) + 
-                       (parseFloat((inv as any).coupon_amount as any) || 0);
+      const totalDisc = Math.max(reconstructedItemDisc, totalHeaderBundle);
 
       const calculatedNet = reconstructedMRP - totalDisc + (parseFloat(inv.additional_charges_total as any) || 0);
       const finalNet = Math.round(calculatedNet);
@@ -224,7 +226,7 @@ export class ReportService {
           invoicePaymentBreakdown.Card += amount;
         }
         // Inclusion of RCP and RECEIPT for older receipt formats
-        else if (rawMode.includes('RECEIPT') || rawMode.includes('RCP') || rawMode.includes('BANK') || rawMode.includes('ONLINE') || rawMode.includes('TRANSFER') || rawMode.includes('NEFT') || rawMode.includes('RTGS')) { 
+        else if (rawMode.includes('RECEIPT') || rawMode.includes('RCP') || rawMode.includes('BANK') || rawMode.includes('ONLINE') || rawMode.includes('TRANSFER') || rawMode.includes('NEFT') || rawMode.includes('RTGS') || rawMode.includes('HDFC') || rawMode.includes('ICICI') || rawMode.includes('INTERNAL')) { 
           invoicePaymentBreakdown.Online += amount;
         }
         else if (rawMode.includes('APPROVAL')) {
