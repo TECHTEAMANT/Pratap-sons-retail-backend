@@ -193,47 +193,39 @@ export class SalesReturnService {
         
         if (invoice) {
           const initialPending = Number(invoice.amount_pending);
-          let currentPending = initialPending;
-
-          const totalRegularValue = invoice.items
-            .filter(i => !i.on_approval)
-            .reduce((sum, i) => {
-              const itemTotal = Number(i.total_value) || (Number(i.selling_price || i.mrp) * Number(i.quantity));
-              return sum + itemTotal;
-            }, 0);
-          
           const totalItemsValue = invoice.items.reduce((sum, item) => {
             const itemTotal = Number(item.total_value) || (Number(item.selling_price || item.mrp || 0) * Number(item.quantity || 1));
             return sum + itemTotal;
           }, 0);
-          const effectiveSubtotal = Number(invoice.total_mrp) || totalItemsValue;
           
-          // Deduce true net payable to handle cases where recorded net_payable is inaccurate
-          const totalDiscounts = Number(invoice.total_discount || 0) + Number(invoice.voucher_discount || 0) + Number(invoice.special_discount || 0);
-          const actualNetPayable = Math.min(Number(invoice.net_payable), Math.max(0, effectiveSubtotal - totalDiscounts - Number(invoice.loyalty_redemption_amount || 0)));
+          // The portion of the invoice net payable that corresponds to the items (after all header discounts)
+          const explicitHeaderDiscounts = Number(invoice.loyalty_redemption_amount || 0) + 
+                                       Number(invoice.voucher_discount || 0) + 
+                                       Number(invoice.special_discount || 0);
+
+          const itemsSettledTotal = Math.max(0, totalItemsValue - explicitHeaderDiscounts);
+          const invoiceRatio = itemsSettledTotal / (totalItemsValue || 1);
           
-          const invoiceRatio = effectiveSubtotal > 0 ? (actualNetPayable / effectiveSubtotal) : 1;
+          // Determine how much of the return applies to "Paid" vs "Pending"
+          // We assume a prorated chunk of the return reduces the pending amount first
+          const returnAmount = Number(data.total_return_amount);
           
-          const adjustedRegularValue = totalRegularValue * invoiceRatio;
-          const regularPending = Math.max(0, adjustedRegularValue - Number(invoice.amount_paid));
+          // totalPaidItemsValue = how much cash the customer actually paid for the items so far
+          // We calculate the fraction of the settled items that was actually paid
+          const totalPaidPortion = (Number(invoice.amount_paid) / Math.max(1, Number(invoice.net_payable)));
+          const portionRelatingToReturn = returnAmount * totalPaidPortion;
+          
+          // amountToReducePending = portion of return that wasn't paid yet
+          const amountToReducePending = Math.min(Number(invoice.amount_pending), returnAmount - portionRelatingToReturn);
+          refundAmount = Math.max(0, returnAmount - amountToReducePending);
 
-          // 2. Handle Approval Returns: Offset against total pending first
-          const offsetFromApproval = Math.min(currentPending, returnAmountApproval);
-          currentPending -= offsetFromApproval;
-          refundAmount += (returnAmountApproval - offsetFromApproval);
+          invoice.amount_pending = Math.max(0, Number(invoice.amount_pending) - amountToReducePending);
+          invoice.amount_paid = Math.max(0, Number(invoice.amount_paid) - refundAmount);
+          invoice.net_payable = Math.max(0, Number(invoice.net_payable) - returnAmount);
 
-          // 3. Handle Regular Returns: Offset against regularPending portion first
-          const offsetFromRegular = Math.min(regularPending, returnAmountRegular);
-          currentPending -= offsetFromRegular;
-          refundAmount += (returnAmountRegular - offsetFromRegular);
-
-          invoice.amount_pending = currentPending;
-          invoice.net_payable = Number(invoice.net_payable) - Number(data.total_return_amount);
-          invoice.amount_paid = Number(invoice.amount_paid) - refundAmount;
-
-          if (Number(invoice.amount_pending) <= 0) {
+          if (Number(invoice.amount_pending) <= 0.01) {
             invoice.payment_status = 'paid';
-          } else if (Number(invoice.amount_paid) > 0) {
+          } else if (Number(invoice.amount_paid) > 0.01) {
             invoice.payment_status = 'partial';
           } else {
             invoice.payment_status = 'pending';
@@ -476,34 +468,35 @@ export class SalesReturnService {
 
         // Invoice Balance Recalculation (Fresh Application)
         if (invoice) {
-          let refundAmount = 0;
-          let currentPending = Number(invoice.amount_pending);
-
           const totalItemsValue = invoice.items.reduce((sum, item) => sum + (Number(item.total_value) || (Number(item.selling_price || item.mrp || 0) * Number(item.quantity || 1))), 0);
-          const effectiveSubtotal = Number(invoice.total_mrp) || totalItemsValue;
-          const totalDiscounts = Number(invoice.total_discount || 0) + Number(invoice.voucher_discount || 0) + Number(invoice.special_discount || 0);
-          const actualNetPayable = Math.min(Number(invoice.net_payable), Math.max(0, effectiveSubtotal - totalDiscounts - Number(invoice.loyalty_redemption_amount || 0)));
-          const invoiceRatio = effectiveSubtotal > 0 ? (actualNetPayable / effectiveSubtotal) : 1;
           
-          const totalRegularValue = invoice.items.filter(i => !i.on_approval).reduce((sum, i) => sum + (Number(i.total_value) || (Number(i.selling_price || i.mrp) * Number(i.quantity))), 0);
-          const adjustedRegularValue = totalRegularValue * invoiceRatio;
-          const regularPending = Math.max(0, adjustedRegularValue - Number(invoice.amount_paid));
+          const explicitHeaderDiscounts = Number(invoice.loyalty_redemption_amount || 0) + 
+                                       Number(invoice.voucher_discount || 0) + 
+                                       Number(invoice.special_discount || 0);
 
-          const offsetFromApproval = Math.min(currentPending, returnAmountApproval);
-          currentPending -= offsetFromApproval;
-          refundAmount += (returnAmountApproval - offsetFromApproval);
+          const itemsSettledTotal = Math.max(0, totalItemsValue - explicitHeaderDiscounts);
+          const invoiceRatio = itemsSettledTotal / (totalItemsValue || 1);
+          
+          const returnAmount = Number(data.total_return_amount);
+          
+          // Prorate return across paid vs pending total
+          const totalPaidPortion = (Number(invoice.amount_paid) / Math.max(1, Number(invoice.net_payable)));
+          const portionRelatingToReturn = returnAmount * totalPaidPortion;
+          
+          const amountToReducePending = Math.min(Number(invoice.amount_pending), returnAmount - portionRelatingToReturn);
+          let refundAmount = Math.max(0, returnAmount - amountToReducePending);
 
-          const offsetFromRegular = Math.min(regularPending, returnAmountRegular);
-          currentPending -= offsetFromRegular;
-          refundAmount += (returnAmountRegular - offsetFromRegular);
+          invoice.amount_pending = Math.max(0, Number(invoice.amount_pending) - amountToReducePending);
+          invoice.amount_paid = Math.max(0, Number(invoice.amount_paid) - refundAmount);
+          invoice.net_payable = Math.max(0, Number(invoice.net_payable) - returnAmount);
 
-          invoice.amount_pending = currentPending;
-          invoice.net_payable = Number(invoice.net_payable) - Number(data.total_return_amount);
-          invoice.amount_paid = Number(invoice.amount_paid) - refundAmount;
-
-          if (Number(invoice.amount_pending) <= 0) invoice.payment_status = 'paid';
-          else if (Number(invoice.amount_paid) > 0) invoice.payment_status = 'partial';
-          else invoice.payment_status = 'pending';
+          if (Number(invoice.amount_pending) <= 0.01) {
+            invoice.payment_status = 'paid';
+          } else if (Number(invoice.amount_paid) > 0.01) {
+            invoice.payment_status = 'partial';
+          } else {
+            invoice.payment_status = 'pending';
+          }
 
           await manager.save(SalesInvoice, invoice);
 
