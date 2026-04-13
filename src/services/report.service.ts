@@ -90,6 +90,8 @@ export class ReportService {
       .createQueryBuilder('si')
       .leftJoinAndSelect('si.items', 'items')
       .leftJoin('items.product_item', 'bb') // Needed for vendor filtering
+      .leftJoinAndSelect('si.receipt_items', 'ri')
+      .leftJoinAndSelect('ri.receipt', 'receipt')
       .where('si.invoice_date BETWEEN :start AND :end', { start, end });
 
     if (filters.floorId) {
@@ -205,10 +207,22 @@ export class ReportService {
         'Credit Coupon': 0, 'Exchange': 0, 'Others': 0
       };
 
-      let totalPaidFromDetails = 0;
       let hasCreditCoupon = false;
 
-      detailsArray.forEach((pd: any) => {
+      // Unified Payment Processing (Initial Payments + Subsequent Receipts)
+      const allPaymentSources: { mode: string, amount: number }[] = [...detailsArray];
+      
+      // Integrate linked receipts (payments made later)
+      if (inv.receipt_items && inv.receipt_items.length > 0) {
+        inv.receipt_items.forEach((ri: any) => {
+          allPaymentSources.push({
+            mode: ri.receipt?.payment_mode || 'Receipt',
+            amount: parseFloat(ri.amount_paid) || 0
+          });
+        });
+      }
+
+      allPaymentSources.forEach((pd: any) => {
         const rawMode = (pd.mode || '').toString().toUpperCase();
         const amount = parseFloat(pd.amount) || 0;
         
@@ -242,31 +256,37 @@ export class ReportService {
         else {
           invoicePaymentBreakdown.Others += amount;
         }
-
-        totalPaidFromDetails += amount;
       });
+
+      // --- Financial Reconciliation Logic ---
+      const realPaidAmount = 
+        invoicePaymentBreakdown.Cash + 
+        invoicePaymentBreakdown.UPI + 
+        invoicePaymentBreakdown.Card + 
+        invoicePaymentBreakdown.Online + 
+        invoicePaymentBreakdown['Credit Coupon'] + 
+        invoicePaymentBreakdown.Exchange + 
+        invoicePaymentBreakdown.Others;
 
       // Handle inferred coupon if missing from breakdown
       if (!hasCreditCoupon && (inv as any).coupon_no) {
-        const inferredCoupon = reconstructedMRP - totalDisc - (parseFloat((inv as any).loyalty_redemption_amount as any) || 0) - finalNet;
+        const inferredCoupon = Math.max(0, reconstructedMRP - totalDisc - (parseFloat((inv as any).loyalty_redemption_amount as any) || 0) - finalNet);
         if (inferredCoupon > 0) {
           invoicePaymentBreakdown['Credit Coupon'] += inferredCoupon;
-          totalPaidFromDetails += inferredCoupon;
         }
       }
 
-      // --- TRUE PAID AMOUNT logic ---
-      const dbAmountPaid = parseFloat(inv.amount_paid as any) || 0;
-      // We trust the maximum of the DB field and the sum of payment modes
-      const truePaidAmount = Math.max(dbAmountPaid, totalPaidFromDetails);
-      
-      // Calculate true pending (ignoring approval for a moment)
-      // Pending = Net - (Total Paid including Approval)
-      const finalPending = Math.max(0, finalNet - truePaidAmount);
+      const finalRealPaid = 
+        invoicePaymentBreakdown.Cash + invoicePaymentBreakdown.UPI + invoicePaymentBreakdown.Card + 
+        invoicePaymentBreakdown.Online + invoicePaymentBreakdown['Credit Coupon'] + 
+        invoicePaymentBreakdown.Exchange + invoicePaymentBreakdown.Others;
 
-      // Per user request: Approval amount should NOT be considered "Paid" in the Pending analysis column
-      // but it IS in the breakdown. So we add it back to the pending display.
-      const adjustedPending = finalPending + invoicePaymentBreakdown.Approval;
+      // Adjusted Pending = Net Payable - (All Real Payments)
+      let adjustedPending = Math.max(0, finalNet - finalRealPaid);
+      if (adjustedPending < 1) adjustedPending = 0;
+
+      // Detection of "Approval" status
+      const isApprovalInvoice = (inv as any).is_on_approval === true || invoicePaymentBreakdown.Approval > 0;
 
       // Update Summary Totals
       result.totalSales += finalNet;
@@ -277,14 +297,14 @@ export class ReportService {
       result.totalSpecialDiscount += parseFloat(inv.special_discount as any) || 0;
       result.totalLoyalty += parseFloat(inv.loyalty_redemption_amount as any) || 0;
       result.totalVoucher += parseFloat(inv.voucher_discount as any) || 0;
-      result.totalPending += adjustedPending;
+      result.totalPending += isApprovalInvoice ? adjustedPending : 0;
 
       // Global Payment Breakdown update
       result.paymentBreakdown.Cash += invoicePaymentBreakdown.Cash;
       result.paymentBreakdown.UPI += invoicePaymentBreakdown.UPI;
       result.paymentBreakdown.Card += invoicePaymentBreakdown.Card;
       result.paymentBreakdown.Online += invoicePaymentBreakdown.Online;
-      result.paymentBreakdown.Approval += invoicePaymentBreakdown.Approval;
+      result.paymentBreakdown.Approval += isApprovalInvoice ? adjustedPending : 0;
       result.paymentBreakdown['Credit Coupon'] += invoicePaymentBreakdown['Credit Coupon'];
       (result.paymentBreakdown as any).Exchange += invoicePaymentBreakdown.Exchange;
       (result.paymentBreakdown as any).Others += invoicePaymentBreakdown.Others;
@@ -311,13 +331,12 @@ export class ReportService {
         total_mrp: reconstructedMRP,
         total_discount: totalDisc,
         net_payable: finalNet,
-        amount_pending: adjustedPending,
-        approval_amount: invoicePaymentBreakdown.Approval,
-        is_on_approval: hasApprovalItems || invoicePaymentBreakdown.Approval > 0,
+        amount_pending: isApprovalInvoice ? 0 : adjustedPending,
+        approval_amount: isApprovalInvoice ? adjustedPending : 0,
+        is_on_approval: isApprovalInvoice || hasApprovalItems,
         payment_breakdown: invoicePaymentBreakdown,
-        // Status logic: if adjustedPending is 0 it's fully paid (including approval processed)
-        // If adjustedPending > 0 and we've paid something, it's partial.
-        payment_status: (adjustedPending <= 0.05) ? 'paid' : (truePaidAmount > invoicePaymentBreakdown.Approval + 0.1 ? 'partial' : 'pending'),
+        // Status logic
+        payment_status: (adjustedPending <= 0.05) ? 'paid' : (finalRealPaid > 0.1 ? 'partial' : 'pending'),
         total_quantity: inv.items ? inv.items.reduce((sum, i) => sum + (Number(i.quantity) || 0), 0) : 0
       });
     });
