@@ -211,6 +211,17 @@ export class ReportService {
         }
       }
 
+      let invoicePaymentBreakdown = {
+        Cash: 0,
+        UPI: 0,
+        Card: 0,
+        Online: 0,
+        Approval: 0,
+        'Credit Coupon': 0,
+        'Exchange': 0,
+        'Others': 0
+      };
+
       let totalPaidFromDetails = 0;
       if (paymentDetails && Array.isArray(paymentDetails) && paymentDetails.length > 0) {
         let hasCreditCoupon = false;
@@ -219,20 +230,40 @@ export class ReportService {
           const amount = parseFloat(pd.amount) || 0;
           totalPaidFromDetails += amount;
 
-          if (mode === 'Cash') result.paymentBreakdown.Cash += amount;
-          else if (mode === 'UPI') result.paymentBreakdown.UPI += amount;
-          else if (mode === 'Card') result.paymentBreakdown.Card += amount;
-          else if (mode === 'Online' || mode === 'Bank Transfer') result.paymentBreakdown.Online += amount;
-          else if (mode === 'Exchange') (result.paymentBreakdown as any).Exchange += amount;
+          if (mode === 'Cash') {
+            result.paymentBreakdown.Cash += amount;
+            invoicePaymentBreakdown.Cash += amount;
+          }
+          else if (mode === 'UPI') {
+            result.paymentBreakdown.UPI += amount;
+            invoicePaymentBreakdown.UPI += amount;
+          }
+          else if (mode === 'Card') {
+            result.paymentBreakdown.Card += amount;
+            invoicePaymentBreakdown.Card += amount;
+          }
+          else if (mode === 'Online' || mode === 'Bank Transfer' || mode === 'Bank' || mode === 'Receipt') { 
+            result.paymentBreakdown.Online += amount;
+            invoicePaymentBreakdown.Online += amount;
+          }
+          else if (mode === 'Exchange') {
+            (result.paymentBreakdown as any).Exchange += amount;
+            invoicePaymentBreakdown.Exchange += amount;
+          }
           else if (mode === 'Approval') {
-            const actualApprovalPending = Math.min(amount, finalPending);
-            result.paymentBreakdown.Approval += actualApprovalPending;
+            // Approval is treated separately as per user request to show in Pending
+            invoicePaymentBreakdown.Approval += amount;
+            result.paymentBreakdown.Approval += amount;
           }
           else if (mode === 'Credit Coupon') { 
             result.paymentBreakdown['Credit Coupon'] += amount; 
+            invoicePaymentBreakdown['Credit Coupon'] += amount;
             hasCreditCoupon = true; 
           }
-          else (result.paymentBreakdown as any).Others += amount;
+          else {
+            (result.paymentBreakdown as any).Others += amount;
+            invoicePaymentBreakdown.Others += amount;
+          }
         });
 
         if (!hasCreditCoupon && (inv as any).coupon_no) {
@@ -243,6 +274,7 @@ export class ReportService {
           const inferredCoupon = totalMrp - totalDiscount - loyalty - netPayable;
           if (inferredCoupon > 0) {
             result.paymentBreakdown['Credit Coupon'] += inferredCoupon;
+            invoicePaymentBreakdown['Credit Coupon'] += inferredCoupon;
             totalPaidFromDetails += inferredCoupon;
           }
         }
@@ -255,20 +287,25 @@ export class ReportService {
       
       if (missingAmount > 0) {
         const mode = inv.payment_mode || 'Cash'; // Fallback to Cash if no primary mode
-        if (mode === 'Cash') result.paymentBreakdown.Cash += missingAmount;
-        else if (mode === 'UPI') result.paymentBreakdown.UPI += missingAmount;
-        else if (mode === 'Card') result.paymentBreakdown.Card += missingAmount;
-        else if (mode === 'Online' || mode === 'Bank Transfer') result.paymentBreakdown.Online += missingAmount;
-        else if (mode === 'Exchange') (result.paymentBreakdown as any).Exchange += missingAmount;
-        else if (mode === 'Approval') result.paymentBreakdown.Approval += missingAmount;
-        else if (mode === 'Credit Coupon') result.paymentBreakdown['Credit Coupon'] += missingAmount;
-        else (result.paymentBreakdown as any).Others += missingAmount;
+        if (mode === 'Cash') { result.paymentBreakdown.Cash += missingAmount; invoicePaymentBreakdown.Cash += missingAmount; }
+        else if (mode === 'UPI') { result.paymentBreakdown.UPI += missingAmount; invoicePaymentBreakdown.UPI += missingAmount; }
+        else if (mode === 'Card') { result.paymentBreakdown.Card += missingAmount; invoicePaymentBreakdown.Card += missingAmount; }
+        else if (mode === 'Online' || mode === 'Bank Transfer' || mode === 'Bank' || mode === 'Receipt') { 
+          result.paymentBreakdown.Online += missingAmount; invoicePaymentBreakdown.Online += missingAmount; 
+        }
+        else if (mode === 'Exchange') { (result.paymentBreakdown as any).Exchange += missingAmount; invoicePaymentBreakdown.Exchange += missingAmount; }
+        else if (mode === 'Approval') { result.paymentBreakdown.Approval += missingAmount; invoicePaymentBreakdown.Approval += missingAmount; }
+        else if (mode === 'Credit Coupon') { result.paymentBreakdown['Credit Coupon'] += missingAmount; invoicePaymentBreakdown['Credit Coupon'] += missingAmount; }
+        else { (result.paymentBreakdown as any).Others += missingAmount; invoicePaymentBreakdown.Others += missingAmount; }
       }
+
+      // Per user request: Approval amount should show as "pending"
+      const adjustedPending = finalPending + invoicePaymentBreakdown.Approval;
 
       if (inv.items) {
         inv.items.forEach(item => {
           result.totalQuantity += Number(item.quantity) || 0;
-          if (finalPending > 0 && item.on_approval) {
+          if ((adjustedPending > 0) && item.on_approval) {
             result.approvalItemCount += Number(item.quantity) || 0;
           }
         });
@@ -280,8 +317,10 @@ export class ReportService {
         total_mrp: reconstructedMRP,
         total_discount: totalDisc,
         net_payable: finalNet,
-        amount_pending: finalPending,
-        payment_status: (finalPending <= 0) ? 'paid' : (amountPaid > 0 ? 'partial' : 'pending'),
+        amount_pending: adjustedPending, // Use adjusted pending (includes Approval)
+        approval_amount: invoicePaymentBreakdown.Approval,
+        payment_breakdown: invoicePaymentBreakdown,
+        payment_status: (adjustedPending <= 0) ? 'paid' : (amountPaid > 0 ? 'partial' : 'pending'),
         total_quantity: inv.items ? inv.items.reduce((sum, i) => sum + (Number(i.quantity) || 0), 0) : 0
       });
     });
