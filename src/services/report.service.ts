@@ -182,12 +182,19 @@ export class ReportService {
       if (paymentDetails) {
         if (Array.isArray(paymentDetails)) {
           detailsArray = paymentDetails;
-        } else if (typeof paymentDetails === 'object') {
+        } else if (typeof paymentDetails === 'object' && paymentDetails !== null) {
           // Normalize old object format { "MODE": amount } to [{ mode, amount }]
-          detailsArray = Object.entries(paymentDetails).map(([key, val]) => ({
-            mode: key,
-            amount: val
-          }));
+          // IMPORTANT: Ignore technical keys like total_mrp, net_payable, etc.
+          const techKeys = ['TOTAL_MRP', 'NET_PAYABLE', 'ITEMS', 'ID', 'TOTAL_AMOUNT', 'ROUND_OFF', 'AMOUNT_PAID', 'AMOUNT_PENDING', 'SPECIAL_DISCOUNT', 'VOUCHER_DISCOUNT', 'LOYALTY_REDEMPTION_AMOUNT', 'TOTAL_GST', 'TAXABLE_VALUE'];
+          detailsArray = Object.entries(paymentDetails)
+            .filter(([key, val]) => {
+              const k = key.toUpperCase();
+              return !techKeys.includes(k) && (typeof val === 'number' || typeof val === 'string');
+            })
+            .map(([key, val]) => ({
+              mode: key,
+              amount: val
+            }));
         }
       }
 
@@ -202,19 +209,22 @@ export class ReportService {
       detailsArray.forEach((pd: any) => {
         const rawMode = (pd.mode || '').toString().toUpperCase();
         const amount = parseFloat(pd.amount) || 0;
-        totalPaidFromDetails += amount;
+        
+        // Skip technical or garbage entries and zero amounts
+        if (amount <= 0) return;
 
         // --- Fuzzy Keyword Categorization ---
         if (rawMode.includes('CASH')) {
           invoicePaymentBreakdown.Cash += amount;
         }
-        else if (rawMode.includes('UPI') || rawMode.includes('PHONEPE') || rawMode.includes('GPAY') || rawMode.includes('PAYTM')) {
+        else if (rawMode.includes('UPI') || rawMode.includes('PHONEPE') || rawMode.includes('GPAY') || rawMode.includes('PAYTM') || rawMode.includes('G PAY') || rawMode.includes('BHIM')) {
           invoicePaymentBreakdown.UPI += amount;
         }
-        else if (rawMode.includes('CARD') || rawMode.includes('VISA') || rawMode.includes('POS') || rawMode.includes('MASTER')) {
+        else if (rawMode.includes('CARD') || rawMode.includes('VISA') || rawMode.includes('POS') || rawMode.includes('MASTER') || rawMode.includes('DEBIT') || rawMode.includes('CREDIT')) {
           invoicePaymentBreakdown.Card += amount;
         }
-        else if (rawMode.includes('RECEIPT') || rawMode.includes('BANK') || rawMode.includes('ONLINE') || rawMode.includes('TRANSFER') || rawMode.includes('NEFT') || rawMode.includes('RTGS')) { 
+        // Inclusion of RCP and RECEIPT for older receipt formats
+        else if (rawMode.includes('RECEIPT') || rawMode.includes('RCP') || rawMode.includes('BANK') || rawMode.includes('ONLINE') || rawMode.includes('TRANSFER') || rawMode.includes('NEFT') || rawMode.includes('RTGS')) { 
           invoicePaymentBreakdown.Online += amount;
         }
         else if (rawMode.includes('APPROVAL')) {
@@ -230,6 +240,8 @@ export class ReportService {
         else {
           invoicePaymentBreakdown.Others += amount;
         }
+
+        totalPaidFromDetails += amount;
       });
 
       // Handle inferred coupon if missing from breakdown
