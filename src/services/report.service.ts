@@ -170,14 +170,71 @@ export class ReportService {
                        (parseFloat((inv as any).coupon_amount as any) || 0);
 
       const calculatedNet = reconstructedMRP - totalDisc + (parseFloat(inv.additional_charges_total as any) || 0);
-      const amountPaid = parseFloat(inv.amount_paid as any) || 0;
-
-      // Unified Smart Net: Trust reconstructed math (calculatedNet) as the source of truth for Sales Value
       const finalNet = Math.round(calculatedNet);
-      
-      // Smart Pending: What is legally owed - what has been physically paid
-      const finalPending = Math.max(0, finalNet - amountPaid);
 
+      // --- NEW: Parse Payment Details FIRST to use as source of truth ---
+      let paymentDetails = inv.payment_details;
+      if (typeof paymentDetails === 'string') {
+        try { paymentDetails = JSON.parse(paymentDetails); } catch (e) { paymentDetails = null; }
+      }
+
+      let detailsArray: any[] = [];
+      if (paymentDetails) {
+        if (Array.isArray(paymentDetails)) detailsArray = paymentDetails;
+        else if (typeof paymentDetails === 'object') detailsArray = Object.values(paymentDetails);
+      }
+
+      let invoicePaymentBreakdown = {
+        Cash: 0, UPI: 0, Card: 0, Online: 0, Approval: 0,
+        'Credit Coupon': 0, 'Exchange': 0, 'Others': 0
+      };
+
+      let totalPaidFromDetails = 0;
+      let hasCreditCoupon = false;
+
+      detailsArray.forEach((pd: any) => {
+        const mode = pd.mode;
+        const amount = parseFloat(pd.amount) || 0;
+        totalPaidFromDetails += amount;
+
+        if (mode === 'Cash') { invoicePaymentBreakdown.Cash += amount; }
+        else if (mode === 'UPI') { invoicePaymentBreakdown.UPI += amount; }
+        else if (mode === 'Card') { invoicePaymentBreakdown.Card += amount; }
+        else if (mode === 'Online' || mode === 'Bank Transfer' || mode === 'Bank' || mode === 'Receipt') { 
+          invoicePaymentBreakdown.Online += amount;
+        }
+        else if (mode === 'Exchange') { invoicePaymentBreakdown.Exchange += amount; }
+        else if (mode === 'Approval') { invoicePaymentBreakdown.Approval += amount; }
+        else if (mode === 'Credit Coupon') { 
+          invoicePaymentBreakdown['Credit Coupon'] += amount; 
+          hasCreditCoupon = true; 
+        }
+        else { invoicePaymentBreakdown.Others += amount; }
+      });
+
+      // Handle inferred coupon if missing from breakdown
+      if (!hasCreditCoupon && (inv as any).coupon_no) {
+        const inferredCoupon = reconstructedMRP - totalDisc - (parseFloat((inv as any).loyalty_redemption_amount as any) || 0) - finalNet;
+        if (inferredCoupon > 0) {
+          invoicePaymentBreakdown['Credit Coupon'] += inferredCoupon;
+          totalPaidFromDetails += inferredCoupon;
+        }
+      }
+
+      // --- TRUE PAID AMOUNT logic ---
+      const dbAmountPaid = parseFloat(inv.amount_paid as any) || 0;
+      // We trust the maximum of the DB field and the sum of payment modes
+      const truePaidAmount = Math.max(dbAmountPaid, totalPaidFromDetails);
+      
+      // Calculate true pending (ignoring approval for a moment)
+      // Pending = Net - (Total Paid including Approval)
+      const finalPending = Math.max(0, finalNet - truePaidAmount);
+
+      // Per user request: Approval amount should NOT be considered "Paid" in the Pending analysis column
+      // but it IS in the breakdown. So we add it back to the pending display.
+      const adjustedPending = finalPending + invoicePaymentBreakdown.Approval;
+
+      // Update Summary Totals
       result.totalSales += finalNet;
       result.totalMRP += reconstructedMRP;
       result.totalDiscount += totalDisc;
@@ -186,141 +243,47 @@ export class ReportService {
       result.totalSpecialDiscount += parseFloat(inv.special_discount as any) || 0;
       result.totalLoyalty += parseFloat(inv.loyalty_redemption_amount as any) || 0;
       result.totalVoucher += parseFloat(inv.voucher_discount as any) || 0;
-      
-      result.totalPending += finalPending;
+      result.totalPending += adjustedPending;
 
-      // Update the invoice object fields so detailedList also shows corrected values
-      inv.total_mrp = reconstructedMRP;
-      inv.total_discount = totalDisc;
-      inv.net_payable = finalNet;
-      inv.amount_pending = finalPending;
-      inv.payment_status = (finalPending <= 0) ? 'paid' : (amountPaid > 0 ? 'partial' : 'pending');
+      // Global Payment Breakdown update
+      result.paymentBreakdown.Cash += invoicePaymentBreakdown.Cash;
+      result.paymentBreakdown.UPI += invoicePaymentBreakdown.UPI;
+      result.paymentBreakdown.Card += invoicePaymentBreakdown.Card;
+      result.paymentBreakdown.Online += invoicePaymentBreakdown.Online;
+      result.paymentBreakdown.Approval += invoicePaymentBreakdown.Approval;
+      result.paymentBreakdown['Credit Coupon'] += invoicePaymentBreakdown['Credit Coupon'];
+      (result.paymentBreakdown as any).Exchange += invoicePaymentBreakdown.Exchange;
+      (result.paymentBreakdown as any).Others += invoicePaymentBreakdown.Others;
 
       result.cgst_5 += parseFloat(inv.cgst_5 as any) || 0;
       result.sgst_5 += parseFloat(inv.sgst_5 as any) || 0;
       result.cgst_18 += parseFloat(inv.cgst_18 as any) || 0;
       result.sgst_18 += parseFloat(inv.sgst_18 as any) || 0;
 
-      let paymentDetails = inv.payment_details;
-      if (typeof paymentDetails === 'string') {
-        try {
-          paymentDetails = JSON.parse(paymentDetails);
-        } catch (e: any) {
-          logger.warn(`Failed to parse payment_details for invoice ${inv.invoice_number}: ${e.message}`);
-          paymentDetails = null;
-        }
-      }
-
-      let invoicePaymentBreakdown = {
-        Cash: 0,
-        UPI: 0,
-        Card: 0,
-        Online: 0,
-        Approval: 0,
-        'Credit Coupon': 0,
-        'Exchange': 0,
-        'Others': 0
-      };
-
-      let totalPaidFromDetails = 0;
-      if (paymentDetails && Array.isArray(paymentDetails) && paymentDetails.length > 0) {
-        let hasCreditCoupon = false;
-        paymentDetails.forEach((pd: any) => {
-          const mode = pd.mode;
-          const amount = parseFloat(pd.amount) || 0;
-          totalPaidFromDetails += amount;
-
-          if (mode === 'Cash') {
-            result.paymentBreakdown.Cash += amount;
-            invoicePaymentBreakdown.Cash += amount;
-          }
-          else if (mode === 'UPI') {
-            result.paymentBreakdown.UPI += amount;
-            invoicePaymentBreakdown.UPI += amount;
-          }
-          else if (mode === 'Card') {
-            result.paymentBreakdown.Card += amount;
-            invoicePaymentBreakdown.Card += amount;
-          }
-          else if (mode === 'Online' || mode === 'Bank Transfer' || mode === 'Bank' || mode === 'Receipt') { 
-            result.paymentBreakdown.Online += amount;
-            invoicePaymentBreakdown.Online += amount;
-          }
-          else if (mode === 'Exchange') {
-            (result.paymentBreakdown as any).Exchange += amount;
-            invoicePaymentBreakdown.Exchange += amount;
-          }
-          else if (mode === 'Approval') {
-            // Approval is treated separately as per user request to show in Pending
-            invoicePaymentBreakdown.Approval += amount;
-            result.paymentBreakdown.Approval += amount;
-          }
-          else if (mode === 'Credit Coupon') { 
-            result.paymentBreakdown['Credit Coupon'] += amount; 
-            invoicePaymentBreakdown['Credit Coupon'] += amount;
-            hasCreditCoupon = true; 
-          }
-          else {
-            (result.paymentBreakdown as any).Others += amount;
-            invoicePaymentBreakdown.Others += amount;
-          }
-        });
-
-        if (!hasCreditCoupon && (inv as any).coupon_no) {
-          const totalMrp = reconstructedMRP;
-          const totalDiscount = totalDisc;
-          const loyalty = parseFloat((inv as any).loyalty_redemption_amount as any) || 0;
-          const netPayable = finalNet;
-          const inferredCoupon = totalMrp - totalDiscount - loyalty - netPayable;
-          if (inferredCoupon > 0) {
-            result.paymentBreakdown['Credit Coupon'] += inferredCoupon;
-            invoicePaymentBreakdown['Credit Coupon'] += inferredCoupon;
-            totalPaidFromDetails += inferredCoupon;
-          }
-        }
-      }
-
-      // SMART FALLBACK: If total from details is less than actual paid amount (Net - Pending),
-      // attribute the difference to the primary payment mode.
-      const actualTotalPaid = finalNet - finalPending;
-      const missingAmount = Math.max(0, actualTotalPaid - totalPaidFromDetails);
-      
-      if (missingAmount > 0) {
-        const mode = inv.payment_mode || 'Cash'; // Fallback to Cash if no primary mode
-        if (mode === 'Cash') { result.paymentBreakdown.Cash += missingAmount; invoicePaymentBreakdown.Cash += missingAmount; }
-        else if (mode === 'UPI') { result.paymentBreakdown.UPI += missingAmount; invoicePaymentBreakdown.UPI += missingAmount; }
-        else if (mode === 'Card') { result.paymentBreakdown.Card += missingAmount; invoicePaymentBreakdown.Card += missingAmount; }
-        else if (mode === 'Online' || mode === 'Bank Transfer' || mode === 'Bank' || mode === 'Receipt') { 
-          result.paymentBreakdown.Online += missingAmount; invoicePaymentBreakdown.Online += missingAmount; 
-        }
-        else if (mode === 'Exchange') { (result.paymentBreakdown as any).Exchange += missingAmount; invoicePaymentBreakdown.Exchange += missingAmount; }
-        else if (mode === 'Approval') { result.paymentBreakdown.Approval += missingAmount; invoicePaymentBreakdown.Approval += missingAmount; }
-        else if (mode === 'Credit Coupon') { result.paymentBreakdown['Credit Coupon'] += missingAmount; invoicePaymentBreakdown['Credit Coupon'] += missingAmount; }
-        else { (result.paymentBreakdown as any).Others += missingAmount; invoicePaymentBreakdown.Others += missingAmount; }
-      }
-
-      // Per user request: Approval amount should show as "pending"
-      const adjustedPending = finalPending + invoicePaymentBreakdown.Approval;
-
+      let hasApprovalItems = false;
       if (inv.items) {
         inv.items.forEach(item => {
           result.totalQuantity += Number(item.quantity) || 0;
-          if ((adjustedPending > 0) && item.on_approval) {
-            result.approvalItemCount += Number(item.quantity) || 0;
+          if (item.on_approval) {
+            hasApprovalItems = true;
+            if (adjustedPending > 0) { result.approvalItemCount += Number(item.quantity) || 0; }
           }
         });
       }
 
-      // Add to detailed list as a plain object to ensure field visibility
+      // Add to detailed list
       detailedList.push({
         ...inv,
         total_mrp: reconstructedMRP,
         total_discount: totalDisc,
         net_payable: finalNet,
-        amount_pending: adjustedPending, // Use adjusted pending (includes Approval)
+        amount_pending: adjustedPending,
         approval_amount: invoicePaymentBreakdown.Approval,
+        is_on_approval: hasApprovalItems || invoicePaymentBreakdown.Approval > 0,
         payment_breakdown: invoicePaymentBreakdown,
-        payment_status: (adjustedPending <= 0) ? 'paid' : (amountPaid > 0 ? 'partial' : 'pending'),
+        // Status logic: if adjustedPending is 0 it's fully paid (including approval processed)
+        // If adjustedPending > 0 and we've paid something, it's partial.
+        payment_status: (adjustedPending <= 0.05) ? 'paid' : (truePaidAmount > invoicePaymentBreakdown.Approval + 0.1 ? 'partial' : 'pending'),
         total_quantity: inv.items ? inv.items.reduce((sum, i) => sum + (Number(i.quantity) || 0), 0) : 0
       });
     });
