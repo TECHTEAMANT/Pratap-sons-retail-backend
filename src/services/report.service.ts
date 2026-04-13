@@ -331,7 +331,7 @@ export class ReportService {
         total_mrp: reconstructedMRP,
         total_discount: totalDisc,
         net_payable: finalNet,
-        amount_pending: isApprovalInvoice ? 0 : adjustedPending,
+        amount_pending: adjustedPending,
         approval_amount: isApprovalInvoice ? adjustedPending : 0,
         is_on_approval: isApprovalInvoice || hasApprovalItems,
         payment_breakdown: invoicePaymentBreakdown,
