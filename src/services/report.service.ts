@@ -180,8 +180,15 @@ export class ReportService {
 
       let detailsArray: any[] = [];
       if (paymentDetails) {
-        if (Array.isArray(paymentDetails)) detailsArray = paymentDetails;
-        else if (typeof paymentDetails === 'object') detailsArray = Object.values(paymentDetails);
+        if (Array.isArray(paymentDetails)) {
+          detailsArray = paymentDetails;
+        } else if (typeof paymentDetails === 'object') {
+          // Normalize old object format { "MODE": amount } to [{ mode, amount }]
+          detailsArray = Object.entries(paymentDetails).map(([key, val]) => ({
+            mode: key,
+            amount: val
+          }));
+        }
       }
 
       let invoicePaymentBreakdown = {
@@ -193,23 +200,36 @@ export class ReportService {
       let hasCreditCoupon = false;
 
       detailsArray.forEach((pd: any) => {
-        const mode = pd.mode;
+        const rawMode = (pd.mode || '').toString().toUpperCase();
         const amount = parseFloat(pd.amount) || 0;
         totalPaidFromDetails += amount;
 
-        if (mode === 'Cash') { invoicePaymentBreakdown.Cash += amount; }
-        else if (mode === 'UPI') { invoicePaymentBreakdown.UPI += amount; }
-        else if (mode === 'Card') { invoicePaymentBreakdown.Card += amount; }
-        else if (mode === 'Online' || mode === 'Bank Transfer' || mode === 'Bank' || mode === 'Receipt') { 
+        // --- Fuzzy Keyword Categorization ---
+        if (rawMode.includes('CASH')) {
+          invoicePaymentBreakdown.Cash += amount;
+        }
+        else if (rawMode.includes('UPI') || rawMode.includes('PHONEPE') || rawMode.includes('GPAY') || rawMode.includes('PAYTM')) {
+          invoicePaymentBreakdown.UPI += amount;
+        }
+        else if (rawMode.includes('CARD') || rawMode.includes('VISA') || rawMode.includes('POS') || rawMode.includes('MASTER')) {
+          invoicePaymentBreakdown.Card += amount;
+        }
+        else if (rawMode.includes('RECEIPT') || rawMode.includes('BANK') || rawMode.includes('ONLINE') || rawMode.includes('TRANSFER') || rawMode.includes('NEFT') || rawMode.includes('RTGS')) { 
           invoicePaymentBreakdown.Online += amount;
         }
-        else if (mode === 'Exchange') { invoicePaymentBreakdown.Exchange += amount; }
-        else if (mode === 'Approval') { invoicePaymentBreakdown.Approval += amount; }
-        else if (mode === 'Credit Coupon') { 
+        else if (rawMode.includes('APPROVAL')) {
+          invoicePaymentBreakdown.Approval += amount;
+        }
+        else if (rawMode.includes('EXCHANGE')) {
+          invoicePaymentBreakdown.Exchange += amount;
+        }
+        else if (rawMode.includes('COUPON')) { 
           invoicePaymentBreakdown['Credit Coupon'] += amount; 
           hasCreditCoupon = true; 
         }
-        else { invoicePaymentBreakdown.Others += amount; }
+        else {
+          invoicePaymentBreakdown.Others += amount;
+        }
       });
 
       // Handle inferred coupon if missing from breakdown
