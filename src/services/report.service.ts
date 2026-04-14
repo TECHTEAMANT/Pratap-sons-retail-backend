@@ -7,6 +7,7 @@ import { Vendor } from '../entities/Vendor';
 import { PurchaseOrder } from '../entities/PurchaseOrder';
 import { SalesReturn } from '../entities/SalesReturn';
 import { SalesReturnItem } from '../entities/SalesReturnItem';
+import { PurchaseReturnItem } from '../entities/PurchaseReturnItem';
 import { SalesOrderAdvance } from '../entities/SalesOrderAdvance';
 import { PaymentReceipt } from '../entities/PaymentReceipt';
 import { Between, MoreThanOrEqual, LessThanOrEqual, Raw } from 'typeorm';
@@ -348,15 +349,21 @@ export class ReportService {
     };
   }
 
-  async inventoryReport(filters: { startDate?: string; endDate?: string; vendorId?: string; floorId?: string } = {}) {
+  async inventoryReport(filters: { startDate?: string; endDate?: string; vendorId?: string; floorId?: string; sortField?: string; sortDirection?: 'ASC' | 'DESC' } = {}) {
     const qb = AppDataSource.getRepository(BarcodeBatch)
       .createQueryBuilder('bb')
       .leftJoin('bb.product_group', 'pg')
+      .leftJoin('bb.size', 'sz')
+      .leftJoin('bb.color', 'cl')
+      .leftJoin('bb.vendor', 'v')
       .select([
         'bb.barcode_alias_8digit as barcode',
         'bb.design_no as design',
         'bb.hsn_code as hsn_code',
         'pg.name as "productGroup"',
+        'sz.name as size',
+        'cl.name as color',
+        'v.name as "vendorName"',
         'COALESCE(bb.available_quantity, 0) as "availableQty"',
         'COALESCE(bb.total_quantity - bb.available_quantity, 0) as "soldQty"',
         'COALESCE(bb.cost_actual, 0) as cost',
@@ -366,12 +373,16 @@ export class ReportService {
       ]);
 
     qb.where('bb.status IN (:...statuses)', { statuses: ['active', 'Available', 'defective', 'Sold', 'Returned'] });
-
+    
+    // NOTE: For Inventory Analysis, we ignore the creation date filter by default 
+    // to show the current state of ALL inventory items, matching the main Inventory module.
+    /*
     if (filters.startDate && filters.endDate) {
       const start = filters.startDate.split('T')[0];
       const end = filters.endDate.split('T')[0];
       qb.andWhere('bb.created_at::date BETWEEN :start AND :end', { start, end });
     }
+    */
 
     if (filters.vendorId) {
       qb.andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
@@ -380,7 +391,20 @@ export class ReportService {
       qb.andWhere('bb.floor = :floorId', { floorId: filters.floorId });
     }
 
-    qb.orderBy('bb.design_no', 'ASC');
+    const direction = filters.sortDirection?.toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
+    if (filters.sortField === 'availableQty') {
+      qb.orderBy('bb.available_quantity', direction);
+    } else if (filters.sortField === 'soldQty') {
+      qb.orderBy('(bb.total_quantity - bb.available_quantity)', direction);
+    } else if (filters.sortField === 'mrp') {
+      qb.orderBy('bb.mrp', direction);
+    } else if (filters.sortField === 'cost') {
+      qb.orderBy('bb.cost_actual', direction);
+    } else if (filters.sortField === 'barcode') {
+      qb.orderBy('bb.barcode_alias_8digit', direction);
+    } else {
+      qb.orderBy('bb.design_no', direction);
+    }
 
     const results = await qb.getRawMany();
     return results.map(r => {
@@ -741,7 +765,7 @@ export class ReportService {
     }));
   }
  
-  async slowMovingReport(days: number = 30) {
+  async slowMovingReport(days: number = 30, vendorId?: string) {
     const cutOffDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
     const qb = AppDataSource.getRepository(BarcodeBatch)
       .createQueryBuilder('bb')
@@ -750,18 +774,24 @@ export class ReportService {
       .select([
         'bb.barcode_alias_8digit as barcode',
         'bb.design_no as design',
-        'COALESCE(pg.name, \'N/A\') as "productGroup"',
-        'COALESCE(v.name, \'N/A\') as vendor',
+        'v.name as vendor',
+        'pg.name as "productGroup"',
         'bb.available_quantity as "availableQty"',
         'bb.cost_actual as cost',
         'bb.mrp as mrp',
-        '(bb.available_quantity * bb.cost_actual) as "inventoryValue"',
+        'bb.available_quantity * bb.cost_actual as "inventoryValue"',
+        'bb.created_at as "receivedAt"',
         '(EXTRACT(EPOCH FROM (NOW() - bb.created_at)) / 86400)::int as "daysInStock"'
       ])
       .where('bb.status = :status', { status: 'active' })
       .andWhere('bb.available_quantity > 0')
-      .andWhere('bb.created_at <= :date', { date: cutOffDate })
-      .orderBy('bb.created_at', 'ASC')
+      .andWhere('bb.created_at <= :date', { date: cutOffDate });
+
+    if (vendorId) {
+      qb.andWhere('bb.vendor = :vendorId', { vendorId });
+    }
+
+    qb.orderBy('bb.created_at', 'ASC')
       .limit(100);
 
     const results = await qb.getRawMany();
@@ -977,13 +1007,16 @@ export class ReportService {
     return result;
   }
 
-  async vendorAnalysisReport(filters: { startDate: string, endDate: string, vendorId?: string }) {
+  async vendorAnalysisReport(filters: { startDate: string, endDate: string, vendorId?: string, sortField?: string, sortDirection?: 'ASC' | 'DESC' }) {
     const start = `${filters.startDate.split('T')[0]}T00:00:00.000Z`;
     const end = `${filters.endDate.split('T')[0]}T23:59:59.999Z`;
-    const { vendorId } = filters;
+    const { vendorId, sortField, sortDirection } = filters;
 
-    const groupByField = vendorId ? 'bb.design_no' : 'v.id';
-    const selectNameField = vendorId ? 'bb.design_no as name' : 'v.name as name';
+    // Standard grouping for global view (by Vendor) vs Drill-down (by Variation)
+    // ... existing logic ...
+    const groupByFields = vendorId 
+      ? ['bb.design_no', 'sz.name', 'cl.name'] 
+      : ['v.id', 'v.name'];
 
     const applyVendorFilter = (qb: any) => {
       if (vendorId) {
@@ -992,67 +1025,91 @@ export class ReportService {
       return qb;
     };
 
-    // 1. OPENING PURCHASES (Before Start)
-    const opQuery = AppDataSource.getRepository(BarcodeBatch)
-      .createQueryBuilder('bb')
-      .leftJoin('bb.vendor', 'v')
-      .select([`${groupByField} as id`, 'COALESCE(SUM(bb.total_quantity), 0) as qty', 'COALESCE(SUM(bb.total_quantity * bb.cost_actual), 0) as value'])
-      .where('bb.created_at < :start', { start });
-    applyVendorFilter(opQuery);
-    const openingPurchases = await opQuery.groupBy(groupByField).getRawMany();
+    const addVariationJoins = (qb: any) => {
+      if (vendorId) {
+        qb.leftJoin('bb.size', 'sz')
+          .leftJoin('bb.color', 'cl');
+      }
+      return qb;
+    };
 
-    // 2. OPENING SALES (Before Start)
-    const osQuery = AppDataSource.getRepository(SalesInvoiceItem)
-      .createQueryBuilder('sii')
-      .innerJoin('sii.invoice', 'si')
-      .leftJoin('sii.product_item', 'bb')
-      .leftJoin('bb.vendor', 'v')
-      .select([`${groupByField} as id`, 'COALESCE(SUM(sii.quantity), 0) as qty', 'COALESCE(SUM(sii.total_value), 0) as value'])
-      .where('si.invoice_date < :start', { start });
-    applyVendorFilter(osQuery);
-    const openingSales = await osQuery.groupBy(groupByField).getRawMany();
+    const selectFields = vendorId
+      ? [
+          'bb.design_no as id', 
+          'bb.design_no as design_no',
+          'sz.name as size_name', 
+          'cl.name as color_name',
+          'COALESCE(SUM(quantity_expr), 0) as qty',
+          'COALESCE(SUM(value_expr), 0) as value'
+        ]
+      : [
+          'v.id as id',
+          'v.name as name',
+          'COALESCE(SUM(quantity_expr), 0) as qty',
+          'COALESCE(SUM(value_expr), 0) as value'
+        ];
 
-    // 3. OPENING RETURNS (Before Start)
-    const orQuery = AppDataSource.getRepository(SalesReturnItem)
-      .createQueryBuilder('sri')
-      .innerJoin('sri.salesReturn', 'sr')
-      .leftJoin('sri.product_item', 'bb')
-      .leftJoin('bb.vendor', 'v')
-      .select([`${groupByField} as id`, 'COALESCE(SUM(sri.quantity), 0) as qty', 'COALESCE(SUM(sri.return_amount), 0) as value'])
-      .where('sr.return_date < :start', { start });
-    applyVendorFilter(orQuery);
-    const openingReturns = await orQuery.groupBy(groupByField).getRawMany();
+    const buildQuery = (repo: any, dateField: string, isRange = false) => {
+      const qb = AppDataSource.getRepository(repo).createQueryBuilder('base');
+      
+      let bbAlias = 'base';
+      if (repo === SalesInvoiceItem) {
+        qb.innerJoin('base.invoice', 'si');
+        qb.leftJoin('base.product_item', 'bb');
+        bbAlias = 'bb';
+      } else if (repo === SalesReturnItem) {
+        qb.innerJoin('base.salesReturn', 'sr');
+        qb.leftJoin('base.product_item', 'bb');
+        bbAlias = 'bb';
+      } else if (repo === PurchaseReturnItem) {
+        qb.innerJoin('base.purchase_return', 'pr');
+        qb.leftJoin('base.item', 'bb');
+        bbAlias = 'bb';
+      } else if (repo === BarcodeBatch) {
+        bbAlias = 'base';
+      }
 
-    // 4. PERIOD PURCHASES (In Range)
-    const ppQuery = AppDataSource.getRepository(BarcodeBatch)
-      .createQueryBuilder('bb')
-      .leftJoin('bb.vendor', 'v')
-      .select([`${groupByField} as id`, `${selectNameField}`, 'COALESCE(SUM(bb.total_quantity), 0) as qty', 'COALESCE(SUM(bb.total_quantity * bb.cost_actual), 0) as value'])
-      .where('bb.created_at >= :start AND bb.created_at <= :end', { start, end });
-    applyVendorFilter(ppQuery);
-    const periodPurchases = await ppQuery.groupBy(groupByField).addGroupBy(vendorId ? 'bb.design_no' : 'v.name').getRawMany();
+      qb.leftJoin(`${bbAlias}.vendor`, 'v');
+      
+      if (vendorId) {
+        qb.leftJoin(`${bbAlias}.size`, 'sz')
+          .leftJoin(`${bbAlias}.color`, 'cl')
+          .andWhere('v.id = :vendorId', { vendorId });
+      }
 
-    // 5. PERIOD SALES (In Range)
-    const psQuery = AppDataSource.getRepository(SalesInvoiceItem)
-      .createQueryBuilder('sii')
-      .innerJoin('sii.invoice', 'si')
-      .leftJoin('sii.product_item', 'bb')
-      .leftJoin('bb.vendor', 'v')
-      .select([`${groupByField} as id`, 'COALESCE(SUM(sii.quantity), 0) as qty', 'COALESCE(SUM(sii.total_value), 0) as value'])
-      .where('si.invoice_date >= :start AND si.invoice_date <= :end', { start, end });
-    applyVendorFilter(psQuery);
-    const periodSales = await psQuery.groupBy(groupByField).getRawMany();
+      if (isRange) {
+        qb.andWhere(`${dateField} >= :start AND ${dateField} <= :end`, { start, end });
+      } else {
+        qb.andWhere(`${dateField} < :start`, { start });
+      }
 
-    // 6. PERIOD RETURNS (In Range)
-    const prQuery = AppDataSource.getRepository(SalesReturnItem)
-      .createQueryBuilder('sri')
-      .innerJoin('sri.salesReturn', 'sr')
-      .leftJoin('sri.product_item', 'bb')
-      .leftJoin('bb.vendor', 'v')
-      .select([`${groupByField} as id`, 'COALESCE(SUM(sri.quantity), 0) as qty', 'COALESCE(SUM(sri.return_amount), 0) as value'])
-      .where('sr.return_date >= :start AND sr.return_date <= :end', { start, end });
-    applyVendorFilter(prQuery);
-    const periodReturns = await prQuery.groupBy(groupByField).getRawMany();
+      const qtyExpr = repo === BarcodeBatch ? `${bbAlias}.total_quantity` : 'base.quantity';
+      const valExpr = repo === BarcodeBatch ? `${bbAlias}.total_quantity * ${bbAlias}.cost_actual` : 
+                     (repo === SalesInvoiceItem ? 'base.total_value' : 
+                     (repo === SalesReturnItem ? 'base.return_amount' : 'base.cost * base.quantity'));
+      
+      const selectClone = selectFields.map(s => {
+        let sql = s.replace(/bb\./g, `${bbAlias}.`);
+        sql = sql.replace('quantity_expr', qtyExpr).replace('value_expr', valExpr);
+        return sql;
+      });
+
+      const groupByExpr = groupByFields.map(f => f.replace(/bb\./g, `${bbAlias}.`)).join(', ');
+      
+      return qb.select(selectClone).groupBy(groupByExpr);
+    };
+
+    // 1-3. OPENING (Purchases, Sales, Returns)
+    const opRaw = await buildQuery(BarcodeBatch, 'base.created_at').getRawMany();
+    const osRaw = await buildQuery(SalesInvoiceItem, 'si.invoice_date').getRawMany();
+    const orRaw = await buildQuery(SalesReturnItem, 'sr.return_date').getRawMany();
+    const poRaw = await buildQuery(PurchaseReturnItem, 'pr.return_date').getRawMany();
+
+    // 4-8. PERIOD (Purchases, Purchase Returns, Sales, Sales Returns)
+    const ppRaw = await buildQuery(BarcodeBatch, 'base.created_at', true).getRawMany();
+    const prRaw = await buildQuery(PurchaseReturnItem, 'pr.return_date', true).getRawMany();
+    const psRaw = await buildQuery(SalesInvoiceItem, 'si.invoice_date', true).getRawMany();
+    const srRaw = await buildQuery(SalesReturnItem, 'sr.return_date', true).getRawMany();
 
     const dataMap = new Map<string, any>();
     
@@ -1063,60 +1120,121 @@ export class ReportService {
         dataMap.set(vend.id, {
           vendor_id: vend.id,
           vendor_name: vend.name,
-          opening_qty: 0, received_qty: 0, sold_qty: 0, returns_qty: 0, closing_qty: 0, sales_value: 0, purchase_value: 0
+          opening_qty: 0, received_qty: 0, purchase_return_qty: 0, 
+          sold_qty: 0, sales_return_qty: 0, closing_qty: 0, 
+          sales_value: 0, purchase_value: 0, unit_cost: 0
         });
       });
     }
 
-    const getEntry = (id: string, name?: string) => {
+    const getEntry = (d: any) => {
+      const id = vendorId ? `${d.design_no}|${d.size_name || ''}|${d.color_name || ''}` : d.id;
       if (!id) return null;
       if (!dataMap.has(id)) {
         dataMap.set(id, {
+          vendor_id: vendorId ? undefined : d.id,
+          vendor_name: vendorId ? undefined : d.name,
           item_id: id,
-          display_name: name || (vendorId ? id : 'Unknown'), // Use ID (Design No) if name missing
+          design_no: d.design_no,
+          size_name: d.size_name,
+          color_name: d.color_name,
+          display_name: vendorId ? `${d.design_no} (${d.color_name || 'N/A'} / ${d.size_name || 'N/A'})` : d.name,
           opening_qty: 0, received_qty: 0, sold_qty: 0, returns_qty: 0, closing_qty: 0, sales_value: 0, purchase_value: 0
         });
       }
       return dataMap.get(id);
     };
 
-    openingPurchases.forEach(d => { const v = getEntry(d.id); if (v) v.opening_qty += parseFloat(d.qty); });
-    openingSales.forEach(d => { const v = getEntry(d.id); if (v) v.opening_qty -= parseFloat(d.qty); });
-    openingReturns.forEach(d => { const v = getEntry(d.id); if (v) v.opening_qty += parseFloat(d.qty); });
+    opRaw.forEach(d => { 
+      const v = getEntry(d); 
+      if (v) {
+        v.opening_qty += parseFloat(d.qty); 
+        // Populate unit_cost from opening if not already set
+        if (!v.unit_cost) {
+          const qty = parseFloat(d.qty);
+          const val = parseFloat(d.value);
+          v.unit_cost = qty > 0 ? (val / qty) : 0;
+        }
+      }
+    });
+    osRaw.forEach(d => { const v = getEntry(d); if (v) v.opening_qty -= parseFloat(d.qty); });
+    orRaw.forEach(d => { const v = getEntry(d); if (v) v.opening_qty += parseFloat(d.qty); });
+    poRaw.forEach(d => { const v = getEntry(d); if (v) v.opening_qty -= parseFloat(d.qty); });
 
-    periodPurchases.forEach(d => { 
-      const v = getEntry(d.id, d.name); 
+    ppRaw.forEach(d => { 
+      const v = getEntry(d); 
       if (v) {
         v.received_qty = parseFloat(d.qty);
         v.purchase_value = parseFloat(d.value);
-        if (vendorId) v.display_name = d.name; // Ensure design name is set
+        v.unit_cost = v.received_qty > 0 ? (v.purchase_value / v.received_qty) : 0;
       }
     });
 
-    periodSales.forEach(d => { 
-      const v = getEntry(d.id); 
+    prRaw.forEach(d => { 
+      const v = getEntry(d); 
+      if (v) v.purchase_return_qty = parseFloat(d.qty); 
+    });
+
+    psRaw.forEach(d => { 
+      const v = getEntry(d); 
       if (v) {
         v.sold_qty = parseFloat(d.qty); 
         v.sales_value = parseFloat(d.value);
+        // Fallback unit_cost from sales item (MRP-linked cost in BarcodeBatch)
+        if (!v.unit_cost) {
+          const res = d.cost || 0; // buildQuery selects bb.cost_actual for sales items
+          v.unit_cost = parseFloat(res);
+        }
       }
     });
 
-    periodReturns.forEach(d => { 
-      const v = getEntry(d.id); 
-      if (v) v.returns_qty = parseFloat(d.qty); 
+    srRaw.forEach(d => { 
+      const v = getEntry(d); 
+      if (v) v.sales_return_qty = parseFloat(d.qty); 
     });
 
-    return Array.from(dataMap.values())
-      .map(v => ({
-        ...v,
-        // Ensure both fields exist for frontend compatibility
-        vendor_name: v.vendor_name || v.display_name || 'Unknown',
-        display_name: v.display_name || v.vendor_name || 'Unknown',
-        closing_qty: v.opening_qty + v.received_qty - v.sold_qty + v.returns_qty
-      }))
+    let results = Array.from(dataMap.values())
+      .map(v => {
+        const net_purchase_qty = (v.received_qty || 0) - (v.purchase_return_qty || 0);
+        const net_sales_qty = (v.sold_qty || 0) - (v.sales_return_qty || 0);
+        const closing_qty = (v.opening_qty || 0) + net_purchase_qty - net_sales_qty;
+        
+        return {
+          ...v,
+          net_purchase_qty,
+          net_sales_qty,
+          closing_qty,
+          unit_cost: v.unit_cost || 0,
+          total_cost: closing_qty * (v.unit_cost || 0)
+        };
+      })
       .filter(v => 
-        Math.abs(v.opening_qty) > 0.001 || v.received_qty > 0.001 || v.sold_qty > 0.001 || v.returns_qty > 0.001 || Math.abs(v.closing_qty) > 0.001
+        Math.abs(v.opening_qty || 0) > 0.001 || 
+        (v.received_qty || 0) > 0.001 || 
+        (v.purchase_return_qty || 0) > 0.001 ||
+        (v.sold_qty || 0) > 0.001 || 
+        (v.sales_return_qty || 0) > 0.001 || 
+        Math.abs(v.closing_qty || 0) > 0.001
       );
+
+    // Apply Sorting
+    if (sortField) {
+      const dir = sortDirection?.toUpperCase() === 'DESC' ? -1 : 1;
+      results.sort((a, b) => {
+        let valA = a[sortField];
+        let valB = b[sortField];
+        
+        // Handle numeric fields specifically if needed, but JS sort handles them fine if they are numbers
+        if (typeof valA === 'string') valA = valA.toLowerCase();
+        if (typeof valB === 'string') valB = valB.toLowerCase();
+        
+        if (valA < valB) return -1 * dir;
+        if (valA > valB) return 1 * dir;
+        return 0;
+      });
+    }
+
+    return results;
   }
 
   async advanceAnalysis(filters: { startDate: string, endDate: string }) {
@@ -1229,6 +1347,95 @@ export class ReportService {
     };
 
     return { summary, details };
+  }
+
+  async designAnalysisReport(filters: { design_no: string, vendorId?: string }) {
+    // 1. Fetch BarcodeBatches for this design
+    const qb = AppDataSource.getRepository(BarcodeBatch)
+      .createQueryBuilder('bb')
+      .leftJoinAndSelect('bb.color', 'c')
+      .leftJoinAndSelect('bb.size', 's')
+      .where('bb.design_no = :designNo', { designNo: filters.design_no });
+
+    if (filters.vendorId) {
+      qb.andWhere('bb.vendor_id = :vendorId', { vendorId: filters.vendorId });
+    }
+
+    const batches = await qb.orderBy('bb.created_at', 'DESC').getMany();
+
+    if (batches.length === 0) return [];
+
+    const barcodes = batches.map(b => b.barcode_alias_8digit);
+
+    // 2. Fetch Sales
+    const sales = await AppDataSource.getRepository(SalesInvoiceItem)
+      .createQueryBuilder('sii')
+      .innerJoinAndSelect('sii.invoice', 'si')
+      .where('sii.barcode_8digit IN (:...ids)', { ids: barcodes })
+      .getMany();
+
+    // 3. Fetch Sales Returns
+    const salesReturns = await AppDataSource.getRepository(SalesReturnItem)
+      .createQueryBuilder('sri')
+      .innerJoinAndSelect('sri.salesReturn', 'sr')
+      .where('sri.barcode_8digit IN (:...ids)', { ids: barcodes })
+      .getMany();
+
+    // 4. Fetch Purchase Returns
+    const purchaseReturns = await AppDataSource.getRepository(PurchaseReturnItem)
+      .createQueryBuilder('pri')
+      .innerJoinAndSelect('pri.purchase_return', 'pr')
+      .where('pri.barcode_id IN (:...ids)', { ids: barcodes })
+      .getMany();
+
+    // 5. Build Barcode Ledger
+    return batches.map(b => {
+      const alias = b.barcode_alias_8digit;
+      const bSales = sales.filter(s => s.barcode_8digit === alias);
+      const bSalesReturns = salesReturns.filter(sr => sr.barcode_8digit === alias);
+      const bPurchaseReturns = purchaseReturns.filter(pr => pr.barcode_id === alias);
+
+      // Status calculation
+      let status = 'Available';
+      let statusColor = 'emerald';
+      let soldDate = null;
+      let returnDate = null;
+
+      if (bPurchaseReturns.length > 0) {
+        status = 'Returned to Vendor';
+        statusColor = 'rose';
+        returnDate = bPurchaseReturns[0].created_at;
+      } else if (bSales.length > 0) {
+        const latestSale = bSales.sort((a,b) => b.created_at.getTime() - a.created_at.getTime())[0];
+        const latestReturn = bSalesReturns.sort((a,b) => b.created_at.getTime() - a.created_at.getTime())[0];
+
+        if (latestReturn && latestReturn.created_at > latestSale.created_at) {
+          status = 'Available (Returned)';
+          statusColor = 'emerald';
+        } else {
+          status = 'Sold';
+          statusColor = 'blue';
+          soldDate = latestSale.created_at;
+        }
+      }
+
+      return {
+        id: b.id,
+        barcode_id: alias,
+        color: b.color?.name,
+        size: b.size?.name,
+        cost: b.cost_actual,
+        mrp: b.mrp,
+        photos: b.photos || [],
+        available_quantity: b.available_quantity,
+        total_quantity: b.total_quantity,
+        created_at: b.created_at,
+        status,
+        statusColor,
+        sold_date: soldDate,
+        return_date: returnDate
+      };
+    });
   }
 }
 

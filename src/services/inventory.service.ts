@@ -20,6 +20,7 @@ export class InventoryService {
     sort?: string; order?: string;
     gte_created_at?: string; lte_created_at?: string;
     min_quantity?: string | number;
+    vendor_id?: string;
   }) {
     const page = filters.page || 1;
     const limit = filters.limit || 50; 
@@ -65,6 +66,10 @@ export class InventoryService {
       } else {
         qb.andWhere('bb.vendor_id = :vendor', { vendor: filters.vendor });
       }
+    }
+
+    if (filters.vendor_id) {
+      qb.andWhere('bb.vendor_id = :vendor_id', { vendor_id: filters.vendor_id });
     }
     if (filters.product_group) {
       const ids = filters.product_group.split(',').filter(Boolean);
@@ -173,7 +178,8 @@ export class InventoryService {
     searchBarcode?: string; 
     searchVendor?: string; 
     page?: number; 
-    limit?: number 
+    limit?: number;
+    vendor_id?: string;
   }) {
     const page = Number(filters.page) || 1;
     const limit = Number(filters.limit) || 20;
@@ -216,6 +222,12 @@ export class InventoryService {
         conditions.push(`(vd.name ILIKE $${paramIdx} OR vd.vendor_code ILIKE $${paramIdx})`);
         queryParams.push(`%${filters.searchVendor.toLowerCase()}%`);
       }
+      paramIdx++;
+    }
+
+    if (filters.vendor_id) {
+      conditions.push(`bb.vendor = $${paramIdx}`);
+      queryParams.push(filters.vendor_id);
       paramIdx++;
     }
 
@@ -325,12 +337,21 @@ export class InventoryService {
     });
   }
 
-  async searchByBarcode(barcode: string) {
+  async searchByBarcode(barcode: string, vendorId?: string) {
     if (!barcode) return [];
+    
+    const where: any = {
+      barcode_alias_8digit: ILike(`%${barcode}%`),
+    };
+
+    if (vendorId) {
+      where.vendor_id = vendorId;
+    }
+
     return this.batchRepo.find({
       where: [
-        { barcode_alias_8digit: ILike(`%${barcode}%`) },
-        { barcode_structured: ILike(`%${barcode}%`) },
+        { barcode_alias_8digit: ILike(`%${barcode}%`), ...(vendorId ? { vendor_id: vendorId } : {}) },
+        { barcode_structured: ILike(`%${barcode}%`), ...(vendorId ? { vendor_id: vendorId } : {}) },
       ],
       relations: ['product_group', 'size', 'color', 'vendor'],
       take: 20,

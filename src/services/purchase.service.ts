@@ -280,7 +280,8 @@ export class PurchaseService {
 
   async getOrderItems(filters: any) {
     const repo = AppDataSource.getRepository(PurchaseOrderItem);
-    const qb = repo.createQueryBuilder('poi');
+    const qb = repo.createQueryBuilder('poi')
+      .leftJoinAndSelect('poi.purchaseOrder', 'po');
     
     if (filters.purchase_order_id) {
       const ids = String(filters.purchase_order_id).split(',').map(id => id.trim()).filter(Boolean);
@@ -289,6 +290,10 @@ export class PurchaseService {
       } else if (ids.length > 1) {
         qb.andWhere('poi.purchase_order_id IN (:...ids)', { ids });
       }
+    }
+
+    if (filters.vendor_id) {
+      qb.andWhere('po.vendor_id = :vid', { vid: filters.vendor_id });
     }
     
     qb.orderBy('poi.created_at', 'ASC');

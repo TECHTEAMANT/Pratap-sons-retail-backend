@@ -1,10 +1,16 @@
 import { Router } from 'express';
 import { reportController } from '../controllers/report.controller';
 import { authenticate } from '../middleware/auth';
-import { requirePermission } from '../middleware/permission';
+import { requirePermission, requirePermissionOrVendor } from '../middleware/permission';
 
 const router = Router();
 router.use(authenticate);
+
+// Specific exception for Vendor analysis
+router.get('/vendor-analysis', requirePermissionOrVendor('can_view_reports'), (req, res) => reportController.vendorAnalysisReport(req, res));
+router.get('/design-analysis', requirePermissionOrVendor('can_view_reports'), (req, res) => reportController.designAnalysisReport(req, res));
+
+// All other reports strictly require permission
 router.use(requirePermission('can_view_reports'));
 
 router.get('/sales', (req, res) => reportController.salesReport(req, res));

@@ -1,5 +1,6 @@
 import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, UpdateDateColumn, ManyToOne, JoinColumn } from 'typeorm';
 import { Role } from './Role';
+import { Vendor } from './Vendor';
 
 @Entity('users')
 export class User {
@@ -29,6 +30,9 @@ export class User {
 
   @Column({ type: 'text', nullable: true })
   mapped_salesman: string;
+  
+  @Column({ type: 'uuid', nullable: true })
+  vendor_id: string;
 
   @Column({ type: 'boolean', default: true })
   active: boolean;
@@ -46,4 +50,8 @@ export class User {
   @ManyToOne(() => Role, role => role.users, { nullable: true })
   @JoinColumn({ name: 'role_id' })
   roles: Role;
+
+  @ManyToOne(() => Vendor, { nullable: true })
+  @JoinColumn({ name: 'vendor_id' })
+  vendor: Vendor;
 }

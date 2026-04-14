@@ -29,6 +29,7 @@ export class AuthService {
       email: user.email,
       role: user.role,
       roleId: user.role_id,
+      vendorId: user.vendor_id,
       tokenVersion: user.token_version,
     });
 
@@ -43,6 +44,7 @@ export class AuthService {
         mobile: user.mobile,
         role: user.role,
         role_name: user.roles?.name || user.role || 'Executor',
+        vendor_id: user.vendor_id,
         permissions: user.roles ? {
           can_view_cost: user.roles.can_view_cost,
           can_view_mrp: user.roles.can_view_mrp,
