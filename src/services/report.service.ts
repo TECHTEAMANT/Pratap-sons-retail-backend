@@ -1437,6 +1437,177 @@ export class ReportService {
       };
     });
   }
+
+  async walletLedgerReport(filters: { search?: string; startDate?: string; endDate?: string; type?: string; page?: number; limit?: number }) {
+    const page = Number(filters.page) || 1;
+    const limit = Math.min(200, Math.max(1, Number(filters.limit) || 50));
+    const offset = (page - 1) * limit;
+
+    const params: any[] = [];
+    let p = 1;
+
+    const where: string[] = [];
+    if (filters.search) {
+      params.push(`%${filters.search}%`);
+      where.push(`(t.mobile ILIKE $${p} OR t.name ILIKE $${p} OR t.reference ILIKE $${p} OR t.invoice_no ILIKE $${p} OR t.external_no ILIKE $${p})`);
+      p++;
+    }
+    if (filters.type && (filters.type === 'Advance' || filters.type === 'Credit Coupon')) {
+      params.push(filters.type);
+      where.push(`t.type = $${p}`);
+      p++;
+    }
+    if (filters.startDate) {
+      params.push(filters.startDate.split('T')[0]);
+      where.push(`t.date::date >= $${p}::date`);
+      p++;
+    }
+    if (filters.endDate) {
+      params.push(filters.endDate.split('T')[0]);
+      where.push(`t.date::date <= $${p}::date`);
+      p++;
+    }
+
+    const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+
+    const baseSql = `
+      WITH t AS (
+        SELECT
+          'Credit Coupon'::text AS type,
+          cc.customer_mobile::text AS mobile,
+          COALESCE(c.name, '-')::text AS name,
+          cc.created_at::timestamptz AS date,
+          cc.coupon_no::text AS external_no,
+          GREATEST(0, (cc.amount::numeric - COALESCE(used.used_amount, 0)))::numeric AS amount,
+          COALESCE((
+            SELECT si.invoice_number
+            FROM credit_coupon_applications cca
+            INNER JOIN sales_invoices si ON si.id = cca.invoice_id
+            WHERE cca.coupon_id = cc.id
+            ORDER BY cca.created_at DESC
+            LIMIT 1
+          ), '-')::text AS invoice_no,
+          COALESCE(
+            'Return: ' || sr.return_number || ' | Invoice: ' || sr.invoice_number,
+            'Return: - | Invoice: -'
+          )::text AS reference
+        FROM credit_coupons cc
+        LEFT JOIN customers c ON c.mobile = cc.customer_mobile
+        LEFT JOIN sales_returns sr ON sr.id = cc.original_sales_return_id
+        LEFT JOIN (
+          SELECT coupon_id, COALESCE(SUM(amount_applied)::numeric, 0) AS used_amount
+          FROM credit_coupon_applications
+          GROUP BY coupon_id
+        ) used ON used.coupon_id = cc.id
+        WHERE (cc.amount::numeric - COALESCE(used.used_amount, 0)) > 0
+
+        UNION ALL
+
+        SELECT
+          'Advance'::text AS type,
+          COALESCE(c.mobile, '-')::text AS mobile,
+          COALESCE(c.name, '-')::text AS name,
+          soa.created_at::timestamptz AS date,
+          soa.receipt_number::text AS external_no,
+          GREATEST(0, (soa.amount::numeric - COALESCE(used.used_amount, 0)))::numeric AS amount,
+          COALESCE((
+            SELECT si.invoice_number
+            FROM sales_order_advance_applications soaa
+            INNER JOIN sales_invoices si ON si.id = soaa.invoice_id
+            WHERE soaa.advance_id = soa.id
+            ORDER BY soaa.created_at DESC
+            LIMIT 1
+          ), '-')::text AS invoice_no,
+          COALESCE('Sales Order: ' || so.order_number, 'Sales Order: -')::text AS reference
+        FROM sales_order_advances soa
+        INNER JOIN sales_orders so ON so.id = soa.sales_order_id
+        LEFT JOIN customers c ON c.id = so.customer_id
+        LEFT JOIN (
+          SELECT advance_id, COALESCE(SUM(amount_applied)::numeric, 0) AS used_amount
+          FROM sales_order_advance_applications
+          GROUP BY advance_id
+        ) used ON used.advance_id = soa.id
+        WHERE (soa.amount::numeric - COALESCE(used.used_amount, 0)) > 0
+      )
+      SELECT *
+      FROM t
+      ${whereSql}
+      ORDER BY t.date DESC
+      LIMIT ${limit} OFFSET ${offset}
+    `;
+
+    const countSql = `
+      WITH t AS (
+        SELECT
+          'Credit Coupon'::text AS type,
+          cc.customer_mobile::text AS mobile,
+          COALESCE(c.name, '-')::text AS name,
+          cc.created_at::timestamptz AS date,
+          cc.coupon_no::text AS external_no,
+          GREATEST(0, (cc.amount::numeric - COALESCE(used.used_amount, 0)))::numeric AS amount,
+          COALESCE((
+            SELECT si.invoice_number
+            FROM credit_coupon_applications cca
+            INNER JOIN sales_invoices si ON si.id = cca.invoice_id
+            WHERE cca.coupon_id = cc.id
+            ORDER BY cca.created_at DESC
+            LIMIT 1
+          ), '-')::text AS invoice_no,
+          COALESCE(
+            'Return: ' || sr.return_number || ' | Invoice: ' || sr.invoice_number,
+            'Return: - | Invoice: -'
+          )::text AS reference
+        FROM credit_coupons cc
+        LEFT JOIN customers c ON c.mobile = cc.customer_mobile
+        LEFT JOIN sales_returns sr ON sr.id = cc.original_sales_return_id
+        LEFT JOIN (
+          SELECT coupon_id, COALESCE(SUM(amount_applied)::numeric, 0) AS used_amount
+          FROM credit_coupon_applications
+          GROUP BY coupon_id
+        ) used ON used.coupon_id = cc.id
+        WHERE (cc.amount::numeric - COALESCE(used.used_amount, 0)) > 0
+
+        UNION ALL
+
+        SELECT
+          'Advance'::text AS type,
+          COALESCE(c.mobile, '-')::text AS mobile,
+          COALESCE(c.name, '-')::text AS name,
+          soa.created_at::timestamptz AS date,
+          soa.receipt_number::text AS external_no,
+          GREATEST(0, (soa.amount::numeric - COALESCE(used.used_amount, 0)))::numeric AS amount,
+          COALESCE((
+            SELECT si.invoice_number
+            FROM sales_order_advance_applications soaa
+            INNER JOIN sales_invoices si ON si.id = soaa.invoice_id
+            WHERE soaa.advance_id = soa.id
+            ORDER BY soaa.created_at DESC
+            LIMIT 1
+          ), '-')::text AS invoice_no,
+          COALESCE('Sales Order: ' || so.order_number, 'Sales Order: -')::text AS reference
+        FROM sales_order_advances soa
+        INNER JOIN sales_orders so ON so.id = soa.sales_order_id
+        LEFT JOIN customers c ON c.id = so.customer_id
+        LEFT JOIN (
+          SELECT advance_id, COALESCE(SUM(amount_applied)::numeric, 0) AS used_amount
+          FROM sales_order_advance_applications
+          GROUP BY advance_id
+        ) used ON used.advance_id = soa.id
+        WHERE (soa.amount::numeric - COALESCE(used.used_amount, 0)) > 0
+      )
+      SELECT COUNT(*)::int AS total
+      FROM t
+      ${whereSql}
+    `;
+
+    const [rows, countRows] = await Promise.all([
+      AppDataSource.query(baseSql, params),
+      AppDataSource.query(countSql, params),
+    ]);
+
+    const total = Number(countRows?.[0]?.total || 0);
+    return { data: rows, total, page, limit };
+  }
 }
 
 export const reportService = new ReportService();

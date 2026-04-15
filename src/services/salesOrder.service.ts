@@ -2,6 +2,7 @@ import { AppDataSource } from '../config/data-source';
 import { SalesOrder } from '../entities/SalesOrder';
 import { SalesOrderItem } from '../entities/SalesOrderItem';
 import { SalesOrderAdvance } from '../entities/SalesOrderAdvance';
+import { SalesOrderAdvanceApplication } from '../entities/SalesOrderAdvanceApplication';
 import { ILike } from 'typeorm';
 import { getFiscalYearPrefix } from '../utils/fiscalYear';
 
@@ -295,6 +296,94 @@ export class SalesOrderService {
       where: { id },
       relations: ['salesOrder', 'salesOrder.customer']
     });
+  }
+
+  async applyAdvance(receiptNumber: string, invoiceId: string, amountToApply: number, manager: any) {
+    const advRepo = manager.getRepository(SalesOrderAdvance);
+    const appRepo = manager.getRepository(SalesOrderAdvanceApplication);
+
+    let adv = await advRepo.findOne({ where: { receipt_number: receiptNumber } });
+
+    // Fallback: reference may be the advance UUID id
+    if (!adv) {
+      adv = await advRepo.findOne({ where: { id: receiptNumber } });
+    }
+
+    // Fallback: some UIs may pass Sales Order number instead of receipt number.
+    // In that case, pick the oldest advance on that order that still has remaining balance.
+    if (!adv) {
+      const candidates: { id: string }[] = await manager.query(
+        `
+          SELECT soa.id
+          FROM sales_order_advances soa
+          INNER JOIN sales_orders so ON so.id = soa.sales_order_id
+          LEFT JOIN (
+            SELECT advance_id, COALESCE(SUM(amount_applied)::numeric, 0) AS used_amount
+            FROM sales_order_advance_applications
+            GROUP BY advance_id
+          ) used ON used.advance_id = soa.id
+          WHERE so.order_number = $1
+            AND (soa.amount::numeric - COALESCE(used.used_amount, 0)) > 0
+          ORDER BY soa.created_at ASC
+          LIMIT 1
+        `,
+        [receiptNumber]
+      );
+      if (candidates.length > 0) {
+        adv = await advRepo.findOne({ where: { id: candidates[0].id } });
+      }
+    }
+
+    if (!adv) throw new Error(`Invalid advance reference: ${receiptNumber}`);
+
+    const [{ used }] = await manager.query(
+      `SELECT COALESCE(SUM(amount_applied)::numeric, 0) as used FROM sales_order_advance_applications WHERE advance_id = $1`,
+      [adv.id]
+    );
+    const remaining = Math.max(0, Number(adv.amount) - Number(used || 0));
+
+    const amt = Number(amountToApply || 0);
+    if (amt <= 0) return;
+    if (amt > remaining) {
+      throw new Error(`Advance ${receiptNumber} has only ₹${remaining.toFixed(2)} remaining`);
+    }
+
+    const existing = await appRepo.findOne({ where: { advance_id: adv.id, invoice_id: invoiceId } });
+    if (existing) {
+      existing.amount_applied = Number(existing.amount_applied || 0) + amt;
+      await appRepo.save(existing);
+    } else {
+      await appRepo.save(appRepo.create({ advance_id: adv.id, invoice_id: invoiceId, amount_applied: amt }));
+    }
+
+    const newRemaining = remaining - amt;
+    adv.status = newRemaining <= 0 ? 'redeemed' : 'active';
+    adv.redeemed_invoice_id = newRemaining <= 0 ? invoiceId : null;
+    await advRepo.save(adv);
+  }
+
+  async releaseInvoiceApplications(invoiceId: string, manager: any) {
+    const appRepo = manager.getRepository(SalesOrderAdvanceApplication);
+    const advRepo = manager.getRepository(SalesOrderAdvance);
+
+    const apps: SalesOrderAdvanceApplication[] = await appRepo.find({ where: { invoice_id: invoiceId } });
+    if (apps.length === 0) return;
+
+    const advanceIds = [...new Set(apps.map((a) => a.advance_id))];
+    await appRepo.delete({ invoice_id: invoiceId } as any);
+
+    for (const advanceId of advanceIds) {
+      const adv = await advRepo.findOne({ where: { id: advanceId } });
+      if (!adv) continue;
+      const [{ used }] = await manager.query(
+        `SELECT COALESCE(SUM(amount_applied)::numeric, 0) as used FROM sales_order_advance_applications WHERE advance_id = $1`,
+        [advanceId]
+      );
+      const remaining = Math.max(0, Number(adv.amount) - Number(used || 0));
+      adv.status = remaining <= 0 ? 'redeemed' : 'active';
+      adv.redeemed_invoice_id = remaining <= 0 ? adv.redeemed_invoice_id : null;
+      await advRepo.save(adv);
+    }
   }
 }
 

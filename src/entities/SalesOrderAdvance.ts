@@ -24,6 +24,12 @@ export class SalesOrderAdvance {
   @Column({ type: 'text', unique: true, nullable: true })
   receipt_number: string;
 
+  @Column({ type: 'text', default: 'active' }) // active, redeemed
+  status: string;
+
+  @Column({ type: 'uuid', nullable: true })
+  redeemed_invoice_id: string | null;
+
   @Column({ type: 'uuid', nullable: true })
   created_by?: string;
 
