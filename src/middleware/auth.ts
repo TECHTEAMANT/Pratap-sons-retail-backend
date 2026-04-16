@@ -11,6 +11,7 @@ export interface JwtPayload {
   email: string;
   role: string;
   roleId: string;
+  vendorId?: string;
   tokenVersion: number;
   iat?: number;
   exp?: number;
@@ -26,6 +27,7 @@ export interface AuthenticatedRequest extends Request {
     roleId: string;
     mappedFloor: string | null;
     mappedSalesman: string | null;
+    vendorId: string | null;
     active: boolean;
     permissions: {
       can_view_cost: boolean;
@@ -89,7 +91,7 @@ export async function authenticate(
     }
 
     // If user is Admin role, grant all permissions
-    const isAdmin = user.role === 'Admin';
+    const isAdmin = user.role === 'Admin' || user.roles?.name === 'Admin';
     const role = user.roles;
 
     req.user = {
@@ -97,10 +99,11 @@ export async function authenticate(
       email: user.email,
       name: user.name,
       mobile: user.mobile,
-      role: user.role,
+      role: user.roles?.name || user.role,
       roleId: user.role_id,
       mappedFloor: user.mapped_floor,
       mappedSalesman: user.mapped_salesman,
+      vendorId: user.vendor_id,
       active: user.active,
       permissions: {
         can_view_cost: isAdmin || role?.can_view_cost || false,

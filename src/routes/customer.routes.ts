@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { customerController } from '../controllers/customer.controller';
+import { walletController } from '../controllers/wallet.controller';
 import { customerService } from '../services/customer.service';
 import { authenticate } from '../middleware/auth';
 import { requirePermission } from '../middleware/permission';
@@ -12,6 +13,7 @@ router.use(requirePermission('can_manage_masters', 'can_manage_sales'));
 router.get('/', (req, res) => customerController.findAll(req, res));
 router.get('/:mobile/history', (req, res) => customerController.getPurchaseHistory(req, res));
 router.get('/:mobile/credit-balance', (req, res) => customerController.getCreditBalance(req, res));
+router.get('/:mobile/wallet', (req, res) => walletController.getWallet(req, res));
 router.get('/card/:card_no', (req, res) => customerController.findByCard(req, res));
 
 // Process loyalty special day points for a given month

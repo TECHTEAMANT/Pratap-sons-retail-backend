@@ -1,5 +1,6 @@
 import { AppDataSource } from '../config/data-source';
 import { CreditCoupon } from '../entities/CreditCoupon';
+import { CreditCouponApplication } from '../entities/CreditCouponApplication';
 import { EntityManager } from 'typeorm';
 
 export class CreditCouponService {
@@ -33,37 +34,65 @@ export class CreditCouponService {
   }
 
   /**
-   * Redeem a credit coupon
+   * Apply a credit coupon to an invoice (supports partial usage).
    */
-  async redeem(couponNo: string, invoiceId: string, manager?: EntityManager) {
-    const repo = manager ? manager.getRepository(CreditCoupon) : this.repo;
-    
-    const coupon = await repo.findOne({ 
-      where: { coupon_no: couponNo, status: 'active' } 
-    });
+  async apply(couponNo: string, invoiceId: string, amountToApply: number, manager: EntityManager) {
+    const couponRepo = manager.getRepository(CreditCoupon);
+    const appRepo = manager.getRepository(CreditCouponApplication);
 
-    if (!coupon) {
-      throw new Error(`Invalid or inactive coupon: ${couponNo}`);
+    const coupon = await couponRepo.findOne({ where: { coupon_no: couponNo } });
+    if (!coupon) throw new Error(`Invalid coupon: ${couponNo}`);
+
+    const [{ used }] = await manager.query(
+      `SELECT COALESCE(SUM(amount_applied)::numeric, 0) as used FROM credit_coupon_applications WHERE coupon_id = $1`,
+      [coupon.id]
+    );
+    const remaining = Math.max(0, Number(coupon.amount) - Number(used || 0));
+
+    const amt = Number(amountToApply || 0);
+    if (amt <= 0) return;
+    if (amt > remaining) {
+      throw new Error(`Coupon ${couponNo} has only ₹${remaining.toFixed(2)} remaining`);
     }
 
-    coupon.status = 'redeemed';
-    coupon.redeemed_invoice_id = invoiceId;
-    coupon.updated_at = new Date();
+    const existing = await appRepo.findOne({ where: { coupon_id: coupon.id, invoice_id: invoiceId } });
+    if (existing) {
+      existing.amount_applied = Number(existing.amount_applied || 0) + amt;
+      await appRepo.save(existing);
+    } else {
+      await appRepo.save(appRepo.create({ coupon_id: coupon.id, invoice_id: invoiceId, amount_applied: amt }));
+    }
 
-    return repo.save(coupon);
+    const newRemaining = remaining - amt;
+    coupon.status = newRemaining <= 0 ? 'redeemed' : 'active';
+    coupon.updated_at = new Date();
+    await couponRepo.save(coupon);
   }
 
   /**
-   * Release a credit coupon (make it active again)
+   * Release all coupon applications for an invoice (used when invoice is edited/deleted).
    */
-  async releaseCoupon(invoiceId: string, manager: EntityManager) {
-    const repo = manager.getRepository(CreditCoupon);
-    const coupon = await repo.findOne({ where: { redeemed_invoice_id: invoiceId } });
-    if (coupon) {
-      coupon.status = 'active';
-      coupon.redeemed_invoice_id = null;
+  async releaseInvoiceApplications(invoiceId: string, manager: EntityManager) {
+    const appRepo = manager.getRepository(CreditCouponApplication);
+    const couponRepo = manager.getRepository(CreditCoupon);
+
+    const apps = await appRepo.find({ where: { invoice_id: invoiceId } });
+    if (apps.length === 0) return;
+
+    const couponIds = [...new Set(apps.map(a => a.coupon_id))];
+    await appRepo.delete({ invoice_id: invoiceId } as any);
+
+    for (const couponId of couponIds) {
+      const coupon = await couponRepo.findOne({ where: { id: couponId } });
+      if (!coupon) continue;
+      const [{ used }] = await manager.query(
+        `SELECT COALESCE(SUM(amount_applied)::numeric, 0) as used FROM credit_coupon_applications WHERE coupon_id = $1`,
+        [couponId]
+      );
+      const remaining = Math.max(0, Number(coupon.amount) - Number(used || 0));
+      coupon.status = remaining <= 0 ? 'redeemed' : 'active';
       coupon.updated_at = new Date();
-      await repo.save(coupon);
+      await couponRepo.save(coupon);
     }
   }
 

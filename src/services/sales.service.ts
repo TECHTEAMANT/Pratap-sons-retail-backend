@@ -11,6 +11,7 @@ import { LoyaltyHistory, LoyaltyTransactionType } from '../entities/LoyaltyHisto
 import { EBooking } from '../entities/EBooking';
 import { voucherService } from './voucher.service';
 import { creditCouponService } from './creditCoupon.service';
+import { salesOrderService } from './salesOrder.service';
 import logger from '../utils/logger';
 import { getFiscalYearPrefix } from '../utils/fiscalYear';
 import { customerService } from './customer.service';
@@ -315,8 +316,58 @@ export class SalesService {
       if (data.voucher_code) {
         await voucherService.redeemVoucher(data.voucher_code, savedInvoice.id, manager);
       }
-      if (data.coupon_no) {
-        await creditCouponService.redeem(data.coupon_no, savedInvoice.id, manager);
+      
+      // Process payment_details for coupons and advances
+      if (data.payment_details && Array.isArray(data.payment_details)) {
+        for (const pm of data.payment_details) {
+          const mode = String(pm?.mode || '').trim().toLowerCase();
+          const reference = pm?.reference || pm?.coupon_no || pm?.receipt_number || pm?.external_no;
+
+          if ((mode === 'credit coupon' || mode.includes('coupon')) && reference) {
+            await creditCouponService.apply(String(reference), savedInvoice.id, pm.amount, manager);
+          } else if (mode === 'order advance' || mode === 'advance' || mode.includes('advance')) {
+            if (reference) {
+              await salesOrderService.applyAdvance(String(reference), savedInvoice.id, pm.amount, manager);
+            } else if (data.customer_mobile) {
+              const customer = await manager.findOne(Customer, { where: { mobile: String(data.customer_mobile).trim() } });
+              if (!customer) throw new Error('Customer not found for advance allocation');
+
+              const candidates: { receipt_number: string | null; id: string; remaining_amount: any }[] = await manager.query(
+                `
+                  SELECT
+                    soa.id,
+                    soa.receipt_number,
+                    (soa.amount::numeric - COALESCE(used.used_amount, 0))::numeric AS remaining_amount
+                  FROM sales_order_advances soa
+                  INNER JOIN sales_orders so ON so.id = soa.sales_order_id
+                  LEFT JOIN (
+                    SELECT advance_id, COALESCE(SUM(amount_applied)::numeric, 0) AS used_amount
+                    FROM sales_order_advance_applications
+                    GROUP BY advance_id
+                  ) used ON used.advance_id = soa.id
+                  WHERE so.customer_id = $1
+                    AND (soa.amount::numeric - COALESCE(used.used_amount, 0)) > 0
+                  ORDER BY soa.created_at ASC
+                `,
+                [customer.id]
+              );
+
+              let remainingToApply = Number(pm.amount || 0);
+              for (const c of candidates) {
+                if (remainingToApply <= 0) break;
+                const applyAmt = Math.min(Number(c.remaining_amount || 0), remainingToApply);
+                if (applyAmt <= 0) continue;
+                await salesOrderService.applyAdvance(String(c.receipt_number || c.id), savedInvoice.id, applyAmt, manager);
+                remainingToApply -= applyAmt;
+              }
+            }
+          }
+        }
+      } else {
+        // Fallback for old-style single coupon
+        if (data.coupon_no) {
+          await creditCouponService.apply(data.coupon_no, savedInvoice.id, savedInvoice.coupon_amount || 0, manager);
+        }
       }
 
       logger.info(`Invoice created: ${invoiceNumber}`, { items: data.items?.length || 0, total: data.net_payable });
@@ -446,14 +497,64 @@ export class SalesService {
       if (oldInvoice.voucher_code && oldInvoice.voucher_code !== data.voucher_code) {
         await voucherService.releaseVoucher(oldInvoice.id, manager);
       }
-      if (oldInvoice.coupon_no && oldInvoice.coupon_no !== data.coupon_no) {
-        await creditCouponService.releaseCoupon(oldInvoice.id, manager);
-      }
+      // Release all previously applied coupons and advances for this invoice (so we can re-apply fresh)
+      await creditCouponService.releaseInvoiceApplications(oldInvoice.id, manager);
+      await salesOrderService.releaseInvoiceApplications(oldInvoice.id, manager);
+
       if (data.voucher_code && data.voucher_code !== oldInvoice.voucher_code) {
         await voucherService.redeemVoucher(data.voucher_code, oldInvoice.id, manager);
       }
-      if (data.coupon_no && data.coupon_no !== oldInvoice.coupon_no) {
-        await creditCouponService.redeem(data.coupon_no, oldInvoice.id, manager);
+
+      // Re-redeem current ones from payment_details
+      if (data.payment_details && Array.isArray(data.payment_details)) {
+        for (const pm of data.payment_details) {
+          const mode = String(pm?.mode || '').trim().toLowerCase();
+          const reference = pm?.reference || pm?.coupon_no || pm?.receipt_number || pm?.external_no;
+
+          if ((mode === 'credit coupon' || mode.includes('coupon')) && reference) {
+            await creditCouponService.apply(String(reference), oldInvoice.id, pm.amount, manager);
+          } else if (mode === 'order advance' || mode === 'advance' || mode.includes('advance')) {
+            if (reference) {
+              await salesOrderService.applyAdvance(String(reference), oldInvoice.id, pm.amount, manager);
+            } else if (data.customer_mobile) {
+              const customer = await manager.findOne(Customer, { where: { mobile: String(data.customer_mobile).trim() } });
+              if (!customer) throw new Error('Customer not found for advance allocation');
+
+              const candidates: { receipt_number: string | null; id: string; remaining_amount: any }[] = await manager.query(
+                `
+                  SELECT
+                    soa.id,
+                    soa.receipt_number,
+                    (soa.amount::numeric - COALESCE(used.used_amount, 0))::numeric AS remaining_amount
+                  FROM sales_order_advances soa
+                  INNER JOIN sales_orders so ON so.id = soa.sales_order_id
+                  LEFT JOIN (
+                    SELECT advance_id, COALESCE(SUM(amount_applied)::numeric, 0) AS used_amount
+                    FROM sales_order_advance_applications
+                    GROUP BY advance_id
+                  ) used ON used.advance_id = soa.id
+                  WHERE so.customer_id = $1
+                    AND (soa.amount::numeric - COALESCE(used.used_amount, 0)) > 0
+                  ORDER BY soa.created_at ASC
+                `,
+                [customer.id]
+              );
+
+              let remainingToApply = Number(pm.amount || 0);
+              for (const c of candidates) {
+                if (remainingToApply <= 0) break;
+                const applyAmt = Math.min(Number(c.remaining_amount || 0), remainingToApply);
+                if (applyAmt <= 0) continue;
+                await salesOrderService.applyAdvance(String(c.receipt_number || c.id), oldInvoice.id, applyAmt, manager);
+                remainingToApply -= applyAmt;
+              }
+            }
+          }
+        }
+      } else {
+        if (data.coupon_no && data.coupon_no !== oldInvoice.coupon_no) {
+          await creditCouponService.apply(data.coupon_no, oldInvoice.id, Number(data.coupon_amount || 0), manager);
+        }
       }
 
       await manager.save(SalesInvoice, { id, ...updateData });

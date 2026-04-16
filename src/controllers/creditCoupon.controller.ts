@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { creditCouponService } from '../services/creditCoupon.service';
 import { sendSuccess, sendNotFound, sendError } from '../utils/response';
+import { AppDataSource } from '../config/data-source';
 
 export class CreditCouponController {
   async findAll(req: Request, res: Response) {
@@ -42,10 +43,23 @@ export class CreditCouponController {
 
   async redeem(req: Request, res: Response) {
     try {
-      const { coupon_no, invoice_id } = req.body;
+      const { coupon_no, invoice_id, amount } = req.body;
       if (!coupon_no || !invoice_id) throw new Error('coupon_no and invoice_id are required');
-      const result = await creditCouponService.redeem(coupon_no, invoice_id);
-      sendSuccess(res, result, 'Coupon redeemed successfully');
+      await AppDataSource.transaction(async (manager) => {
+        if (amount !== undefined && amount !== null) {
+          await creditCouponService.apply(coupon_no, invoice_id, Number(amount), manager);
+          return;
+        }
+        const coupon = await creditCouponService.getByCouponNo(coupon_no);
+        if (!coupon) throw new Error('Invalid coupon');
+        const [{ used }] = await manager.query(
+          `SELECT COALESCE(SUM(amount_applied)::numeric, 0) as used FROM credit_coupon_applications WHERE coupon_id = $1`,
+          [coupon.id]
+        );
+        const remaining = Math.max(0, Number(coupon.amount) - Number(used || 0));
+        await creditCouponService.apply(coupon_no, invoice_id, remaining, manager);
+      });
+      sendSuccess(res, null, 'Coupon applied successfully');
     } catch (e: any) {
       sendError(res, e.message, 400);
     }

@@ -9,8 +9,6 @@ export class SalesReturnItem {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column({ type: 'uuid' })
-  return_id: string;
 
   @Column({ type: 'text', nullable: true })
   barcode_8digit: string;

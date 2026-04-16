@@ -39,6 +39,36 @@ export function requirePermission(...permissions: PermissionKey[]) {
 }
 
 /**
+ * Middleware factory: require one or more permissions OR allow if user is a Vendor
+ */
+export function requirePermissionOrVendor(...permissions: PermissionKey[]) {
+  return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
+    if (!req.user) {
+      sendForbidden(res, 'Authentication required');
+      return;
+    }
+
+    if (req.user.role === 'Vendor') {
+      return next();
+    }
+
+    const hasPermission = permissions.some(
+      (perm) => req.user!.permissions[perm] === true
+    );
+
+    if (!hasPermission) {
+      sendForbidden(
+        res,
+        `Insufficient permissions. Required: ${permissions.join(' or ')}`
+      );
+      return;
+    }
+
+    next();
+  };
+}
+
+/**
  * Middleware factory: require ALL listed permissions (AND logic)
  */
 export function requireAllPermissions(...permissions: PermissionKey[]) {
@@ -78,7 +108,7 @@ export function requireAdminOrSubAdmin(
   }
 
   const role = req.user.role;
-  if (role !== 'Admin' && role !== 'Sub-Admin') {
+  if (role !== 'Admin' && role !== 'Sub-Admin' && role !== 'Owner') {
     sendForbidden(res, 'Admin or Sub-Admin access required');
     return;
   }

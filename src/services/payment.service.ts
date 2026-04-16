@@ -68,11 +68,13 @@ export class PaymentService {
             const actualToPay = Math.min(Number(itemData.amount_paid || 0), maxAllowed);
             
             invoice.amount_paid = Number(invoice.amount_paid || 0) + actualToPay;
-            invoice.amount_pending = Math.max(0, Number(invoice.net_payable) - Number(invoice.amount_paid));
+            invoice.amount_pending = Math.max(0, Number(invoice.net_payable || 0) - Number(invoice.amount_paid));
             
-            if (invoice.amount_pending <= 0) {
+            // Accurate status determination
+            if (Number(invoice.amount_pending) < 0.01) {
               invoice.payment_status = 'paid';
-            } else if (invoice.amount_paid > 0) {
+              invoice.amount_pending = 0; // Clean up floating point
+            } else if (Number(invoice.amount_paid) > 0.01) {
               invoice.payment_status = 'partial';
             } else {
               invoice.payment_status = 'pending';
@@ -103,9 +105,11 @@ export class PaymentService {
             invoice.amount_paid = Math.max(0, Number(invoice.amount_paid || 0) - Number(item.amount_paid));
             invoice.amount_pending = Math.min(Number(invoice.net_payable || 0), Number(invoice.amount_pending || 0) + Number(item.amount_paid));
 
-            if (invoice.amount_pending <= 0) {
+            // Accurate status determination
+            if (Number(invoice.amount_pending) < 0.01) {
               invoice.payment_status = 'paid';
-            } else if (invoice.amount_paid > 0) {
+              invoice.amount_pending = 0; // Clean up floating point
+            } else if (Number(invoice.amount_paid) > 0.01) {
               invoice.payment_status = 'partial';
             } else {
               invoice.payment_status = 'pending';

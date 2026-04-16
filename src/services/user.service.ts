@@ -1,14 +1,15 @@
 import bcrypt from 'bcryptjs';
 import { AppDataSource } from '../config/data-source';
 import { User } from '../entities/User';
+import { Role } from '../entities/Role';
 
 export class UserService {
   private userRepo = AppDataSource.getRepository(User);
 
   async findAll() {
     return this.userRepo.find({
-      select: ['id', 'email', 'name', 'mobile', 'role', 'role_id', 'mapped_floor', 'mapped_salesman', 'active', 'created_at', 'updated_at'],
-      relations: ['roles'],
+      select: ['id', 'email', 'name', 'mobile', 'role', 'role_id', 'vendor_id', 'mapped_floor', 'mapped_salesman', 'active', 'created_at', 'updated_at'],
+      relations: ['roles', 'vendor'],
       order: { created_at: 'DESC' },
     });
   }
@@ -16,8 +17,8 @@ export class UserService {
   async findById(id: string) {
     return this.userRepo.findOne({
       where: { id },
-      select: ['id', 'email', 'name', 'mobile', 'role', 'role_id', 'mapped_floor', 'mapped_salesman', 'active', 'created_at', 'updated_at'],
-      relations: ['roles'],
+      select: ['id', 'email', 'name', 'mobile', 'role', 'role_id', 'vendor_id', 'mapped_floor', 'mapped_salesman', 'active', 'created_at', 'updated_at'],
+      relations: ['roles', 'vendor'],
     });
   }
 
@@ -32,6 +33,7 @@ export class UserService {
       password_hash,
       role: data.role || 'Executor',
       role_id: data.role_id,
+      vendor_id: data.vendor_id,
       mapped_floor: data.mapped_floor,
       mapped_salesman: data.mapped_salesman,
       token_version: 1,
@@ -50,7 +52,16 @@ export class UserService {
     if (data.name !== undefined) user.name = data.name;
     if (data.email !== undefined) user.email = data.email;
     if (data.role !== undefined) user.role = data.role;
-    if (data.role_id !== undefined) user.role_id = data.role_id;
+    if (data.role_id !== undefined) {
+      user.role_id = data.role_id;
+      // Sync role string
+      const roleRepo = AppDataSource.getRepository(Role);
+      const roleObj = await roleRepo.findOneBy({ id: data.role_id });
+      if (roleObj) {
+        user.role = roleObj.name;
+      }
+    }
+    if (data.vendor_id !== undefined) user.vendor_id = data.vendor_id;
     if (data.mapped_floor !== undefined) user.mapped_floor = data.mapped_floor;
     if (data.mapped_salesman !== undefined) user.mapped_salesman = data.mapped_salesman;
     if (data.active !== undefined) user.active = data.active;

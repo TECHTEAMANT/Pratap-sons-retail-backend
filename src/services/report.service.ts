@@ -7,6 +7,7 @@ import { Vendor } from '../entities/Vendor';
 import { PurchaseOrder } from '../entities/PurchaseOrder';
 import { SalesReturn } from '../entities/SalesReturn';
 import { SalesReturnItem } from '../entities/SalesReturnItem';
+import { PurchaseReturnItem } from '../entities/PurchaseReturnItem';
 import { SalesOrderAdvance } from '../entities/SalesOrderAdvance';
 import { PaymentReceipt } from '../entities/PaymentReceipt';
 import { Between, MoreThanOrEqual, LessThanOrEqual, Raw } from 'typeorm';
@@ -90,6 +91,8 @@ export class ReportService {
       .createQueryBuilder('si')
       .leftJoinAndSelect('si.items', 'items')
       .leftJoin('items.product_item', 'bb') // Needed for vendor filtering
+      .leftJoinAndSelect('si.receipt_items', 'ri')
+      .leftJoinAndSelect('ri.receipt', 'receipt')
       .where('si.invoice_date BETWEEN :start AND :end', { start, end });
 
     if (filters.floorId) {
@@ -124,6 +127,7 @@ export class ReportService {
         UPI: 0,
         Card: 0,
         Online: 0,
+        Advance: 0,
         Approval: 0,
         'Credit Coupon': 0,
         'Exchange': 0,
@@ -145,6 +149,7 @@ export class ReportService {
 
     result.totalReturns = returns.reduce((sum, ret) => sum + (parseFloat(ret.total_return_amount as any) || 0), 0);
 
+    const detailedList: any[] = [];
     invoices.forEach(inv => {
       // If vendorId filter is active, we must ONLY include items from that vendor in the summary math.
       let invoiceItems = inv.items || [];
@@ -153,127 +158,219 @@ export class ReportService {
         if (invoiceItems.length === 0) return; // Skip invoice if no items match (should be handled by query but extra safety)
       }
 
-      // Robust Net Calculation for Summary Card Consistency
-      const totalDisc = (parseFloat(inv.total_discount as any) || 0) + 
-                       (parseFloat(inv.voucher_discount as any) || 0) + 
-                       (parseFloat(inv.special_discount as any) || 0) + 
-                       (parseFloat(inv.loyalty_redemption_amount as any) || 0) + 
-                       (parseFloat((inv as any).coupon_amount as any) || 0);
-      const calculatedNet = (parseFloat(inv.total_mrp as any) || 0) - totalDisc + (parseFloat(inv.additional_charges_total as any) || 0);
-      const storedNet = parseFloat(inv.net_payable as any) || 0;
-      const moneyPaidTotal = (parseFloat(inv.amount_paid as any) || 0) + (parseFloat(inv.amount_pending as any) || 0);
-      // Unified Smart Net: Trust the actual financial intent (Payments + Pending) over inconsistent DB fields
-      const finalNet = (moneyPaidTotal > 0) ? moneyPaidTotal : (storedNet > 0 ? storedNet : Math.max(Math.round(calculatedNet), 0));
+      // Robust Reconstruction from Item-Level Data
+      const reconstructedMRP = invoiceItems.reduce((s, i) => s + (Number(i.mrp || i.selling_price || 0) * Number(i.quantity || 1)), 0);
+      const reconstructedItemDisc = invoiceItems.reduce((s, i) => s + (Number(i.discount || 0) * Number(i.quantity || 1)), 0);
+      
+      // --- Fix Discount Doubling ---
+      // We reconcile the sum of item-level discounts against the total header-level discount bundle.
+      // Since modern invoices prorate Special, Voucher, and Loyalty into the item 'discount' field, 
+      // adding the header fields again would cause double counting. 
+      // We trust the Maximum of the two approaches (Item Reconstruction vs Header Totals).
+      const totalHeaderBundle = (parseFloat(inv.total_discount as any) || 0) + 
+                               (parseFloat(inv.special_discount as any) || 0) + 
+                               (parseFloat(inv.voucher_discount as any) || 0) + 
+                               (parseFloat(inv.loyalty_redemption_amount as any) || 0) + 
+                               (parseFloat((inv as any).coupon_amount as any) || 0);
 
+      const totalDisc = Math.max(reconstructedItemDisc, totalHeaderBundle);
+
+      const calculatedNet = reconstructedMRP - totalDisc + (parseFloat(inv.additional_charges_total as any) || 0);
+      const finalNet = Math.round(calculatedNet);
+
+      // --- NEW: Parse Payment Details FIRST to use as source of truth ---
+      let paymentDetails = inv.payment_details;
+      if (typeof paymentDetails === 'string') {
+        try { paymentDetails = JSON.parse(paymentDetails); } catch (e) { paymentDetails = null; }
+      }
+
+      let detailsArray: any[] = [];
+      if (paymentDetails) {
+        if (Array.isArray(paymentDetails)) {
+          detailsArray = paymentDetails;
+        } else if (typeof paymentDetails === 'object' && paymentDetails !== null) {
+          // Normalize old object format { "MODE": amount } to [{ mode, amount }]
+          // IMPORTANT: Ignore technical keys like total_mrp, net_payable, etc.
+          const techKeys = ['TOTAL_MRP', 'NET_PAYABLE', 'ITEMS', 'ID', 'TOTAL_AMOUNT', 'ROUND_OFF', 'AMOUNT_PAID', 'AMOUNT_PENDING', 'SPECIAL_DISCOUNT', 'VOUCHER_DISCOUNT', 'LOYALTY_REDEMPTION_AMOUNT', 'TOTAL_GST', 'TAXABLE_VALUE'];
+          detailsArray = Object.entries(paymentDetails)
+            .filter(([key, val]) => {
+              const k = key.toUpperCase();
+              return !techKeys.includes(k) && (typeof val === 'number' || typeof val === 'string');
+            })
+            .map(([key, val]) => ({
+              mode: key,
+              amount: val
+            }));
+        }
+      }
+
+      let invoicePaymentBreakdown = {
+        Cash: 0, UPI: 0, Card: 0, Online: 0, Advance: 0, Approval: 0,
+        'Credit Coupon': 0, 'Exchange': 0, 'Others': 0
+      };
+
+      let hasCreditCoupon = false;
+
+      // Unified Payment Processing (Initial Payments + Subsequent Receipts)
+      const allPaymentSources: { mode: string, amount: number }[] = [...detailsArray];
+      
+      // Integrate linked receipts (payments made later)
+      if (inv.receipt_items && inv.receipt_items.length > 0) {
+        inv.receipt_items.forEach((ri: any) => {
+          allPaymentSources.push({
+            mode: ri.receipt?.payment_mode || 'Receipt',
+            amount: parseFloat(ri.amount_paid) || 0
+          });
+        });
+      }
+
+      allPaymentSources.forEach((pd: any) => {
+        const rawMode = (pd.mode || '').toString().toUpperCase();
+        const amount = parseFloat(pd.amount) || 0;
+        
+        // Skip technical or garbage entries and zero amounts
+        if (amount <= 0) return;
+
+        // --- Fuzzy Keyword Categorization ---
+        if (rawMode.includes('CASH')) {
+          invoicePaymentBreakdown.Cash += amount;
+        }
+        else if (rawMode.includes('UPI') || rawMode.includes('PHONEPE') || rawMode.includes('GPAY') || rawMode.includes('PAYTM') || rawMode.includes('G PAY') || rawMode.includes('BHIM')) {
+          invoicePaymentBreakdown.UPI += amount;
+        }
+        else if (rawMode.includes('COUPON')) { 
+          invoicePaymentBreakdown['Credit Coupon'] += amount; 
+          hasCreditCoupon = true; 
+        }
+        else if (rawMode.includes('CARD') || rawMode.includes('VISA') || rawMode.includes('POS') || rawMode.includes('MASTER') || rawMode.includes('DEBIT') || rawMode.includes('CREDIT')) {
+          invoicePaymentBreakdown.Card += amount;
+        }
+        // Inclusion of RCP and RECEIPT for older receipt formats
+        else if (rawMode.includes('RECEIPT') || rawMode.includes('RCP') || rawMode.includes('BANK') || rawMode.includes('ONLINE') || rawMode.includes('TRANSFER') || rawMode.includes('NEFT') || rawMode.includes('RTGS') || rawMode.includes('HDFC') || rawMode.includes('ICICI') || rawMode.includes('INTERNAL')) { 
+          invoicePaymentBreakdown.Online += amount;
+        }
+        else if (rawMode.includes('APPROVAL')) {
+          invoicePaymentBreakdown.Approval += amount;
+        }
+        else if (rawMode.includes('ADVANCE')) {
+          invoicePaymentBreakdown.Advance += amount;
+        }
+        else if (rawMode.includes('EXCHANGE')) {
+          invoicePaymentBreakdown.Exchange += amount;
+        }
+        else {
+          invoicePaymentBreakdown.Others += amount;
+        }
+      });
+
+      // --- Financial Reconciliation Logic ---
+      const realPaidAmount = 
+        invoicePaymentBreakdown.Cash + 
+        invoicePaymentBreakdown.UPI + 
+        invoicePaymentBreakdown.Card + 
+        invoicePaymentBreakdown.Online + 
+        invoicePaymentBreakdown.Advance + 
+        invoicePaymentBreakdown.Approval +
+        invoicePaymentBreakdown['Credit Coupon'] + 
+        invoicePaymentBreakdown.Exchange + 
+        invoicePaymentBreakdown.Others;
+
+      // Handle inferred coupon if missing from breakdown
+      if (!hasCreditCoupon && (inv as any).coupon_no) {
+        const inferredCoupon = Math.max(0, reconstructedMRP - totalDisc - (parseFloat((inv as any).loyalty_redemption_amount as any) || 0) - finalNet);
+        if (inferredCoupon > 0) {
+          invoicePaymentBreakdown['Credit Coupon'] += inferredCoupon;
+        }
+      }
+
+      const finalRealPaid = 
+        invoicePaymentBreakdown.Cash + invoicePaymentBreakdown.UPI + invoicePaymentBreakdown.Card + 
+        invoicePaymentBreakdown.Online + invoicePaymentBreakdown.Advance + invoicePaymentBreakdown['Credit Coupon'] + 
+        invoicePaymentBreakdown.Exchange + invoicePaymentBreakdown.Others;
+
+      // Adjusted Pending = Net Payable - (All Real Payments)
+      let adjustedPending = Math.max(0, finalNet - finalRealPaid);
+      if (adjustedPending < 1) adjustedPending = 0;
+
+      // Detection of "Approval" status
+      const isApprovalInvoice = (inv as any).is_on_approval === true || invoicePaymentBreakdown.Approval > 0;
+
+      // Update Summary Totals
       result.totalSales += finalNet;
-      result.totalMRP += parseFloat(inv.total_mrp as any) || 0;
+      result.totalMRP += reconstructedMRP;
       result.totalDiscount += totalDisc;
       result.totalGST += parseFloat(inv.total_gst as any) || 0;
       result.taxableValue += parseFloat(inv.taxable_value as any) || 0;
       result.totalSpecialDiscount += parseFloat(inv.special_discount as any) || 0;
       result.totalLoyalty += parseFloat(inv.loyalty_redemption_amount as any) || 0;
       result.totalVoucher += parseFloat(inv.voucher_discount as any) || 0;
-      
-      const amountPending = parseFloat(inv.amount_pending as any) || 0;
-      result.totalPending += amountPending;
+      result.totalPending += isApprovalInvoice ? adjustedPending : 0;
+
+      // Global Payment Breakdown update
+      result.paymentBreakdown.Cash += invoicePaymentBreakdown.Cash;
+      result.paymentBreakdown.UPI += invoicePaymentBreakdown.UPI;
+      result.paymentBreakdown.Card += invoicePaymentBreakdown.Card;
+      result.paymentBreakdown.Online += invoicePaymentBreakdown.Online;
+      result.paymentBreakdown.Advance += invoicePaymentBreakdown.Advance;
+      result.paymentBreakdown.Approval += isApprovalInvoice ? adjustedPending : 0;
+      result.paymentBreakdown['Credit Coupon'] += invoicePaymentBreakdown['Credit Coupon'];
+      (result.paymentBreakdown as any).Exchange += invoicePaymentBreakdown.Exchange;
+      (result.paymentBreakdown as any).Others += invoicePaymentBreakdown.Others;
+
       result.cgst_5 += parseFloat(inv.cgst_5 as any) || 0;
       result.sgst_5 += parseFloat(inv.sgst_5 as any) || 0;
       result.cgst_18 += parseFloat(inv.cgst_18 as any) || 0;
       result.sgst_18 += parseFloat(inv.sgst_18 as any) || 0;
 
-      let paymentDetails = inv.payment_details;
-      if (typeof paymentDetails === 'string') {
-        try {
-          paymentDetails = JSON.parse(paymentDetails);
-        } catch (e: any) {
-          logger.warn(`Failed to parse payment_details for invoice ${inv.invoice_number}: ${e.message}`);
-          paymentDetails = null;
-        }
-      }
-
-      let totalPaidFromDetails = 0;
-      if (paymentDetails && Array.isArray(paymentDetails) && paymentDetails.length > 0) {
-        let hasCreditCoupon = false;
-        paymentDetails.forEach((pd: any) => {
-          const mode = pd.mode;
-          const amount = parseFloat(pd.amount) || 0;
-          totalPaidFromDetails += amount;
-
-          if (mode === 'Cash') result.paymentBreakdown.Cash += amount;
-          else if (mode === 'UPI') result.paymentBreakdown.UPI += amount;
-          else if (mode === 'Card') result.paymentBreakdown.Card += amount;
-          else if (mode === 'Online' || mode === 'Bank Transfer') result.paymentBreakdown.Online += amount;
-          else if (mode === 'Exchange') (result.paymentBreakdown as any).Exchange += amount;
-          else if (mode === 'Approval') {
-            const actualApprovalPending = Math.min(amount, Number(inv.amount_pending || 0));
-            result.paymentBreakdown.Approval += actualApprovalPending;
-          }
-          else if (mode === 'Credit Coupon') { 
-            result.paymentBreakdown['Credit Coupon'] += amount; 
-            hasCreditCoupon = true; 
-          }
-          else (result.paymentBreakdown as any).Others += amount;
-        });
-
-        if (!hasCreditCoupon && (inv as any).coupon_no) {
-          const totalMrp = parseFloat(inv.total_mrp as any) || 0;
-          const totalDiscount = (parseFloat(inv.total_discount as any) || 0) + (parseFloat((inv as any).voucher_discount as any) || 0);
-          const loyalty = parseFloat((inv as any).loyalty_redemption_amount as any) || 0;
-          const netPayable = parseFloat(inv.net_payable as any) || 0;
-          const inferredCoupon = totalMrp - totalDiscount - loyalty - netPayable;
-          if (inferredCoupon > 0) {
-            result.paymentBreakdown['Credit Coupon'] += inferredCoupon;
-            totalPaidFromDetails += inferredCoupon;
-          }
-        }
-      }
-
-      // SMART FALLBACK: If total from details is less than actual paid amount (Net - Pending),
-      // attribute the difference to the primary payment mode.
-      const actualTotalPaid = finalNet - amountPending;
-      const missingAmount = Math.max(0, actualTotalPaid - totalPaidFromDetails);
-      
-      if (missingAmount > 0) {
-        const mode = inv.payment_mode || 'Cash'; // Fallback to Cash if no primary mode
-        if (mode === 'Cash') result.paymentBreakdown.Cash += missingAmount;
-        else if (mode === 'UPI') result.paymentBreakdown.UPI += missingAmount;
-        else if (mode === 'Card') result.paymentBreakdown.Card += missingAmount;
-        else if (mode === 'Online' || mode === 'Bank Transfer') result.paymentBreakdown.Online += missingAmount;
-        else if (mode === 'Exchange') (result.paymentBreakdown as any).Exchange += missingAmount;
-        else if (mode === 'Approval') result.paymentBreakdown.Approval += missingAmount;
-        else if (mode === 'Credit Coupon') result.paymentBreakdown['Credit Coupon'] += missingAmount;
-        else (result.paymentBreakdown as any).Others += missingAmount;
-      }
-
+      let hasApprovalItems = false;
       if (inv.items) {
         inv.items.forEach(item => {
           result.totalQuantity += Number(item.quantity) || 0;
-          if (Number(inv.amount_pending || 0) > 0 && item.on_approval) {
-            result.approvalItemCount += Number(item.quantity) || 0;
+          if (item.on_approval) {
+            hasApprovalItems = true;
+            if (adjustedPending > 0) { result.approvalItemCount += Number(item.quantity) || 0; }
           }
         });
       }
+
+      // Add to detailed list
+      detailedList.push({
+        ...inv,
+        total_mrp: reconstructedMRP,
+        total_discount: totalDisc,
+        net_payable: finalNet,
+        amount_pending: adjustedPending,
+        approval_amount: isApprovalInvoice ? adjustedPending : 0,
+        is_on_approval: isApprovalInvoice || hasApprovalItems,
+        payment_breakdown: invoicePaymentBreakdown,
+        // Status logic
+        payment_status: (adjustedPending <= 0.05) ? 'paid' : (finalRealPaid > 0.1 ? 'partial' : 'pending'),
+        total_quantity: inv.items ? inv.items.reduce((sum, i) => sum + (Number(i.quantity) || 0), 0) : 0
+      });
     });
 
     return {
       ...result,
       avgInvoiceValue: result.invoiceCount > 0 ? result.totalSales / result.invoiceCount : 0,
-      detailedList: invoices.map(inv => ({
-        ...inv,
-        total_quantity: inv.items ? inv.items.reduce((sum, i) => sum + (Number(i.quantity) || 0), 0) : 0
-      }))
+      detailedList
     };
   }
 
-  async inventoryReport(filters: { startDate?: string; endDate?: string; vendorId?: string; floorId?: string } = {}) {
+  async inventoryReport(filters: { startDate?: string; endDate?: string; vendorId?: string; floorId?: string; sortField?: string; sortDirection?: 'ASC' | 'DESC' } = {}) {
     const qb = AppDataSource.getRepository(BarcodeBatch)
       .createQueryBuilder('bb')
       .leftJoin('bb.product_group', 'pg')
+      .leftJoin('bb.size', 'sz')
+      .leftJoin('bb.color', 'cl')
+      .leftJoin('bb.vendor', 'v')
       .select([
         'bb.barcode_alias_8digit as barcode',
         'bb.design_no as design',
         'bb.hsn_code as hsn_code',
         'pg.name as "productGroup"',
+        'sz.name as size',
+        'cl.name as color',
+        'v.name as "vendorName"',
         'COALESCE(bb.available_quantity, 0) as "availableQty"',
         'COALESCE(bb.total_quantity - bb.available_quantity, 0) as "soldQty"',
         'COALESCE(bb.cost_actual, 0) as cost',
@@ -283,12 +380,16 @@ export class ReportService {
       ]);
 
     qb.where('bb.status IN (:...statuses)', { statuses: ['active', 'Available', 'defective', 'Sold', 'Returned'] });
-
+    
+    // NOTE: For Inventory Analysis, we ignore the creation date filter by default 
+    // to show the current state of ALL inventory items, matching the main Inventory module.
+    /*
     if (filters.startDate && filters.endDate) {
       const start = filters.startDate.split('T')[0];
       const end = filters.endDate.split('T')[0];
       qb.andWhere('bb.created_at::date BETWEEN :start AND :end', { start, end });
     }
+    */
 
     if (filters.vendorId) {
       qb.andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
@@ -297,7 +398,20 @@ export class ReportService {
       qb.andWhere('bb.floor = :floorId', { floorId: filters.floorId });
     }
 
-    qb.orderBy('bb.design_no', 'ASC');
+    const direction = filters.sortDirection?.toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
+    if (filters.sortField === 'availableQty') {
+      qb.orderBy('bb.available_quantity', direction);
+    } else if (filters.sortField === 'soldQty') {
+      qb.orderBy('(bb.total_quantity - bb.available_quantity)', direction);
+    } else if (filters.sortField === 'mrp') {
+      qb.orderBy('bb.mrp', direction);
+    } else if (filters.sortField === 'cost') {
+      qb.orderBy('bb.cost_actual', direction);
+    } else if (filters.sortField === 'barcode') {
+      qb.orderBy('bb.barcode_alias_8digit', direction);
+    } else {
+      qb.orderBy('bb.design_no', direction);
+    }
 
     const results = await qb.getRawMany();
     return results.map(r => {
@@ -372,7 +486,7 @@ export class ReportService {
         'COALESCE(f_sale.name, f_stock.name, \'Unknown\') as floor',
         'COUNT(DISTINCT si.id) as "invoiceCount"',
         'COALESCE(SUM(sii.total_value), 0) as "totalSales"',
-        'COALESCE(SUM(sii.discount), 0) as "totalDiscount"'
+        'COALESCE(SUM(sii.discount * sii.quantity), 0) as "totalDiscount"'
       ])
       .where('si.invoice_date BETWEEN :start AND :end', { start, end })
       .groupBy('COALESCE(f_sale.name, f_stock.name, \'Unknown\')')
@@ -584,10 +698,10 @@ export class ReportService {
       const profit = revenue - itemCost;
       const profitMargin = revenue > 0 ? (profit / revenue) * 100 : 0;
 
-      totalRevenue += revenue;
+      totalRevenue += revenue * quantity;
       totalCost += itemCost;
-      totalMRP += mrp;
-      totalDiscount += discount;
+      totalMRP += mrp * quantity;
+      totalDiscount += discount * quantity;
       totalQuantitySold += quantity;
 
       return {
@@ -658,7 +772,7 @@ export class ReportService {
     }));
   }
  
-  async slowMovingReport(days: number = 30) {
+  async slowMovingReport(days: number = 30, vendorId?: string) {
     const cutOffDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
     const qb = AppDataSource.getRepository(BarcodeBatch)
       .createQueryBuilder('bb')
@@ -667,18 +781,24 @@ export class ReportService {
       .select([
         'bb.barcode_alias_8digit as barcode',
         'bb.design_no as design',
-        'COALESCE(pg.name, \'N/A\') as "productGroup"',
-        'COALESCE(v.name, \'N/A\') as vendor',
+        'v.name as vendor',
+        'pg.name as "productGroup"',
         'bb.available_quantity as "availableQty"',
         'bb.cost_actual as cost',
         'bb.mrp as mrp',
-        '(bb.available_quantity * bb.cost_actual) as "inventoryValue"',
+        'bb.available_quantity * bb.cost_actual as "inventoryValue"',
+        'bb.created_at as "receivedAt"',
         '(EXTRACT(EPOCH FROM (NOW() - bb.created_at)) / 86400)::int as "daysInStock"'
       ])
       .where('bb.status = :status', { status: 'active' })
       .andWhere('bb.available_quantity > 0')
-      .andWhere('bb.created_at <= :date', { date: cutOffDate })
-      .orderBy('bb.created_at', 'ASC')
+      .andWhere('bb.created_at <= :date', { date: cutOffDate });
+
+    if (vendorId) {
+      qb.andWhere('bb.vendor = :vendorId', { vendorId });
+    }
+
+    qb.orderBy('bb.created_at', 'ASC')
       .limit(100);
 
     const results = await qb.getRawMany();
@@ -894,13 +1014,16 @@ export class ReportService {
     return result;
   }
 
-  async vendorAnalysisReport(filters: { startDate: string, endDate: string, vendorId?: string }) {
+  async vendorAnalysisReport(filters: { startDate: string, endDate: string, vendorId?: string, sortField?: string, sortDirection?: 'ASC' | 'DESC' }) {
     const start = `${filters.startDate.split('T')[0]}T00:00:00.000Z`;
     const end = `${filters.endDate.split('T')[0]}T23:59:59.999Z`;
-    const { vendorId } = filters;
+    const { vendorId, sortField, sortDirection } = filters;
 
-    const groupByField = vendorId ? 'bb.design_no' : 'v.id';
-    const selectNameField = vendorId ? 'bb.design_no as name' : 'v.name as name';
+    // Standard grouping for global view (by Vendor) vs Drill-down (by Variation)
+    // ... existing logic ...
+    const groupByFields = vendorId 
+      ? ['bb.design_no', 'sz.name', 'cl.name'] 
+      : ['v.id', 'v.name'];
 
     const applyVendorFilter = (qb: any) => {
       if (vendorId) {
@@ -909,67 +1032,91 @@ export class ReportService {
       return qb;
     };
 
-    // 1. OPENING PURCHASES (Before Start)
-    const opQuery = AppDataSource.getRepository(BarcodeBatch)
-      .createQueryBuilder('bb')
-      .leftJoin('bb.vendor', 'v')
-      .select([`${groupByField} as id`, 'COALESCE(SUM(bb.total_quantity), 0) as qty', 'COALESCE(SUM(bb.total_quantity * bb.cost_actual), 0) as value'])
-      .where('bb.created_at < :start', { start });
-    applyVendorFilter(opQuery);
-    const openingPurchases = await opQuery.groupBy(groupByField).getRawMany();
+    const addVariationJoins = (qb: any) => {
+      if (vendorId) {
+        qb.leftJoin('bb.size', 'sz')
+          .leftJoin('bb.color', 'cl');
+      }
+      return qb;
+    };
 
-    // 2. OPENING SALES (Before Start)
-    const osQuery = AppDataSource.getRepository(SalesInvoiceItem)
-      .createQueryBuilder('sii')
-      .innerJoin('sii.invoice', 'si')
-      .leftJoin('sii.product_item', 'bb')
-      .leftJoin('bb.vendor', 'v')
-      .select([`${groupByField} as id`, 'COALESCE(SUM(sii.quantity), 0) as qty', 'COALESCE(SUM(sii.total_value), 0) as value'])
-      .where('si.invoice_date < :start', { start });
-    applyVendorFilter(osQuery);
-    const openingSales = await osQuery.groupBy(groupByField).getRawMany();
+    const selectFields = vendorId
+      ? [
+          'bb.design_no as id', 
+          'bb.design_no as design_no',
+          'sz.name as size_name', 
+          'cl.name as color_name',
+          'COALESCE(SUM(quantity_expr), 0) as qty',
+          'COALESCE(SUM(value_expr), 0) as value'
+        ]
+      : [
+          'v.id as id',
+          'v.name as name',
+          'COALESCE(SUM(quantity_expr), 0) as qty',
+          'COALESCE(SUM(value_expr), 0) as value'
+        ];
 
-    // 3. OPENING RETURNS (Before Start)
-    const orQuery = AppDataSource.getRepository(SalesReturnItem)
-      .createQueryBuilder('sri')
-      .innerJoin('sri.salesReturn', 'sr')
-      .leftJoin('sri.product_item', 'bb')
-      .leftJoin('bb.vendor', 'v')
-      .select([`${groupByField} as id`, 'COALESCE(SUM(sri.quantity), 0) as qty', 'COALESCE(SUM(sri.return_amount), 0) as value'])
-      .where('sr.return_date < :start', { start });
-    applyVendorFilter(orQuery);
-    const openingReturns = await orQuery.groupBy(groupByField).getRawMany();
+    const buildQuery = (repo: any, dateField: string, isRange = false) => {
+      const qb = AppDataSource.getRepository(repo).createQueryBuilder('base');
+      
+      let bbAlias = 'base';
+      if (repo === SalesInvoiceItem) {
+        qb.innerJoin('base.invoice', 'si');
+        qb.leftJoin('base.product_item', 'bb');
+        bbAlias = 'bb';
+      } else if (repo === SalesReturnItem) {
+        qb.innerJoin('base.salesReturn', 'sr');
+        qb.leftJoin('base.product_item', 'bb');
+        bbAlias = 'bb';
+      } else if (repo === PurchaseReturnItem) {
+        qb.innerJoin('base.purchase_return', 'pr');
+        qb.leftJoin('base.item', 'bb');
+        bbAlias = 'bb';
+      } else if (repo === BarcodeBatch) {
+        bbAlias = 'base';
+      }
 
-    // 4. PERIOD PURCHASES (In Range)
-    const ppQuery = AppDataSource.getRepository(BarcodeBatch)
-      .createQueryBuilder('bb')
-      .leftJoin('bb.vendor', 'v')
-      .select([`${groupByField} as id`, `${selectNameField}`, 'COALESCE(SUM(bb.total_quantity), 0) as qty', 'COALESCE(SUM(bb.total_quantity * bb.cost_actual), 0) as value'])
-      .where('bb.created_at >= :start AND bb.created_at <= :end', { start, end });
-    applyVendorFilter(ppQuery);
-    const periodPurchases = await ppQuery.groupBy(groupByField).addGroupBy(vendorId ? 'bb.design_no' : 'v.name').getRawMany();
+      qb.leftJoin(`${bbAlias}.vendor`, 'v');
+      
+      if (vendorId) {
+        qb.leftJoin(`${bbAlias}.size`, 'sz')
+          .leftJoin(`${bbAlias}.color`, 'cl')
+          .andWhere('v.id = :vendorId', { vendorId });
+      }
 
-    // 5. PERIOD SALES (In Range)
-    const psQuery = AppDataSource.getRepository(SalesInvoiceItem)
-      .createQueryBuilder('sii')
-      .innerJoin('sii.invoice', 'si')
-      .leftJoin('sii.product_item', 'bb')
-      .leftJoin('bb.vendor', 'v')
-      .select([`${groupByField} as id`, 'COALESCE(SUM(sii.quantity), 0) as qty', 'COALESCE(SUM(sii.total_value), 0) as value'])
-      .where('si.invoice_date >= :start AND si.invoice_date <= :end', { start, end });
-    applyVendorFilter(psQuery);
-    const periodSales = await psQuery.groupBy(groupByField).getRawMany();
+      if (isRange) {
+        qb.andWhere(`${dateField} >= :start AND ${dateField} <= :end`, { start, end });
+      } else {
+        qb.andWhere(`${dateField} < :start`, { start });
+      }
 
-    // 6. PERIOD RETURNS (In Range)
-    const prQuery = AppDataSource.getRepository(SalesReturnItem)
-      .createQueryBuilder('sri')
-      .innerJoin('sri.salesReturn', 'sr')
-      .leftJoin('sri.product_item', 'bb')
-      .leftJoin('bb.vendor', 'v')
-      .select([`${groupByField} as id`, 'COALESCE(SUM(sri.quantity), 0) as qty', 'COALESCE(SUM(sri.return_amount), 0) as value'])
-      .where('sr.return_date >= :start AND sr.return_date <= :end', { start, end });
-    applyVendorFilter(prQuery);
-    const periodReturns = await prQuery.groupBy(groupByField).getRawMany();
+      const qtyExpr = repo === BarcodeBatch ? `${bbAlias}.total_quantity` : 'base.quantity';
+      const valExpr = repo === BarcodeBatch ? `${bbAlias}.total_quantity * ${bbAlias}.cost_actual` : 
+                     (repo === SalesInvoiceItem ? 'base.total_value' : 
+                     (repo === SalesReturnItem ? 'base.return_amount' : 'base.cost * base.quantity'));
+      
+      const selectClone = selectFields.map(s => {
+        let sql = s.replace(/bb\./g, `${bbAlias}.`);
+        sql = sql.replace('quantity_expr', qtyExpr).replace('value_expr', valExpr);
+        return sql;
+      });
+
+      const groupByExpr = groupByFields.map(f => f.replace(/bb\./g, `${bbAlias}.`)).join(', ');
+      
+      return qb.select(selectClone).groupBy(groupByExpr);
+    };
+
+    // 1-3. OPENING (Purchases, Sales, Returns)
+    const opRaw = await buildQuery(BarcodeBatch, 'base.created_at').getRawMany();
+    const osRaw = await buildQuery(SalesInvoiceItem, 'si.invoice_date').getRawMany();
+    const orRaw = await buildQuery(SalesReturnItem, 'sr.return_date').getRawMany();
+    const poRaw = await buildQuery(PurchaseReturnItem, 'pr.return_date').getRawMany();
+
+    // 4-8. PERIOD (Purchases, Purchase Returns, Sales, Sales Returns)
+    const ppRaw = await buildQuery(BarcodeBatch, 'base.created_at', true).getRawMany();
+    const prRaw = await buildQuery(PurchaseReturnItem, 'pr.return_date', true).getRawMany();
+    const psRaw = await buildQuery(SalesInvoiceItem, 'si.invoice_date', true).getRawMany();
+    const srRaw = await buildQuery(SalesReturnItem, 'sr.return_date', true).getRawMany();
 
     const dataMap = new Map<string, any>();
     
@@ -980,60 +1127,121 @@ export class ReportService {
         dataMap.set(vend.id, {
           vendor_id: vend.id,
           vendor_name: vend.name,
-          opening_qty: 0, received_qty: 0, sold_qty: 0, returns_qty: 0, closing_qty: 0, sales_value: 0, purchase_value: 0
+          opening_qty: 0, received_qty: 0, purchase_return_qty: 0, 
+          sold_qty: 0, sales_return_qty: 0, closing_qty: 0, 
+          sales_value: 0, purchase_value: 0, unit_cost: 0
         });
       });
     }
 
-    const getEntry = (id: string, name?: string) => {
+    const getEntry = (d: any) => {
+      const id = vendorId ? `${d.design_no}|${d.size_name || ''}|${d.color_name || ''}` : d.id;
       if (!id) return null;
       if (!dataMap.has(id)) {
         dataMap.set(id, {
+          vendor_id: vendorId ? undefined : d.id,
+          vendor_name: vendorId ? undefined : d.name,
           item_id: id,
-          display_name: name || (vendorId ? id : 'Unknown'), // Use ID (Design No) if name missing
+          design_no: d.design_no,
+          size_name: d.size_name,
+          color_name: d.color_name,
+          display_name: vendorId ? `${d.design_no} (${d.color_name || 'N/A'} / ${d.size_name || 'N/A'})` : d.name,
           opening_qty: 0, received_qty: 0, sold_qty: 0, returns_qty: 0, closing_qty: 0, sales_value: 0, purchase_value: 0
         });
       }
       return dataMap.get(id);
     };
 
-    openingPurchases.forEach(d => { const v = getEntry(d.id); if (v) v.opening_qty += parseFloat(d.qty); });
-    openingSales.forEach(d => { const v = getEntry(d.id); if (v) v.opening_qty -= parseFloat(d.qty); });
-    openingReturns.forEach(d => { const v = getEntry(d.id); if (v) v.opening_qty += parseFloat(d.qty); });
+    opRaw.forEach(d => { 
+      const v = getEntry(d); 
+      if (v) {
+        v.opening_qty += parseFloat(d.qty); 
+        // Populate unit_cost from opening if not already set
+        if (!v.unit_cost) {
+          const qty = parseFloat(d.qty);
+          const val = parseFloat(d.value);
+          v.unit_cost = qty > 0 ? (val / qty) : 0;
+        }
+      }
+    });
+    osRaw.forEach(d => { const v = getEntry(d); if (v) v.opening_qty -= parseFloat(d.qty); });
+    orRaw.forEach(d => { const v = getEntry(d); if (v) v.opening_qty += parseFloat(d.qty); });
+    poRaw.forEach(d => { const v = getEntry(d); if (v) v.opening_qty -= parseFloat(d.qty); });
 
-    periodPurchases.forEach(d => { 
-      const v = getEntry(d.id, d.name); 
+    ppRaw.forEach(d => { 
+      const v = getEntry(d); 
       if (v) {
         v.received_qty = parseFloat(d.qty);
         v.purchase_value = parseFloat(d.value);
-        if (vendorId) v.display_name = d.name; // Ensure design name is set
+        v.unit_cost = v.received_qty > 0 ? (v.purchase_value / v.received_qty) : 0;
       }
     });
 
-    periodSales.forEach(d => { 
-      const v = getEntry(d.id); 
+    prRaw.forEach(d => { 
+      const v = getEntry(d); 
+      if (v) v.purchase_return_qty = parseFloat(d.qty); 
+    });
+
+    psRaw.forEach(d => { 
+      const v = getEntry(d); 
       if (v) {
         v.sold_qty = parseFloat(d.qty); 
         v.sales_value = parseFloat(d.value);
+        // Fallback unit_cost from sales item (MRP-linked cost in BarcodeBatch)
+        if (!v.unit_cost) {
+          const res = d.cost || 0; // buildQuery selects bb.cost_actual for sales items
+          v.unit_cost = parseFloat(res);
+        }
       }
     });
 
-    periodReturns.forEach(d => { 
-      const v = getEntry(d.id); 
-      if (v) v.returns_qty = parseFloat(d.qty); 
+    srRaw.forEach(d => { 
+      const v = getEntry(d); 
+      if (v) v.sales_return_qty = parseFloat(d.qty); 
     });
 
-    return Array.from(dataMap.values())
-      .map(v => ({
-        ...v,
-        // Ensure both fields exist for frontend compatibility
-        vendor_name: v.vendor_name || v.display_name || 'Unknown',
-        display_name: v.display_name || v.vendor_name || 'Unknown',
-        closing_qty: v.opening_qty + v.received_qty - v.sold_qty + v.returns_qty
-      }))
+    let results = Array.from(dataMap.values())
+      .map(v => {
+        const net_purchase_qty = (v.received_qty || 0) - (v.purchase_return_qty || 0);
+        const net_sales_qty = (v.sold_qty || 0) - (v.sales_return_qty || 0);
+        const closing_qty = (v.opening_qty || 0) + net_purchase_qty - net_sales_qty;
+        
+        return {
+          ...v,
+          net_purchase_qty,
+          net_sales_qty,
+          closing_qty,
+          unit_cost: v.unit_cost || 0,
+          total_cost: closing_qty * (v.unit_cost || 0)
+        };
+      })
       .filter(v => 
-        Math.abs(v.opening_qty) > 0.001 || v.received_qty > 0.001 || v.sold_qty > 0.001 || v.returns_qty > 0.001 || Math.abs(v.closing_qty) > 0.001
+        Math.abs(v.opening_qty || 0) > 0.001 || 
+        (v.received_qty || 0) > 0.001 || 
+        (v.purchase_return_qty || 0) > 0.001 ||
+        (v.sold_qty || 0) > 0.001 || 
+        (v.sales_return_qty || 0) > 0.001 || 
+        Math.abs(v.closing_qty || 0) > 0.001
       );
+
+    // Apply Sorting
+    if (sortField) {
+      const dir = sortDirection?.toUpperCase() === 'DESC' ? -1 : 1;
+      results.sort((a, b) => {
+        let valA = a[sortField];
+        let valB = b[sortField];
+        
+        // Handle numeric fields specifically if needed, but JS sort handles them fine if they are numbers
+        if (typeof valA === 'string') valA = valA.toLowerCase();
+        if (typeof valB === 'string') valB = valB.toLowerCase();
+        
+        if (valA < valB) return -1 * dir;
+        if (valA > valB) return 1 * dir;
+        return 0;
+      });
+    }
+
+    return results;
   }
 
   async advanceAnalysis(filters: { startDate: string, endDate: string }) {
@@ -1146,6 +1354,288 @@ export class ReportService {
     };
 
     return { summary, details };
+  }
+
+  async designAnalysisReport(filters: { design_no: string, vendorId?: string }) {
+    // 1. Fetch BarcodeBatches for this design
+    const qb = AppDataSource.getRepository(BarcodeBatch)
+      .createQueryBuilder('bb')
+      .leftJoinAndSelect('bb.color', 'c')
+      .leftJoinAndSelect('bb.size', 's')
+      .where('bb.design_no = :designNo', { designNo: filters.design_no });
+
+    if (filters.vendorId) {
+      qb.andWhere('bb.vendor_id = :vendorId', { vendorId: filters.vendorId });
+    }
+
+    const batches = await qb.orderBy('bb.created_at', 'DESC').getMany();
+
+    if (batches.length === 0) return [];
+
+    const barcodes = batches.map(b => b.barcode_alias_8digit);
+
+    // 2. Fetch Sales
+    const sales = await AppDataSource.getRepository(SalesInvoiceItem)
+      .createQueryBuilder('sii')
+      .innerJoinAndSelect('sii.invoice', 'si')
+      .where('sii.barcode_8digit IN (:...ids)', { ids: barcodes })
+      .getMany();
+
+    // 3. Fetch Sales Returns
+    const salesReturns = await AppDataSource.getRepository(SalesReturnItem)
+      .createQueryBuilder('sri')
+      .innerJoinAndSelect('sri.salesReturn', 'sr')
+      .where('sri.barcode_8digit IN (:...ids)', { ids: barcodes })
+      .getMany();
+
+    // 4. Fetch Purchase Returns
+    const purchaseReturns = await AppDataSource.getRepository(PurchaseReturnItem)
+      .createQueryBuilder('pri')
+      .innerJoinAndSelect('pri.purchase_return', 'pr')
+      .where('pri.barcode_id IN (:...ids)', { ids: barcodes })
+      .getMany();
+
+    // 5. Build Barcode Ledger
+    return batches.map(b => {
+      const alias = b.barcode_alias_8digit;
+      const bSales = sales.filter(s => s.barcode_8digit === alias);
+      const bSalesReturns = salesReturns.filter(sr => sr.barcode_8digit === alias);
+      const bPurchaseReturns = purchaseReturns.filter(pr => pr.barcode_id === alias);
+
+      // Status calculation
+      let status = 'Available';
+      let statusColor = 'emerald';
+      let soldDate = null;
+      let returnDate = null;
+
+      if (bPurchaseReturns.length > 0) {
+        status = 'Returned to Vendor';
+        statusColor = 'rose';
+        returnDate = bPurchaseReturns[0].created_at;
+      } else if (bSales.length > 0) {
+        const latestSale = bSales.sort((a,b) => b.created_at.getTime() - a.created_at.getTime())[0];
+        const latestReturn = bSalesReturns.sort((a,b) => b.created_at.getTime() - a.created_at.getTime())[0];
+
+        if (latestReturn && latestReturn.created_at > latestSale.created_at) {
+          status = 'Available (Returned)';
+          statusColor = 'emerald';
+        } else {
+          status = 'Sold';
+          statusColor = 'blue';
+          soldDate = latestSale.created_at;
+        }
+      }
+
+      return {
+        id: b.id,
+        barcode_id: alias,
+        color: b.color?.name,
+        size: b.size?.name,
+        cost: b.cost_actual,
+        mrp: b.mrp,
+        photos: b.photos || [],
+        available_quantity: b.available_quantity,
+        total_quantity: b.total_quantity,
+        created_at: b.created_at,
+        status,
+        statusColor,
+        sold_date: soldDate,
+        return_date: returnDate
+      };
+    });
+  }
+
+  async walletLedgerReport(filters: { search?: string; startDate?: string; endDate?: string; type?: string; page?: number; limit?: number }) {
+    const page = Number(filters.page) || 1;
+    const limit = Math.min(200, Math.max(1, Number(filters.limit) || 50));
+    const offset = (page - 1) * limit;
+
+    const params: any[] = [];
+    let p = 1;
+
+    const where: string[] = [];
+    if (filters.search) {
+      params.push(`%${filters.search}%`);
+      where.push(`(t.mobile ILIKE $${p} OR t.name ILIKE $${p} OR t.reference ILIKE $${p} OR t.invoice_no ILIKE $${p} OR t.external_no ILIKE $${p})`);
+      p++;
+    }
+    if (filters.type && (filters.type === 'Advance' || filters.type === 'Credit Coupon')) {
+      params.push(filters.type);
+      where.push(`t.type = $${p}`);
+      p++;
+    }
+    if (filters.startDate) {
+      params.push(filters.startDate.split('T')[0]);
+      where.push(`t.transaction_date::date >= $${p}::date`);
+      p++;
+    }
+    if (filters.endDate) {
+      params.push(filters.endDate.split('T')[0]);
+      where.push(`t.transaction_date::date <= $${p}::date`);
+      p++;
+    }
+
+    const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+
+    const baseSql = `
+      WITH t AS (
+        -- Credit Coupons: Issuance (Credit)
+        SELECT
+          'Credit'::text AS entry_type,
+          'Credit Coupon'::text AS type,
+          cc.customer_mobile::text AS mobile,
+          COALESCE(c.name, '-')::text AS name,
+          cc.created_at::timestamptz AS transaction_date,
+          cc.coupon_no::text AS external_no,
+          cc.amount::numeric AS transaction_amount,
+          cc.amount::numeric AS original_amount,
+          GREATEST(0, (cc.amount::numeric - COALESCE(used.used_amount, 0)))::numeric AS remaining_amount,
+          '-'::text AS invoice_no,
+          COALESCE(
+            'Return: ' || sr.return_number || ' | Invoice: ' || sr.invoice_number,
+            'Manual Generation'
+          )::text AS reference
+        FROM credit_coupons cc
+        LEFT JOIN customers c ON c.mobile = cc.customer_mobile
+        LEFT JOIN sales_returns sr ON sr.id = cc.original_sales_return_id
+        LEFT JOIN (
+          SELECT coupon_id, COALESCE(SUM(amount_applied)::numeric, 0) AS used_amount
+          FROM credit_coupon_applications
+          GROUP BY coupon_id
+        ) used ON used.coupon_id = cc.id
+
+        UNION ALL
+
+        -- Credit Coupons: Usage (Debit)
+        SELECT
+          'Debit'::text AS entry_type,
+          'Credit Coupon'::text AS type,
+          cc.customer_mobile::text AS mobile,
+          COALESCE(c.name, '-')::text AS name,
+          cc.created_at::timestamptz AS transaction_date,
+          cc.coupon_no::text AS external_no,
+          (-1 * cca.amount_applied)::numeric AS transaction_amount,
+          cc.amount::numeric AS original_amount,
+          GREATEST(0, (cc.amount::numeric - COALESCE(used.used_amount, 0)))::numeric AS remaining_amount,
+          si.invoice_number::text AS invoice_no,
+          'Applied to Invoice'::text AS reference
+        FROM credit_coupon_applications cca
+        INNER JOIN credit_coupons cc ON cc.id = cca.coupon_id
+        INNER JOIN sales_invoices si ON si.id = cca.invoice_id
+        LEFT JOIN customers c ON c.mobile = cc.customer_mobile
+        LEFT JOIN (
+          SELECT coupon_id, COALESCE(SUM(amount_applied)::numeric, 0) AS used_amount
+          FROM credit_coupon_applications
+          GROUP BY coupon_id
+        ) used ON used.coupon_id = cc.id
+
+        UNION ALL
+
+        -- Advance: Issuance (Credit)
+        SELECT
+          'Credit'::text AS entry_type,
+          'Advance'::text AS type,
+          COALESCE(c.mobile, '-')::text AS mobile,
+          COALESCE(c.name, '-')::text AS name,
+          soa.created_at::timestamptz AS transaction_date,
+          soa.receipt_number::text AS external_no,
+          soa.amount::numeric AS transaction_amount,
+          soa.amount::numeric AS original_amount,
+          GREATEST(0, (soa.amount::numeric - COALESCE(used.used_amount, 0)))::numeric AS remaining_amount,
+          '-'::text AS invoice_no,
+          COALESCE('Sales Order: ' || so.order_number, 'Manual Advance')::text AS reference
+        FROM sales_order_advances soa
+        INNER JOIN sales_orders so ON so.id = soa.sales_order_id
+        LEFT JOIN customers c ON c.id = so.customer_id
+        LEFT JOIN (
+          SELECT advance_id, COALESCE(SUM(amount_applied)::numeric, 0) AS used_amount
+          FROM sales_order_advance_applications
+          GROUP BY advance_id
+        ) used ON used.advance_id = soa.id
+
+        UNION ALL
+
+        -- Advance: Usage (Debit)
+        SELECT
+          'Debit'::text AS entry_type,
+          'Advance'::text AS type,
+          COALESCE(c.mobile, '-')::text AS mobile,
+          COALESCE(c.name, '-')::text AS name,
+          soaa.created_at::timestamptz AS transaction_date,
+          soa.receipt_number::text AS external_no,
+          (-1 * soaa.amount_applied)::numeric AS transaction_amount,
+          soa.amount::numeric AS original_amount,
+          GREATEST(0, (soa.amount::numeric - COALESCE(used.used_amount, 0)))::numeric AS remaining_amount,
+          si.invoice_number::text AS invoice_no,
+          'Applied to Invoice'::text AS reference
+        FROM sales_order_advance_applications soaa
+        INNER JOIN sales_order_advances soa ON soa.id = soaa.advance_id
+        INNER JOIN sales_invoices si ON si.id = soaa.invoice_id
+        INNER JOIN sales_orders so ON so.id = soa.sales_order_id
+        LEFT JOIN customers c ON c.id = so.customer_id
+        LEFT JOIN (
+          SELECT advance_id, COALESCE(SUM(amount_applied)::numeric, 0) AS used_amount
+          FROM sales_order_advance_applications
+          GROUP BY advance_id
+        ) used ON used.advance_id = soa.id
+      )
+      SELECT *
+      FROM t
+      ${whereSql}
+      ORDER BY t.transaction_date DESC
+      LIMIT ${limit} OFFSET ${offset}
+    `;
+
+    const countSql = `
+      WITH t AS (
+        -- Issuance
+        SELECT 
+           'Credit Coupon'::text AS type, cc.customer_mobile::text AS mobile, COALESCE(cust.name, '-')::text AS name, cc.coupon_no::text AS external_no, cc.created_at::timestamptz AS transaction_date, '-'::text AS invoice_no, 'Manual/Return'::text AS reference
+        FROM credit_coupons cc
+        LEFT JOIN customers cust ON cust.mobile = cc.customer_mobile
+        
+        UNION ALL
+        
+        -- Application
+        SELECT 
+           'Credit Coupon'::text AS type, cc.customer_mobile::text AS mobile, COALESCE(cust.name, '-')::text AS name, cc.coupon_no::text AS external_no, cca.created_at::timestamptz AS transaction_date, si.invoice_number::text AS invoice_no, 'Applied'::text AS reference
+        FROM credit_coupon_applications cca 
+        INNER JOIN credit_coupons cc ON cc.id = cca.coupon_id
+        INNER JOIN sales_invoices si ON si.id = cca.invoice_id
+        LEFT JOIN customers cust ON cust.mobile = cc.customer_mobile
+
+        UNION ALL
+        
+        -- Advance Issuance
+        SELECT 
+           'Advance'::text AS type, c.mobile::text AS mobile, COALESCE(c.name, '-')::text AS name, soa.receipt_number::text AS external_no, soa.created_at::timestamptz AS transaction_date, '-'::text AS invoice_no, 'Advance'::text AS reference
+        FROM sales_order_advances soa 
+        INNER JOIN sales_orders so ON so.id = soa.sales_order_id 
+        LEFT JOIN customers c ON c.id = so.customer_id
+        
+        UNION ALL
+        
+        -- Advance Application
+        SELECT 
+           'Advance'::text AS type, c.mobile::text AS mobile, COALESCE(c.name, '-')::text AS name, soa.receipt_number::text AS external_no, soaa.created_at::timestamptz AS transaction_date, si.invoice_number::text AS invoice_no, 'Applied'::text AS reference 
+        FROM sales_order_advance_applications soaa 
+        INNER JOIN sales_order_advances soa ON soa.id = soaa.advance_id 
+        INNER JOIN sales_orders so ON so.id = soa.sales_order_id 
+        INNER JOIN sales_invoices si ON si.id = soaa.invoice_id
+        LEFT JOIN customers c ON c.id = so.customer_id
+      )
+      SELECT COUNT(*)::int AS total
+      FROM t
+      ${whereSql}
+    `;
+
+    const [rows, countRows] = await Promise.all([
+      AppDataSource.query(baseSql, params),
+      AppDataSource.query(countSql, params),
+    ]);
+
+    const total = Number(countRows?.[0]?.total || 0);
+    return { data: rows, total, page, limit };
   }
 }
 
