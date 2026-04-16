@@ -72,6 +72,7 @@ export class SalesReturnService {
 
       for (const item of data.items) {
         const retItem = manager.create(SalesReturnItem, {
+          return_id: savedReturn.id,
           salesReturn: savedReturn,
           barcode_8digit: item.barcode_8digit,
           design_no: item.design_no,
@@ -357,9 +358,11 @@ export class SalesReturnService {
       let returnAmountApproval = 0;
       let returnAmountRegular = 0;
 
+      // 3. Create items and process inventory
       for (const item of data.items) {
         const retItem = manager.create(SalesReturnItem, {
           return_id: id,
+          salesReturn: oldReturn,
           barcode_8digit: item.barcode_8digit,
           design_no: item.design_no,
           hsn_code: item.hsn_code || null,
@@ -374,7 +377,7 @@ export class SalesReturnService {
           salesman_id: item.salesman_id || null,
           on_approval: !!item.on_approval,
         });
-        await manager.save(retItem);
+        await manager.save(SalesReturnItem, retItem);
 
         const itemAmt = Number(item.return_amount) || 0;
         if (item.on_approval) {
@@ -388,6 +391,28 @@ export class SalesReturnService {
           batch.available_quantity = Math.min(batch.total_quantity, batch.available_quantity + (item.quantity || 1));
           await manager.save(batch);
         }
+      }
+
+      // 4. Update Invoice Balance (Only now that everything else succeeded)
+      if (oldReturn.invoice) {
+        const inv = oldReturn.invoice;
+        const returnAmountTotal = returnAmountApproval + returnAmountRegular;
+        
+        const totalPaidPortion = (Number(inv.amount_paid) / Math.max(1, Number(inv.net_payable)));
+        const portionRelatingToReturn = returnAmountTotal * totalPaidPortion;
+        const amountToReducePending = Math.min(Number(inv.amount_pending), returnAmountTotal - portionRelatingToReturn);
+        const actualRefundAmount = Math.max(0, returnAmountTotal - amountToReducePending);
+
+        inv.amount_pending = Math.max(0, Number(inv.amount_pending) - amountToReducePending);
+        inv.amount_paid = Math.max(0, Number(inv.amount_paid) - actualRefundAmount);
+        inv.net_payable = Math.max(0, Number(inv.net_payable) - returnAmountTotal);
+
+        if (Number(inv.amount_pending) <= 0.01) inv.payment_status = 'paid';
+        else if (Number(inv.amount_paid) > 0.01) inv.payment_status = 'partial';
+        else inv.payment_status = 'pending';
+
+        await manager.save(SalesInvoice, inv);
+        refundAmount = actualRefundAmount;
       }
 
       // Re-generate Credit Note
