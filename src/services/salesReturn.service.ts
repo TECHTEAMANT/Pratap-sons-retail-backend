@@ -254,6 +254,7 @@ export class SalesReturnService {
         relations: ['items', 'invoice', 'invoice.items'] 
       });
       if (!oldReturn) throw new Error('Sales return not found');
+      let refundAmount = 0;
 
       // 1. Safety Check: If a credit coupon was generated and redeemed, block edit
       if (oldReturn.credit_coupon_no) {
