@@ -338,7 +338,7 @@ export class SalesReturnService {
       }
 
       // 2d. Remove Old Items, Credit Note
-      await manager.delete(SalesReturnItem, { return_id: oldReturn.id });
+      await manager.delete(SalesReturnItem, { salesReturn: { id: oldReturn.id } });
       await manager.delete(CreditNote, { return_id: oldReturn.id });
 
       // 3. Apply New Return (Re-using logic from create)
@@ -398,11 +398,9 @@ export class SalesReturnService {
         const inv = oldReturn.invoice;
         const returnAmountTotal = returnAmountApproval + returnAmountRegular;
         
-        const totalPaidPortion = (Number(inv.amount_paid) / Math.max(1, Number(inv.net_payable)));
-        const portionRelatingToReturn = returnAmountTotal * totalPaidPortion;
-        const amountToReducePending = Math.min(Number(inv.amount_pending), returnAmountTotal - portionRelatingToReturn);
+        const amountToReducePending = Math.min(Number(inv.amount_pending), returnAmountTotal);
         const actualRefundAmount = Math.max(0, returnAmountTotal - amountToReducePending);
-
+        
         inv.amount_pending = Math.max(0, Number(inv.amount_pending) - amountToReducePending);
         inv.amount_paid = Math.max(0, Number(inv.amount_paid) - actualRefundAmount);
         inv.net_payable = Math.max(0, Number(inv.net_payable) - returnAmountTotal);
@@ -492,15 +490,9 @@ export class SalesReturnService {
           const totalItemsValue = invoice.items.reduce((sum, item) => sum + (Number(item.total_value) || (Number(item.selling_price || item.mrp || 0) * Number(item.quantity || 1))), 0);
           
           const itemsNetPayable = Number(invoice.net_payable || 0) - Number(invoice.additional_charges_total || 0);
-          const invoiceRatio = itemsNetPayable / (totalItemsValue || 1);
-          
           const returnAmount = Number(data.total_return_amount);
           
-          // Prorate return across paid vs pending total
-          const totalPaidPortion = (Number(invoice.amount_paid) / Math.max(1, Number(invoice.net_payable)));
-          const portionRelatingToReturn = returnAmount * totalPaidPortion;
-          
-          const amountToReducePending = Math.min(Number(invoice.amount_pending), returnAmount - portionRelatingToReturn);
+          const amountToReducePending = Math.min(Number(invoice.amount_pending), returnAmount);
           let refundAmount = Math.max(0, returnAmount - amountToReducePending);
 
           invoice.amount_pending = Math.max(0, Number(invoice.amount_pending) - amountToReducePending);
