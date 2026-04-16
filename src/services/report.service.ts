@@ -127,6 +127,7 @@ export class ReportService {
         UPI: 0,
         Card: 0,
         Online: 0,
+        Advance: 0,
         Approval: 0,
         'Credit Coupon': 0,
         'Exchange': 0,
@@ -204,7 +205,7 @@ export class ReportService {
       }
 
       let invoicePaymentBreakdown = {
-        Cash: 0, UPI: 0, Card: 0, Online: 0, Approval: 0,
+        Cash: 0, UPI: 0, Card: 0, Online: 0, Advance: 0, Approval: 0,
         'Credit Coupon': 0, 'Exchange': 0, 'Others': 0
       };
 
@@ -237,6 +238,10 @@ export class ReportService {
         else if (rawMode.includes('UPI') || rawMode.includes('PHONEPE') || rawMode.includes('GPAY') || rawMode.includes('PAYTM') || rawMode.includes('G PAY') || rawMode.includes('BHIM')) {
           invoicePaymentBreakdown.UPI += amount;
         }
+        else if (rawMode.includes('COUPON')) { 
+          invoicePaymentBreakdown['Credit Coupon'] += amount; 
+          hasCreditCoupon = true; 
+        }
         else if (rawMode.includes('CARD') || rawMode.includes('VISA') || rawMode.includes('POS') || rawMode.includes('MASTER') || rawMode.includes('DEBIT') || rawMode.includes('CREDIT')) {
           invoicePaymentBreakdown.Card += amount;
         }
@@ -247,12 +252,11 @@ export class ReportService {
         else if (rawMode.includes('APPROVAL')) {
           invoicePaymentBreakdown.Approval += amount;
         }
+        else if (rawMode.includes('ADVANCE')) {
+          invoicePaymentBreakdown.Advance += amount;
+        }
         else if (rawMode.includes('EXCHANGE')) {
           invoicePaymentBreakdown.Exchange += amount;
-        }
-        else if (rawMode.includes('COUPON')) { 
-          invoicePaymentBreakdown['Credit Coupon'] += amount; 
-          hasCreditCoupon = true; 
         }
         else {
           invoicePaymentBreakdown.Others += amount;
@@ -265,6 +269,8 @@ export class ReportService {
         invoicePaymentBreakdown.UPI + 
         invoicePaymentBreakdown.Card + 
         invoicePaymentBreakdown.Online + 
+        invoicePaymentBreakdown.Advance + 
+        invoicePaymentBreakdown.Approval +
         invoicePaymentBreakdown['Credit Coupon'] + 
         invoicePaymentBreakdown.Exchange + 
         invoicePaymentBreakdown.Others;
@@ -279,7 +285,7 @@ export class ReportService {
 
       const finalRealPaid = 
         invoicePaymentBreakdown.Cash + invoicePaymentBreakdown.UPI + invoicePaymentBreakdown.Card + 
-        invoicePaymentBreakdown.Online + invoicePaymentBreakdown['Credit Coupon'] + 
+        invoicePaymentBreakdown.Online + invoicePaymentBreakdown.Advance + invoicePaymentBreakdown['Credit Coupon'] + 
         invoicePaymentBreakdown.Exchange + invoicePaymentBreakdown.Others;
 
       // Adjusted Pending = Net Payable - (All Real Payments)
@@ -305,6 +311,7 @@ export class ReportService {
       result.paymentBreakdown.UPI += invoicePaymentBreakdown.UPI;
       result.paymentBreakdown.Card += invoicePaymentBreakdown.Card;
       result.paymentBreakdown.Online += invoicePaymentBreakdown.Online;
+      result.paymentBreakdown.Advance += invoicePaymentBreakdown.Advance;
       result.paymentBreakdown.Approval += isApprovalInvoice ? adjustedPending : 0;
       result.paymentBreakdown['Credit Coupon'] += invoicePaymentBreakdown['Credit Coupon'];
       (result.paymentBreakdown as any).Exchange += invoicePaymentBreakdown.Exchange;
@@ -1459,12 +1466,12 @@ export class ReportService {
     }
     if (filters.startDate) {
       params.push(filters.startDate.split('T')[0]);
-      where.push(`t.date::date >= $${p}::date`);
+      where.push(`t.transaction_date::date >= $${p}::date`);
       p++;
     }
     if (filters.endDate) {
       params.push(filters.endDate.split('T')[0]);
-      where.push(`t.date::date <= $${p}::date`);
+      where.push(`t.transaction_date::date <= $${p}::date`);
       p++;
     }
 
@@ -1472,24 +1479,21 @@ export class ReportService {
 
     const baseSql = `
       WITH t AS (
+        -- Credit Coupons: Issuance (Credit)
         SELECT
+          'Credit'::text AS entry_type,
           'Credit Coupon'::text AS type,
           cc.customer_mobile::text AS mobile,
           COALESCE(c.name, '-')::text AS name,
-          cc.created_at::timestamptz AS date,
+          cc.created_at::timestamptz AS transaction_date,
           cc.coupon_no::text AS external_no,
-          GREATEST(0, (cc.amount::numeric - COALESCE(used.used_amount, 0)))::numeric AS amount,
-          COALESCE((
-            SELECT si.invoice_number
-            FROM credit_coupon_applications cca
-            INNER JOIN sales_invoices si ON si.id = cca.invoice_id
-            WHERE cca.coupon_id = cc.id
-            ORDER BY cca.created_at DESC
-            LIMIT 1
-          ), '-')::text AS invoice_no,
+          cc.amount::numeric AS transaction_amount,
+          cc.amount::numeric AS original_amount,
+          GREATEST(0, (cc.amount::numeric - COALESCE(used.used_amount, 0)))::numeric AS remaining_amount,
+          '-'::text AS invoice_no,
           COALESCE(
             'Return: ' || sr.return_number || ' | Invoice: ' || sr.invoice_number,
-            'Return: - | Invoice: -'
+            'Manual Generation'
           )::text AS reference
         FROM credit_coupons cc
         LEFT JOIN customers c ON c.mobile = cc.customer_mobile
@@ -1499,26 +1503,47 @@ export class ReportService {
           FROM credit_coupon_applications
           GROUP BY coupon_id
         ) used ON used.coupon_id = cc.id
-        WHERE (cc.amount::numeric - COALESCE(used.used_amount, 0)) > 0
 
         UNION ALL
 
+        -- Credit Coupons: Usage (Debit)
         SELECT
+          'Debit'::text AS entry_type,
+          'Credit Coupon'::text AS type,
+          cc.customer_mobile::text AS mobile,
+          COALESCE(c.name, '-')::text AS name,
+          cc.created_at::timestamptz AS transaction_date,
+          cc.coupon_no::text AS external_no,
+          (-1 * cca.amount_applied)::numeric AS transaction_amount,
+          cc.amount::numeric AS original_amount,
+          GREATEST(0, (cc.amount::numeric - COALESCE(used.used_amount, 0)))::numeric AS remaining_amount,
+          si.invoice_number::text AS invoice_no,
+          'Applied to Invoice'::text AS reference
+        FROM credit_coupon_applications cca
+        INNER JOIN credit_coupons cc ON cc.id = cca.coupon_id
+        INNER JOIN sales_invoices si ON si.id = cca.invoice_id
+        LEFT JOIN customers c ON c.mobile = cc.customer_mobile
+        LEFT JOIN (
+          SELECT coupon_id, COALESCE(SUM(amount_applied)::numeric, 0) AS used_amount
+          FROM credit_coupon_applications
+          GROUP BY coupon_id
+        ) used ON used.coupon_id = cc.id
+
+        UNION ALL
+
+        -- Advance: Issuance (Credit)
+        SELECT
+          'Credit'::text AS entry_type,
           'Advance'::text AS type,
           COALESCE(c.mobile, '-')::text AS mobile,
           COALESCE(c.name, '-')::text AS name,
-          soa.created_at::timestamptz AS date,
+          soa.created_at::timestamptz AS transaction_date,
           soa.receipt_number::text AS external_no,
-          GREATEST(0, (soa.amount::numeric - COALESCE(used.used_amount, 0)))::numeric AS amount,
-          COALESCE((
-            SELECT si.invoice_number
-            FROM sales_order_advance_applications soaa
-            INNER JOIN sales_invoices si ON si.id = soaa.invoice_id
-            WHERE soaa.advance_id = soa.id
-            ORDER BY soaa.created_at DESC
-            LIMIT 1
-          ), '-')::text AS invoice_no,
-          COALESCE('Sales Order: ' || so.order_number, 'Sales Order: -')::text AS reference
+          soa.amount::numeric AS transaction_amount,
+          soa.amount::numeric AS original_amount,
+          GREATEST(0, (soa.amount::numeric - COALESCE(used.used_amount, 0)))::numeric AS remaining_amount,
+          '-'::text AS invoice_no,
+          COALESCE('Sales Order: ' || so.order_number, 'Manual Advance')::text AS reference
         FROM sales_order_advances soa
         INNER JOIN sales_orders so ON so.id = soa.sales_order_id
         LEFT JOIN customers c ON c.id = so.customer_id
@@ -1527,73 +1552,49 @@ export class ReportService {
           FROM sales_order_advance_applications
           GROUP BY advance_id
         ) used ON used.advance_id = soa.id
-        WHERE (soa.amount::numeric - COALESCE(used.used_amount, 0)) > 0
+
+        UNION ALL
+
+        -- Advance: Usage (Debit)
+        SELECT
+          'Debit'::text AS entry_type,
+          'Advance'::text AS type,
+          COALESCE(c.mobile, '-')::text AS mobile,
+          COALESCE(c.name, '-')::text AS name,
+          soaa.created_at::timestamptz AS transaction_date,
+          soa.receipt_number::text AS external_no,
+          (-1 * soaa.amount_applied)::numeric AS transaction_amount,
+          soa.amount::numeric AS original_amount,
+          GREATEST(0, (soa.amount::numeric - COALESCE(used.used_amount, 0)))::numeric AS remaining_amount,
+          si.invoice_number::text AS invoice_no,
+          'Applied to Invoice'::text AS reference
+        FROM sales_order_advance_applications soaa
+        INNER JOIN sales_order_advances soa ON soa.id = soaa.advance_id
+        INNER JOIN sales_invoices si ON si.id = soaa.invoice_id
+        INNER JOIN sales_orders so ON so.id = soa.sales_order_id
+        LEFT JOIN customers c ON c.id = so.customer_id
+        LEFT JOIN (
+          SELECT advance_id, COALESCE(SUM(amount_applied)::numeric, 0) AS used_amount
+          FROM sales_order_advance_applications
+          GROUP BY advance_id
+        ) used ON used.advance_id = soa.id
       )
       SELECT *
       FROM t
       ${whereSql}
-      ORDER BY t.date DESC
+      ORDER BY t.transaction_date DESC
       LIMIT ${limit} OFFSET ${offset}
     `;
 
     const countSql = `
       WITH t AS (
-        SELECT
-          'Credit Coupon'::text AS type,
-          cc.customer_mobile::text AS mobile,
-          COALESCE(c.name, '-')::text AS name,
-          cc.created_at::timestamptz AS date,
-          cc.coupon_no::text AS external_no,
-          GREATEST(0, (cc.amount::numeric - COALESCE(used.used_amount, 0)))::numeric AS amount,
-          COALESCE((
-            SELECT si.invoice_number
-            FROM credit_coupon_applications cca
-            INNER JOIN sales_invoices si ON si.id = cca.invoice_id
-            WHERE cca.coupon_id = cc.id
-            ORDER BY cca.created_at DESC
-            LIMIT 1
-          ), '-')::text AS invoice_no,
-          COALESCE(
-            'Return: ' || sr.return_number || ' | Invoice: ' || sr.invoice_number,
-            'Return: - | Invoice: -'
-          )::text AS reference
-        FROM credit_coupons cc
-        LEFT JOIN customers c ON c.mobile = cc.customer_mobile
-        LEFT JOIN sales_returns sr ON sr.id = cc.original_sales_return_id
-        LEFT JOIN (
-          SELECT coupon_id, COALESCE(SUM(amount_applied)::numeric, 0) AS used_amount
-          FROM credit_coupon_applications
-          GROUP BY coupon_id
-        ) used ON used.coupon_id = cc.id
-        WHERE (cc.amount::numeric - COALESCE(used.used_amount, 0)) > 0
-
+        SELECT 'Credit Coupon'::text AS type, cc.customer_mobile::text AS mobile, cc.coupon_no::text AS external_no, cc.created_at::timestamptz AS transaction_date FROM credit_coupons cc
         UNION ALL
-
-        SELECT
-          'Advance'::text AS type,
-          COALESCE(c.mobile, '-')::text AS mobile,
-          COALESCE(c.name, '-')::text AS name,
-          soa.created_at::timestamptz AS date,
-          soa.receipt_number::text AS external_no,
-          GREATEST(0, (soa.amount::numeric - COALESCE(used.used_amount, 0)))::numeric AS amount,
-          COALESCE((
-            SELECT si.invoice_number
-            FROM sales_order_advance_applications soaa
-            INNER JOIN sales_invoices si ON si.id = soaa.invoice_id
-            WHERE soaa.advance_id = soa.id
-            ORDER BY soaa.created_at DESC
-            LIMIT 1
-          ), '-')::text AS invoice_no,
-          COALESCE('Sales Order: ' || so.order_number, 'Sales Order: -')::text AS reference
-        FROM sales_order_advances soa
-        INNER JOIN sales_orders so ON so.id = soa.sales_order_id
-        LEFT JOIN customers c ON c.id = so.customer_id
-        LEFT JOIN (
-          SELECT advance_id, COALESCE(SUM(amount_applied)::numeric, 0) AS used_amount
-          FROM sales_order_advance_applications
-          GROUP BY advance_id
-        ) used ON used.advance_id = soa.id
-        WHERE (soa.amount::numeric - COALESCE(used.used_amount, 0)) > 0
+        SELECT 'Credit Coupon'::text AS type, cc.customer_mobile::text AS mobile, cc.coupon_no::text AS external_no, cca.created_at::timestamptz AS transaction_date FROM credit_coupon_applications cca INNER JOIN credit_coupons cc ON cc.id = cca.coupon_id
+        UNION ALL
+        SELECT 'Advance'::text AS type, c.mobile::text AS mobile, soa.receipt_number::text AS external_no, soa.created_at::timestamptz AS transaction_date FROM sales_order_advances soa INNER JOIN sales_orders so ON so.id = soa.sales_order_id LEFT JOIN customers c ON c.id = so.customer_id
+        UNION ALL
+        SELECT 'Advance'::text AS type, c.mobile::text AS mobile, soa.receipt_number::text AS external_no, soaa.created_at::timestamptz AS transaction_date FROM sales_order_advance_applications soaa INNER JOIN sales_order_advances soa ON soa.id = soaa.advance_id INNER JOIN sales_orders so ON so.id = soa.sales_order_id LEFT JOIN customers c ON c.id = so.customer_id
       )
       SELECT COUNT(*)::int AS total
       FROM t

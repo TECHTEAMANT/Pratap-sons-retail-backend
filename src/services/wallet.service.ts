@@ -26,7 +26,7 @@ export class WalletService {
         LEFT JOIN credit_coupon_applications cca
           ON cca.coupon_id = cc.id
         WHERE cc.customer_mobile = $1
-        GROUP BY cc.id
+        GROUP BY cc.id, cc.coupon_no, cc.customer_mobile, cc.created_at
         HAVING (cc.amount::numeric - COALESCE(SUM(cca.amount_applied::numeric), 0)) > 0
         ORDER BY cc.created_at DESC
       `,
@@ -51,7 +51,7 @@ export class WalletService {
         LEFT JOIN sales_order_advance_applications soaa
           ON soaa.advance_id = soa.id
         WHERE so.customer_id = $1
-        GROUP BY soa.id, so.order_number
+        GROUP BY soa.id, soa.receipt_number, soa.created_at, so.order_number
         HAVING (soa.amount::numeric - COALESCE(SUM(soaa.amount_applied::numeric), 0)) > 0
         ORDER BY soa.created_at DESC
       `,
