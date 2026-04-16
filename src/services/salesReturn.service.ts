@@ -71,26 +71,23 @@ export class SalesReturnService {
       let returnAmountRegular = 0;
 
       for (const item of data.items) {
-        await manager.createQueryBuilder()
-          .insert()
-          .into(SalesReturnItem)
-          .values({
-            return_id: savedReturn.id,
-            barcode_8digit: item.barcode_8digit,
-            design_no: item.design_no,
-            hsn_code: item.hsn_code || null,
-            quantity: item.quantity || 1,
-            mrp: item.mrp,
-            taxable_value: item.taxable_value,
-            gst_amount: item.gst_amount || 0,
-            return_amount: item.return_amount,
-            discount_amount: item.discount_amount || 0,
-            loyalty_amount: item.loyalty_amount || 0,
-            reason: item.reason || null,
-            salesman_id: item.salesman_id || null,
-            on_approval: !!item.on_approval,
-          })
-          .execute();
+        const retItem = manager.create(SalesReturnItem, {
+          salesReturn: savedReturn,
+          barcode_8digit: item.barcode_8digit,
+          design_no: item.design_no,
+          hsn_code: item.hsn_code || null,
+          quantity: item.quantity || 1,
+          mrp: item.mrp,
+          taxable_value: item.taxable_value,
+          gst_amount: item.gst_amount || 0,
+          return_amount: item.return_amount,
+          discount_amount: item.discount_amount || 0,
+          loyalty_amount: item.loyalty_amount || 0,
+          reason: item.reason || null,
+          salesman_id: item.salesman_id || null,
+          on_approval: !!item.on_approval,
+        });
+        await manager.save(SalesReturnItem, retItem);
 
         const itemAmt = Number(item.return_amount) || 0;
         if (item.on_approval) {
@@ -364,26 +361,23 @@ export class SalesReturnService {
       // 3. Create items and process inventory
       // 3. Create items and process inventory
       for (const item of data.items) {
-        await manager.createQueryBuilder()
-          .insert()
-          .into(SalesReturnItem)
-          .values({
-            return_id: id,
-            barcode_8digit: item.barcode_8digit,
-            design_no: item.design_no,
-            hsn_code: item.hsn_code || null,
-            quantity: item.quantity || 1,
-            mrp: item.mrp,
-            taxable_value: item.taxable_value,
-            gst_amount: item.gst_amount || 0,
-            return_amount: item.return_amount,
-            discount_amount: item.discount_amount || 0,
-            loyalty_amount: item.loyalty_amount || 0,
-            reason: item.reason || null,
-            salesman_id: item.salesman_id || null,
-            on_approval: !!item.on_approval,
-          })
-          .execute();
+        const retItem = manager.create(SalesReturnItem, {
+          salesReturn: oldReturn,
+          barcode_8digit: item.barcode_8digit,
+          design_no: item.design_no,
+          hsn_code: item.hsn_code || null,
+          quantity: item.quantity || 1,
+          mrp: item.mrp,
+          taxable_value: item.taxable_value,
+          gst_amount: item.gst_amount || 0,
+          return_amount: item.return_amount,
+          discount_amount: item.discount_amount || 0,
+          loyalty_amount: item.loyalty_amount || 0,
+          reason: item.reason || null,
+          salesman_id: item.salesman_id || null,
+          on_approval: !!item.on_approval,
+        });
+        await manager.save(SalesReturnItem, retItem);
 
         const itemAmt = Number(item.return_amount) || 0;
         if (item.on_approval) {
