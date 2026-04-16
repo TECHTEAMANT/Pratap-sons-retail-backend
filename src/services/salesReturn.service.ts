@@ -72,7 +72,7 @@ export class SalesReturnService {
 
       for (const item of data.items) {
         const retItem = manager.create(SalesReturnItem, {
-          return_id: savedReturn.id,
+          salesReturn: savedReturn,
           barcode_8digit: item.barcode_8digit,
           design_no: item.design_no,
           hsn_code: item.hsn_code || null,
@@ -350,8 +350,8 @@ export class SalesReturnService {
       oldReturn.additional_charges_gst_returned = data.additional_charges_gst_returned || 0;
       oldReturn.additional_charges_total_returned = data.additional_charges_total_returned || 0;
       oldReturn.salesman_id = data.salesman_id || oldReturn.salesman_id;
-      oldReturn.credit_coupon_no = undefined as any; // Reset for potential new generation
-
+      oldReturn.items = []; 
+      oldReturn.credit_coupon_no = null as any; 
       const savedReturn = await manager.save(oldReturn);
 
       let returnAmountApproval = 0;
@@ -359,7 +359,7 @@ export class SalesReturnService {
 
       for (const item of data.items) {
         const retItem = manager.create(SalesReturnItem, {
-          return_id: savedReturn.id,
+          salesReturn: savedReturn,
           barcode_8digit: item.barcode_8digit,
           design_no: item.design_no,
           hsn_code: item.hsn_code || null,
