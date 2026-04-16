@@ -199,12 +199,8 @@ export class SalesReturnService {
           }, 0);
           
           // The portion of the invoice net payable that corresponds to the items (after all header discounts)
-          const explicitHeaderDiscounts = Number(invoice.loyalty_redemption_amount || 0) + 
-                                       Number(invoice.voucher_discount || 0) + 
-                                       Number(invoice.special_discount || 0);
-
-          const itemsSettledTotal = Math.max(0, totalItemsValue - explicitHeaderDiscounts);
-          const invoiceRatio = itemsSettledTotal / (totalItemsValue || 1);
+          const itemsNetPayable = Number(invoice.net_payable || 0) - Number(invoice.additional_charges_total || 0);
+          const invoiceRatio = itemsNetPayable / (totalItemsValue || 1);
           
           // Determine how much of the return applies to "Paid" vs "Pending"
           // We assume a prorated chunk of the return reduces the pending amount first
@@ -470,12 +466,8 @@ export class SalesReturnService {
         if (invoice) {
           const totalItemsValue = invoice.items.reduce((sum, item) => sum + (Number(item.total_value) || (Number(item.selling_price || item.mrp || 0) * Number(item.quantity || 1))), 0);
           
-          const explicitHeaderDiscounts = Number(invoice.loyalty_redemption_amount || 0) + 
-                                       Number(invoice.voucher_discount || 0) + 
-                                       Number(invoice.special_discount || 0);
-
-          const itemsSettledTotal = Math.max(0, totalItemsValue - explicitHeaderDiscounts);
-          const invoiceRatio = itemsSettledTotal / (totalItemsValue || 1);
+          const itemsNetPayable = Number(invoice.net_payable || 0) - Number(invoice.additional_charges_total || 0);
+          const invoiceRatio = itemsNetPayable / (totalItemsValue || 1);
           
           const returnAmount = Number(data.total_return_amount);
           

@@ -1588,13 +1588,41 @@ export class ReportService {
 
     const countSql = `
       WITH t AS (
-        SELECT 'Credit Coupon'::text AS type, cc.customer_mobile::text AS mobile, cc.coupon_no::text AS external_no, cc.created_at::timestamptz AS transaction_date FROM credit_coupons cc
+        -- Issuance
+        SELECT 
+           'Credit Coupon'::text AS type, cc.customer_mobile::text AS mobile, COALESCE(cust.name, '-')::text AS name, cc.coupon_no::text AS external_no, cc.created_at::timestamptz AS transaction_date, '-'::text AS invoice_no, 'Manual/Return'::text AS reference
+        FROM credit_coupons cc
+        LEFT JOIN customers cust ON cust.mobile = cc.customer_mobile
+        
         UNION ALL
-        SELECT 'Credit Coupon'::text AS type, cc.customer_mobile::text AS mobile, cc.coupon_no::text AS external_no, cca.created_at::timestamptz AS transaction_date FROM credit_coupon_applications cca INNER JOIN credit_coupons cc ON cc.id = cca.coupon_id
+        
+        -- Application
+        SELECT 
+           'Credit Coupon'::text AS type, cc.customer_mobile::text AS mobile, COALESCE(cust.name, '-')::text AS name, cc.coupon_no::text AS external_no, cca.created_at::timestamptz AS transaction_date, si.invoice_number::text AS invoice_no, 'Applied'::text AS reference
+        FROM credit_coupon_applications cca 
+        INNER JOIN credit_coupons cc ON cc.id = cca.coupon_id
+        INNER JOIN sales_invoices si ON si.id = cca.invoice_id
+        LEFT JOIN customers cust ON cust.mobile = cc.customer_mobile
+
         UNION ALL
-        SELECT 'Advance'::text AS type, c.mobile::text AS mobile, soa.receipt_number::text AS external_no, soa.created_at::timestamptz AS transaction_date FROM sales_order_advances soa INNER JOIN sales_orders so ON so.id = soa.sales_order_id LEFT JOIN customers c ON c.id = so.customer_id
+        
+        -- Advance Issuance
+        SELECT 
+           'Advance'::text AS type, c.mobile::text AS mobile, COALESCE(c.name, '-')::text AS name, soa.receipt_number::text AS external_no, soa.created_at::timestamptz AS transaction_date, '-'::text AS invoice_no, 'Advance'::text AS reference
+        FROM sales_order_advances soa 
+        INNER JOIN sales_orders so ON so.id = soa.sales_order_id 
+        LEFT JOIN customers c ON c.id = so.customer_id
+        
         UNION ALL
-        SELECT 'Advance'::text AS type, c.mobile::text AS mobile, soa.receipt_number::text AS external_no, soaa.created_at::timestamptz AS transaction_date FROM sales_order_advance_applications soaa INNER JOIN sales_order_advances soa ON soa.id = soaa.advance_id INNER JOIN sales_orders so ON so.id = soa.sales_order_id LEFT JOIN customers c ON c.id = so.customer_id
+        
+        -- Advance Application
+        SELECT 
+           'Advance'::text AS type, c.mobile::text AS mobile, COALESCE(c.name, '-')::text AS name, soa.receipt_number::text AS external_no, soaa.created_at::timestamptz AS transaction_date, si.invoice_number::text AS invoice_no, 'Applied'::text AS reference 
+        FROM sales_order_advance_applications soaa 
+        INNER JOIN sales_order_advances soa ON soa.id = soaa.advance_id 
+        INNER JOIN sales_orders so ON so.id = soa.sales_order_id 
+        INNER JOIN sales_invoices si ON si.id = soaa.invoice_id
+        LEFT JOIN customers c ON c.id = so.customer_id
       )
       SELECT COUNT(*)::int AS total
       FROM t
