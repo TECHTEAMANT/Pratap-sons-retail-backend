@@ -359,7 +359,7 @@ export class SalesReturnService {
 
       for (const item of data.items) {
         const retItem = manager.create(SalesReturnItem, {
-          salesReturn: savedReturn,
+          return_id: id,
           barcode_8digit: item.barcode_8digit,
           design_no: item.design_no,
           hsn_code: item.hsn_code || null,
