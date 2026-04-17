@@ -109,20 +109,29 @@ export class CreditCouponService {
   /**
    * Find coupons with filters
    */
-  async findAll(filters: { search?: string; status?: string }) {
+  async findAll(filters: any) {
     const qb = this.repo.createQueryBuilder('cc')
       .leftJoinAndSelect('cc.customer', 'customer')
       .leftJoinAndSelect('cc.original_return', 'original_return');
 
-    if (filters.status && filters.status !== 'all') {
-      qb.andWhere('cc.status = :status', { status: filters.status });
+    const { search, status, ...otherFilters } = filters;
+
+    if (status && status !== 'all') {
+      qb.andWhere('cc.status = :status', { status });
     }
 
-    if (filters.search) {
+    if (search) {
       qb.andWhere('(cc.coupon_no ILIKE :search OR cc.customer_mobile ILIKE :search OR customer.name ILIKE :search OR original_return.invoice_number ILIKE :search)', { 
-        search: `%${filters.search}%` 
+        search: `%${search}%` 
       });
     }
+
+    // Apply other filters as exact matches
+    Object.entries(otherFilters).forEach(([key, val]) => {
+      if (val !== undefined && val !== null && val !== '') {
+        qb.andWhere(`cc.${key} = :${key}`, { [key]: val });
+      }
+    });
 
     qb.orderBy('cc.created_at', 'DESC');
     return qb.getMany();
