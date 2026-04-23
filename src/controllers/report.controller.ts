@@ -38,6 +38,20 @@ export class ReportController {
       sendSuccess(res, await reportService.profitabilityReport(filters)); 
     } catch (e: any) { sendError(res, e.message); } 
   }
+  async purchaseAnalysisReport(req: AuthenticatedRequest, res: Response) { 
+    try { 
+      const filters = req.query as any;
+      if (req.user?.role === 'Vendor') filters.vendorId = req.user.vendorId || undefined;
+      sendSuccess(res, await reportService.purchaseAnalysisReport(filters)); 
+    } catch (e: any) { sendError(res, e.message); } 
+  }
+  async vendorProfitability(req: AuthenticatedRequest, res: Response) { 
+    try { 
+      const filters = req.query as any;
+      if (req.user?.role === 'Vendor') filters.vendorId = req.user.vendorId || undefined;
+      sendSuccess(res, await reportService.vendorProfitabilityReport(filters)); 
+    } catch (e: any) { sendError(res, e.message); } 
+  }
   async topSellingReport(req: AuthenticatedRequest, res: Response) { 
     try { 
       const filters = req.query as any;

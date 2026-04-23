@@ -657,6 +657,9 @@ export class ReportService {
       .createQueryBuilder('sii')
       .innerJoin('sii.invoice', 'si')
       .leftJoin(BarcodeBatch, 'bb', 'bb.barcode_alias_8digit = sii.barcode_8digit')
+      .leftJoin('bb.vendor', 'v')
+      .leftJoin(SalesReturn, 'sr', 'sr.invoice_id = si.id')
+      .leftJoin(SalesReturnItem, 'sri', 'sri.return_id = sr.id AND sri.barcode_8digit = sii.barcode_8digit')
       .select([
         'si.invoice_number as invoice_number',
         'si.invoice_date as invoice_date',
@@ -665,18 +668,22 @@ export class ReportService {
         'sii.barcode_8digit as barcode',
         'sii.design_no as design_no',
         'sii.product_description as product_description',
-        'sii.quantity as quantity',
+        'COALESCE(SUM(sri.quantity), 0) as return_qty',
+        'COALESCE(sii.quantity, 0) - COALESCE(SUM(sri.quantity), 0) as quantity',
         'COALESCE(bb.cost_actual, 0) as cost',
         'sii.mrp as mrp',
         'sii.discount as discount',
-        'sii.selling_price as revenue'
+        'COALESCE(NULLIF(sii.selling_price, 0), sii.mrp - sii.discount) as selling_price',
+        'v.name as vendor_name'
       ])
-      .where('si.invoice_date BETWEEN :start AND :end', { start, end });
+      .where('si.invoice_date BETWEEN :start AND :end', { start, end })
+      .groupBy('si.id, sii.id, bb.id, v.id')
+      .having('COALESCE(sii.quantity, 0) - COALESCE(SUM(sri.quantity), 0) > 0');
 
-    if (filters.vendorId) {
-      qb.andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
+    if (filters.vendorId && filters.vendorId !== 'null' && filters.vendorId !== 'undefined' && filters.vendorId !== '') {
+      qb.andWhere('v.id = :vendorId', { vendorId: filters.vendorId });
     }
-    if (filters.floorId) {
+    if (filters.floorId && filters.floorId !== 'null' && filters.floorId !== 'undefined' && filters.floorId !== '') {
       qb.andWhere('si.floor_id = :floorId', { floorId: filters.floorId });
     }
 
@@ -690,23 +697,26 @@ export class ReportService {
 
     const details = items.map(item => {
       const quantity = parseFloat(item.quantity) || 0;
+      const return_qty = parseFloat(item.return_qty) || 0;
       const cost = parseFloat(item.cost) || 0;
-      const revenue = parseFloat(item.revenue) || 0;
+      const selling_price = parseFloat(item.selling_price) || 0;
       const mrp = parseFloat(item.mrp) || 0;
       const discount = parseFloat(item.discount) || 0;
       const itemCost = cost * quantity;
+      const revenue = selling_price * quantity;
       const profit = revenue - itemCost;
       const profitMargin = revenue > 0 ? (profit / revenue) * 100 : 0;
 
-      totalRevenue += revenue * quantity;
+      totalRevenue += revenue;
       totalCost += itemCost;
       totalMRP += mrp * quantity;
-      totalDiscount += discount * quantity;
+      totalDiscount += discount * (quantity + return_qty);
       totalQuantitySold += quantity;
 
       return {
         ...item,
         quantity,
+        return_qty,
         cost,
         revenue,
         mrp,
@@ -719,18 +729,185 @@ export class ReportService {
 
     return {
       summary: {
-        totalRevenue,
-        totalCost,
-        grossProfit: totalRevenue - totalCost,
+        totalRevenue: Math.round(totalRevenue * 100) / 100,
+        totalCost: Math.round(totalCost * 100) / 100,
+        grossProfit: Math.round((totalRevenue - totalCost) * 100) / 100,
         profitMargin: totalRevenue > 0 ? ((totalRevenue - totalCost) / totalRevenue) * 100 : 0,
-        totalMRP,
-        totalDiscount,
+        totalMRP: Math.round(totalMRP * 100) / 100,
+        totalDiscount: Math.round(totalDiscount * 100) / 100,
         itemsSold: totalQuantitySold
       },
-      details
+      details: details.map(d => ({
+        ...d,
+        revenue: Math.round(d.revenue * 100) / 100,
+        profit: Math.round(d.profit * 100) / 100,
+        selling_price: Math.round(d.selling_price * 100) / 100
+      }))
+    };
+  }
+
+  async purchaseAnalysisReport(filters: { startDate: string, endDate: string, vendorId?: string }) {
+    const start = filters.startDate.split('T')[0];
+    const end = filters.endDate.split('T')[0];
+
+    const qb = AppDataSource.getRepository(BarcodeBatch)
+      .createQueryBuilder('bb')
+      .leftJoin('bb.vendor', 'v')
+      .select([
+        'bb.barcode_alias_8digit as barcode',
+        'bb.design_no as design_no',
+        'bb.created_at as date',
+        'bb.total_quantity as quantity',
+        'v.name as vendor_name',
+        'COALESCE(bb.cost_actual, 0) as cost',
+        'COALESCE(bb.mrp, 0) as mrp'
+      ])
+      .where('bb.created_at BETWEEN :start AND :end', { start, end });
+
+    if (filters.vendorId && filters.vendorId !== 'null' && filters.vendorId !== 'undefined' && filters.vendorId !== '') {
+      qb.andWhere('v.id = :vendorId', { vendorId: filters.vendorId });
+    }
+
+    const items = await qb.getRawMany();
+
+    let totalCost = 0;
+    let totalMRP = 0;
+    let totalQuantity = 0;
+
+    const details = items.map(item => {
+      const quantity = parseFloat(item.quantity) || 0;
+      const cost = parseFloat(item.cost) || 0;
+      const mrp = parseFloat(item.mrp) || 0;
+      const totalItemCost = cost * quantity;
+      const totalItemMRP = mrp * quantity;
+      const discount = totalItemMRP - totalItemCost;
+      const margin = mrp > 0 ? ((mrp - cost) / mrp) * 100 : 0;
+
+      totalCost += totalItemCost;
+      totalMRP += totalItemMRP;
+      totalQuantity += quantity;
+
+      return {
+        ...item,
+        quantity,
+        cost,
+        mrp,
+        totalCost: totalItemCost,
+        totalMRP: totalItemMRP,
+        discount,
+        margin
+      };
+    });
+
+    return {
+      summary: {
+        totalCost: Math.round(totalCost * 100) / 100,
+        totalMRP: Math.round(totalMRP * 100) / 100,
+        totalDiscount: Math.round((totalMRP - totalCost) * 100) / 100,
+        avgMargin: totalMRP > 0 ? ((totalMRP - totalCost) / totalMRP) * 100 : 0,
+        totalItems: totalQuantity
+      },
+      details: details.map(d => ({
+        ...d,
+        totalCost: Math.round(d.totalCost * 100) / 100,
+        totalMRP: Math.round(d.totalMRP * 100) / 100,
+        discount: Math.round(d.discount * 100) / 100,
+        margin: Math.round(d.margin * 100) / 100
+      }))
     };
   }
  
+  async vendorProfitabilityReport(filters: { startDate: string, endDate: string, floorId?: string }) {
+    const start = filters.startDate.split('T')[0];
+    const end = filters.endDate.split('T')[0];
+
+    // Subquery for returns per vendor
+    const returnSubQuery = AppDataSource.getRepository(SalesReturnItem)
+      .createQueryBuilder('sri')
+      .innerJoin('sri.salesReturn', 'sr')
+      .leftJoin(BarcodeBatch, 'bb', 'bb.barcode_alias_8digit = sri.barcode_8digit')
+      .leftJoin('bb.vendor', 'v')
+      .select([
+        'v.name as vendor_name',
+        'SUM(COALESCE(sri.quantity, 0)) as return_quantity',
+        'SUM(COALESCE(sri.taxable_value, sri.return_amount, (COALESCE(sri.mrp, 0) - COALESCE(sri.discount_amount, 0)) * COALESCE(sri.quantity, 0))) as return_revenue',
+        'SUM(COALESCE(bb.cost_actual, 0) * COALESCE(sri.quantity, 0)) as return_cost',
+        'SUM(COALESCE(sri.mrp, 0) * COALESCE(sri.quantity, 0)) as return_mrp'
+      ])
+      .where('sr.return_date BETWEEN :start AND :end', { start, end })
+      .groupBy('v.name');
+
+    const returns = await returnSubQuery.getRawMany();
+    const returnMap = new Map(returns.map(r => [r.vendor_name, r]));
+
+    const qb = AppDataSource.getRepository(SalesInvoiceItem)
+      .createQueryBuilder('sii')
+      .innerJoin('sii.invoice', 'si')
+      .leftJoin(BarcodeBatch, 'bb', 'bb.barcode_alias_8digit = sii.barcode_8digit')
+      .leftJoin('bb.vendor', 'v')
+      .select([
+        'COALESCE(v.name, \'Direct/Unknown\') as vendor_name',
+        'SUM(COALESCE(sii.quantity, 0)) as total_quantity',
+        'SUM(COALESCE(bb.cost_actual, 0) * COALESCE(sii.quantity, 0)) as total_cost',
+        'SUM(COALESCE(sii.taxable_value, sii.selling_price * sii.quantity, (COALESCE(sii.mrp, 0) - COALESCE(sii.discount, 0)) * COALESCE(sii.quantity, 0))) as total_revenue',
+        'SUM(COALESCE(sii.mrp, 0) * COALESCE(sii.quantity, 0)) as total_mrp'
+      ])
+      .where('si.invoice_date BETWEEN :start AND :end', { start, end });
+
+    if (filters.floorId && filters.floorId !== 'null' && filters.floorId !== 'undefined' && filters.floorId !== '') {
+      qb.andWhere('si.floor_id = :floorId', { floorId: filters.floorId });
+    }
+
+    qb.groupBy('v.name')
+      .orderBy('total_revenue', 'DESC');
+
+    const results = await qb.getRawMany();
+
+    return results.map(row => {
+      const vName = row.vendor_name;
+      const ret = returnMap.get(vName) || { return_quantity: 0, return_revenue: 0, return_cost: 0, return_mrp: 0 };
+      
+      const grossQty = parseFloat(row.total_quantity) || 0;
+      const retQty = parseFloat(ret.return_quantity) || 0;
+      const netQty = grossQty - retQty;
+
+      if (Math.abs(netQty) < 0.001) {
+        return {
+          vendor_name: vName,
+          total_quantity: 0,
+          total_cost: 0,
+          total_revenue: 0,
+          total_mrp: 0,
+          profit: 0,
+          margin: 0
+        };
+      }
+
+      const grossRevenue = parseFloat(row.total_revenue) || 0;
+      const grossCost = parseFloat(row.total_cost) || 0;
+      const grossMRP = parseFloat(row.total_mrp) || 0;
+      const retRevenue = parseFloat(ret.return_revenue) || 0;
+      const retCost = parseFloat(ret.return_cost) || 0;
+      const retMRP = parseFloat(ret.return_mrp) || 0;
+
+      const netRevenue = grossRevenue - retRevenue;
+      const netCost = grossCost - retCost;
+      const netMRP = grossMRP - retMRP;
+      const profit = netRevenue - netCost;
+      const margin = netRevenue > 0 ? (profit / netRevenue) * 100 : 0;
+
+      return {
+        vendor_name: vName,
+        total_quantity: netQty,
+        total_cost: Math.round(netCost * 100) / 100,
+        total_revenue: Math.round(netRevenue * 100) / 100,
+        total_mrp: Math.round(netMRP * 100) / 100,
+        profit: Math.round(profit * 100) / 100,
+        margin: Math.round(margin * 100) / 100
+      };
+    });
+  }
+
   async topSellingReport(filters: { startDate: string, endDate: string, vendorId?: string, floorId?: string }) {
     const start = filters.startDate.split('T')[0];
     const end = filters.endDate.split('T')[0];
@@ -1048,6 +1225,7 @@ export class ReportService {
           'cl.name as color_name',
           'COALESCE(SUM(quantity_expr), 0) as qty',
           'COALESCE(SUM(value_expr), 0) as value',
+          'COALESCE(SUM(mrp_expr), 0) as mrp_value',
           'MAX(bb.cost_actual) as cost_actual'
         ]
       : [
@@ -1055,6 +1233,7 @@ export class ReportService {
           'v.name as name',
           'COALESCE(SUM(quantity_expr), 0) as qty',
           'COALESCE(SUM(value_expr), 0) as value',
+          'COALESCE(SUM(mrp_expr), 0) as mrp_value',
           'MAX(bb.cost_actual) as cost_actual'
         ];
 
@@ -1097,9 +1276,13 @@ export class ReportService {
                      (repo === SalesInvoiceItem ? 'base.total_value' : 
                      (repo === SalesReturnItem ? 'base.return_amount' : 'base.cost * base.quantity'));
       
+      const mrpExpr = repo === BarcodeBatch ? `${bbAlias}.total_quantity * ${bbAlias}.mrp` : 
+                      (repo === SalesInvoiceItem ? 'base.quantity * base.mrp' : 
+                      (repo === SalesReturnItem ? 'base.quantity * base.mrp' : 'base.quantity * base.mrp'));
+
       const selectClone = selectFields.map(s => {
         let sql = s.replace(/bb\./g, `${bbAlias}.`);
-        sql = sql.replace('quantity_expr', qtyExpr).replace('value_expr', valExpr);
+        sql = sql.replace('quantity_expr', qtyExpr).replace('value_expr', valExpr).replace('mrp_expr', mrpExpr);
         return sql;
       });
 
@@ -1131,7 +1314,8 @@ export class ReportService {
           vendor_name: vend.name,
           opening_qty: 0, received_qty: 0, purchase_return_qty: 0, 
           sold_qty: 0, sales_return_qty: 0, closing_qty: 0, 
-          sales_value: 0, purchase_value: 0, unit_cost: 0
+          sales_value: 0, purchase_value: 0, unit_cost: 0,
+          received_mrp_value: 0, sold_mrp_value: 0
         });
       });
     }
@@ -1148,7 +1332,9 @@ export class ReportService {
           size_name: d.size_name,
           color_name: d.color_name,
           display_name: vendorId ? `${d.design_no} (${d.color_name || 'N/A'} / ${d.size_name || 'N/A'})` : d.name,
-          opening_qty: 0, received_qty: 0, sold_qty: 0, returns_qty: 0, closing_qty: 0, sales_value: 0, purchase_value: 0, unit_cost: 0
+          opening_qty: 0, received_qty: 0, sold_qty: 0, returns_qty: 0, closing_qty: 0, 
+          sales_value: 0, purchase_value: 0, unit_cost: 0,
+          received_mrp_value: 0, sold_mrp_value: 0
         });
       }
       return dataMap.get(id);
@@ -1176,6 +1362,7 @@ export class ReportService {
       if (v) {
         v.received_qty += parseFloat(d.qty || 0);
         v.purchase_value += parseFloat(d.value || 0);
+        v.received_mrp_value += parseFloat(d.mrp_value || 0);
         v.unit_cost = v.received_qty > 0 ? (v.purchase_value / v.received_qty) : 0;
       }
     });
@@ -1186,6 +1373,7 @@ export class ReportService {
         v.purchase_return_qty += parseFloat(d.qty || 0);
         // Also subtract from purchase_value to get net purchase value
         v.purchase_value -= parseFloat(d.value || 0);
+        v.received_mrp_value -= parseFloat(d.mrp_value || 0);
       }
     });
 
@@ -1194,6 +1382,7 @@ export class ReportService {
       if (v) {
         v.sold_qty += parseFloat(d.qty || 0); 
         v.sales_value += parseFloat(d.value || 0);
+        v.sold_mrp_value += parseFloat(d.mrp_value || 0);
         // Fallback unit_cost from sales item
         if (!v.unit_cost) {
           v.unit_cost = parseFloat(d.cost_actual || d.cost || 0);
@@ -1207,6 +1396,7 @@ export class ReportService {
         v.sales_return_qty += parseFloat(d.qty || 0); 
         // SUBTRACT from sales_value to get NET SALES VALUE
         v.sales_value -= parseFloat(d.value || 0);
+        v.sold_mrp_value -= parseFloat(d.mrp_value || 0);
       }
     });
 
