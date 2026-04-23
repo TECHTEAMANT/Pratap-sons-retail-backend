@@ -1047,13 +1047,15 @@ export class ReportService {
           'sz.name as size_name', 
           'cl.name as color_name',
           'COALESCE(SUM(quantity_expr), 0) as qty',
-          'COALESCE(SUM(value_expr), 0) as value'
+          'COALESCE(SUM(value_expr), 0) as value',
+          'MAX(bb.cost_actual) as cost_actual'
         ]
       : [
           'v.id as id',
           'v.name as name',
           'COALESCE(SUM(quantity_expr), 0) as qty',
-          'COALESCE(SUM(value_expr), 0) as value'
+          'COALESCE(SUM(value_expr), 0) as value',
+          'MAX(bb.cost_actual) as cost_actual'
         ];
 
     const buildQuery = (repo: any, dateField: string, isRange = false) => {
@@ -1146,7 +1148,7 @@ export class ReportService {
           size_name: d.size_name,
           color_name: d.color_name,
           display_name: vendorId ? `${d.design_no} (${d.color_name || 'N/A'} / ${d.size_name || 'N/A'})` : d.name,
-          opening_qty: 0, received_qty: 0, sold_qty: 0, returns_qty: 0, closing_qty: 0, sales_value: 0, purchase_value: 0
+          opening_qty: 0, received_qty: 0, sold_qty: 0, returns_qty: 0, closing_qty: 0, sales_value: 0, purchase_value: 0, unit_cost: 0
         });
       }
       return dataMap.get(id);
@@ -1155,7 +1157,7 @@ export class ReportService {
     opRaw.forEach(d => { 
       const v = getEntry(d); 
       if (v) {
-        v.opening_qty += parseFloat(d.qty); 
+        v.opening_qty += parseFloat(d.qty || 0); 
         // Populate unit_cost from opening if not already set
         if (!v.unit_cost) {
           const qty = parseFloat(d.qty);
@@ -1164,50 +1166,64 @@ export class ReportService {
         }
       }
     });
-    osRaw.forEach(d => { const v = getEntry(d); if (v) v.opening_qty -= parseFloat(d.qty); });
-    orRaw.forEach(d => { const v = getEntry(d); if (v) v.opening_qty += parseFloat(d.qty); });
-    poRaw.forEach(d => { const v = getEntry(d); if (v) v.opening_qty -= parseFloat(d.qty); });
+
+    osRaw.forEach(d => { const v = getEntry(d); if (v) v.opening_qty -= parseFloat(d.qty || 0); });
+    orRaw.forEach(d => { const v = getEntry(d); if (v) v.opening_qty += parseFloat(d.qty || 0); });
+    poRaw.forEach(d => { const v = getEntry(d); if (v) v.opening_qty -= parseFloat(d.qty || 0); });
 
     ppRaw.forEach(d => { 
       const v = getEntry(d); 
       if (v) {
-        v.received_qty = parseFloat(d.qty);
-        v.purchase_value = parseFloat(d.value);
+        v.received_qty += parseFloat(d.qty || 0);
+        v.purchase_value += parseFloat(d.value || 0);
         v.unit_cost = v.received_qty > 0 ? (v.purchase_value / v.received_qty) : 0;
       }
     });
 
     prRaw.forEach(d => { 
       const v = getEntry(d); 
-      if (v) v.purchase_return_qty = parseFloat(d.qty); 
+      if (v) {
+        v.purchase_return_qty += parseFloat(d.qty || 0);
+        // Also subtract from purchase_value to get net purchase value
+        v.purchase_value -= parseFloat(d.value || 0);
+      }
     });
 
     psRaw.forEach(d => { 
       const v = getEntry(d); 
       if (v) {
-        v.sold_qty = parseFloat(d.qty); 
-        v.sales_value = parseFloat(d.value);
-        // Fallback unit_cost from sales item (MRP-linked cost in BarcodeBatch)
+        v.sold_qty += parseFloat(d.qty || 0); 
+        v.sales_value += parseFloat(d.value || 0);
+        // Fallback unit_cost from sales item
         if (!v.unit_cost) {
-          const res = d.cost || 0; // buildQuery selects bb.cost_actual for sales items
-          v.unit_cost = parseFloat(res);
+          v.unit_cost = parseFloat(d.cost_actual || d.cost || 0);
         }
       }
     });
 
     srRaw.forEach(d => { 
       const v = getEntry(d); 
-      if (v) v.sales_return_qty = parseFloat(d.qty); 
+      if (v) {
+        v.sales_return_qty += parseFloat(d.qty || 0); 
+        // SUBTRACT from sales_value to get NET SALES VALUE
+        v.sales_value -= parseFloat(d.value || 0);
+      }
     });
 
     let results = Array.from(dataMap.values())
       .map(v => {
         const net_purchase_qty = (v.received_qty || 0) - (v.purchase_return_qty || 0);
         const net_sales_qty = (v.sold_qty || 0) - (v.sales_return_qty || 0);
-        const closing_qty = (v.opening_qty || 0) + net_purchase_qty - net_sales_qty;
+        const raw_closing = (v.opening_qty || 0) + net_purchase_qty - net_sales_qty;
         
+        // Final reporting: Do not show negative stock to the vendor/user. 
+        // Negative stock usually indicates unrecorded purchases or old data errors.
+        const opening_qty = Math.max(0, v.opening_qty || 0);
+        const closing_qty = Math.max(0, raw_closing);
+
         return {
           ...v,
+          opening_qty,
           net_purchase_qty,
           net_sales_qty,
           closing_qty,
@@ -1216,12 +1232,14 @@ export class ReportService {
         };
       })
       .filter(v => 
-        Math.abs(v.opening_qty || 0) > 0.001 || 
-        (v.received_qty || 0) > 0.001 || 
-        (v.purchase_return_qty || 0) > 0.001 ||
-        (v.sold_qty || 0) > 0.001 || 
-        (v.sales_return_qty || 0) > 0.001 || 
-        Math.abs(v.closing_qty || 0) > 0.001
+        // Only show items with actual stock OR activity in the period.
+        // Hides purely negative "ghost" items from old data errors.
+        v.opening_qty > 0.001 || 
+        v.closing_qty > 0.001 || 
+        Math.abs(v.received_qty || 0) > 0.001 || 
+        Math.abs(v.purchase_return_qty || 0) > 0.001 ||
+        Math.abs(v.sold_qty || 0) > 0.001 || 
+        Math.abs(v.sales_return_qty || 0) > 0.001
       );
 
     // Apply Sorting
