@@ -846,9 +846,9 @@ export class ReportService {
       .leftJoin('bb.vendor', 'v')
       .select([
         'COALESCE(v.name, \'Direct/Unknown\') as vendor_name',
-        'SUM(COALESCE(bb.quantity_at_arrival, 0)) as purchase_quantity',
-        'SUM(COALESCE(bb.cost_actual, 0) * COALESCE(bb.quantity_at_arrival, 0)) as purchase_cost',
-        'SUM(COALESCE(bb.mrp, 0) * COALESCE(bb.quantity_at_arrival, 0)) as purchase_mrp'
+        'SUM(COALESCE(bb.total_quantity, 0)) as purchase_quantity',
+        'SUM(COALESCE(bb.cost_actual, 0) * COALESCE(bb.total_quantity, 0)) as purchase_cost',
+        'SUM(COALESCE(bb.mrp, 0) * COALESCE(bb.total_quantity, 0)) as purchase_mrp'
       ])
       .where('bb.created_at BETWEEN :start AND :end', { start, end })
       .groupBy('COALESCE(v.name, \'Direct/Unknown\')')
@@ -862,7 +862,7 @@ export class ReportService {
       .leftJoin('bb.vendor', 'v')
       .select([
         'COALESCE(v.name, \'Direct/Unknown\') as vendor_name',
-        'SUM(COALESCE(bb.quantity, 0)) as current_stock_qty'
+        'SUM(COALESCE(bb.available_quantity, 0)) as current_stock_qty'
       ])
       .groupBy('COALESCE(v.name, \'Direct/Unknown\')')
       .getRawMany();
