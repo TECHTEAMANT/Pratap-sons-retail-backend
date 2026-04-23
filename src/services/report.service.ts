@@ -821,25 +821,55 @@ export class ReportService {
     const start = filters.startDate.split('T')[0];
     const end = filters.endDate.split('T')[0];
 
-    // Subquery for returns per vendor
-    const returnSubQuery = AppDataSource.getRepository(SalesReturnItem)
+    // 1. Returns per vendor in period
+    const returns = await AppDataSource.getRepository(SalesReturnItem)
       .createQueryBuilder('sri')
       .innerJoin('sri.salesReturn', 'sr')
       .leftJoin(BarcodeBatch, 'bb', 'bb.barcode_alias_8digit = sri.barcode_8digit')
       .leftJoin('bb.vendor', 'v')
       .select([
-        'v.name as vendor_name',
+        'COALESCE(v.name, \'Direct/Unknown\') as vendor_name',
         'SUM(COALESCE(sri.quantity, 0)) as return_quantity',
         'SUM(COALESCE(sri.taxable_value, sri.return_amount, (COALESCE(sri.mrp, 0) - COALESCE(sri.discount_amount, 0)) * COALESCE(sri.quantity, 0))) as return_revenue',
         'SUM(COALESCE(bb.cost_actual, 0) * COALESCE(sri.quantity, 0)) as return_cost',
         'SUM(COALESCE(sri.mrp, 0) * COALESCE(sri.quantity, 0)) as return_mrp'
       ])
       .where('sr.return_date BETWEEN :start AND :end', { start, end })
-      .groupBy('v.name');
+      .groupBy('COALESCE(v.name, \'Direct/Unknown\')')
+      .getRawMany();
 
-    const returns = await returnSubQuery.getRawMany();
     const returnMap = new Map(returns.map(r => [r.vendor_name, r]));
 
+    // 2. Purchases per vendor in period
+    const purchases = await AppDataSource.getRepository(BarcodeBatch)
+      .createQueryBuilder('bb')
+      .leftJoin('bb.vendor', 'v')
+      .select([
+        'COALESCE(v.name, \'Direct/Unknown\') as vendor_name',
+        'SUM(COALESCE(bb.quantity_at_arrival, 0)) as purchase_quantity',
+        'SUM(COALESCE(bb.cost_actual, 0) * COALESCE(bb.quantity_at_arrival, 0)) as purchase_cost',
+        'SUM(COALESCE(bb.mrp, 0) * COALESCE(bb.quantity_at_arrival, 0)) as purchase_mrp'
+      ])
+      .where('bb.created_at BETWEEN :start AND :end', { start, end })
+      .groupBy('COALESCE(v.name, \'Direct/Unknown\')')
+      .getRawMany();
+
+    const purchaseMap = new Map(purchases.map(p => [p.vendor_name, p]));
+
+    // 3. Current Stock globally for vendors
+    const stock = await AppDataSource.getRepository(BarcodeBatch)
+      .createQueryBuilder('bb')
+      .leftJoin('bb.vendor', 'v')
+      .select([
+        'COALESCE(v.name, \'Direct/Unknown\') as vendor_name',
+        'SUM(COALESCE(bb.quantity, 0)) as current_stock_qty'
+      ])
+      .groupBy('COALESCE(v.name, \'Direct/Unknown\')')
+      .getRawMany();
+
+    const stockMap = new Map(stock.map(s => [s.vendor_name, s]));
+
+    // 4. Sales per vendor in period
     const qb = AppDataSource.getRepository(SalesInvoiceItem)
       .createQueryBuilder('sii')
       .innerJoin('sii.invoice', 'si')
@@ -858,54 +888,51 @@ export class ReportService {
       qb.andWhere('si.floor_id = :floorId', { floorId: filters.floorId });
     }
 
-    qb.groupBy('v.name')
-      .orderBy('total_revenue', 'DESC');
+    const sales = await qb.groupBy('COALESCE(v.name, \'Direct/Unknown\')').getRawMany();
 
-    const results = await qb.getRawMany();
+    // 5. Merge everything
+    const allVendorNames = new Set([
+      ...Array.from(returnMap.keys()),
+      ...Array.from(purchaseMap.keys()),
+      ...sales.map(s => s.vendor_name)
+    ]);
 
-    return results.map(row => {
-      const vName = row.vendor_name;
+    const finalResults = Array.from(allVendorNames).map(vName => {
+      const sale = sales.find(s => s.vendor_name === vName) || { total_quantity: 0, total_revenue: 0, total_cost: 0, total_mrp: 0 };
       const ret = returnMap.get(vName) || { return_quantity: 0, return_revenue: 0, return_cost: 0, return_mrp: 0 };
+      const purch = purchaseMap.get(vName) || { purchase_quantity: 0, purchase_cost: 0, purchase_mrp: 0 };
+      const stk = stockMap.get(vName) || { current_stock_qty: 0 };
+
+      const netSoldQty = (parseFloat(sale.total_quantity) || 0) - (parseFloat(ret.return_quantity) || 0);
+      const netRevenue = (parseFloat(sale.total_revenue) || 0) - (parseFloat(ret.return_revenue) || 0);
+      const netSoldCost = (parseFloat(sale.total_cost) || 0) - (parseFloat(ret.return_cost) || 0);
       
-      const grossQty = parseFloat(row.total_quantity) || 0;
-      const retQty = parseFloat(ret.return_quantity) || 0;
-      const netQty = grossQty - retQty;
-
-      if (Math.abs(netQty) < 0.001) {
-        return {
-          vendor_name: vName,
-          total_quantity: 0,
-          total_cost: 0,
-          total_revenue: 0,
-          total_mrp: 0,
-          profit: 0,
-          margin: 0
-        };
-      }
-
-      const grossRevenue = parseFloat(row.total_revenue) || 0;
-      const grossCost = parseFloat(row.total_cost) || 0;
-      const grossMRP = parseFloat(row.total_mrp) || 0;
-      const retRevenue = parseFloat(ret.return_revenue) || 0;
-      const retCost = parseFloat(ret.return_cost) || 0;
-      const retMRP = parseFloat(ret.return_mrp) || 0;
-
-      const netRevenue = grossRevenue - retRevenue;
-      const netCost = grossCost - retCost;
-      const netMRP = grossMRP - retMRP;
-      const profit = netRevenue - netCost;
+      const profit = netRevenue - netSoldCost;
       const margin = netRevenue > 0 ? (profit / netRevenue) * 100 : 0;
 
       return {
         vendor_name: vName,
-        total_quantity: netQty,
-        total_cost: Math.round(netCost * 100) / 100,
+        // Sales logic
+        net_sold_qty: Math.max(0, netSoldQty),
         total_revenue: Math.round(netRevenue * 100) / 100,
-        total_mrp: Math.round(netMRP * 100) / 100,
         profit: Math.round(profit * 100) / 100,
-        margin: Math.round(margin * 100) / 100
+        margin: Math.round(margin * 100) / 100,
+        
+        // Purchase logic
+        purchase_qty: parseFloat(purch.purchase_quantity) || 0,
+        purchase_cost: Math.round((parseFloat(purch.purchase_cost) || 0) * 100) / 100,
+        
+        // Stock logic
+        current_stock: Math.max(0, parseFloat(stk.current_stock_qty) || 0),
+        
+        // Totals for table (compatibility)
+        total_quantity: Math.max(0, netSoldQty), // Used by UI for compatibility
+        total_cost: Math.round(netSoldCost * 100) / 100,
+        total_mrp: Math.round((parseFloat(sale.total_mrp) || 0 - parseFloat(ret.return_mrp) || 0) * 100) / 100
       };
     });
+
+    return finalResults.sort((a, b) => b.total_revenue - a.total_revenue);
   }
 
   async topSellingReport(filters: { startDate: string, endDate: string, vendorId?: string, floorId?: string }) {
