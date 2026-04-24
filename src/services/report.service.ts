@@ -1345,8 +1345,7 @@ export class ReportService {
                      (repo === SalesReturnItem ? 'base.return_amount' : 'base.cost * base.quantity'));
       
       const mrpExpr = repo === BarcodeBatch ? `${bbAlias}.total_quantity * ${bbAlias}.mrp` : 
-                      (repo === SalesInvoiceItem ? 'base.quantity * base.mrp' : 
-                      (repo === SalesReturnItem ? 'base.quantity * base.mrp' : 'base.quantity * base.mrp'));
+                      ((repo === SalesInvoiceItem || repo === SalesReturnItem) ? 'base.quantity * base.mrp' : 'base.quantity * ' + bbAlias + '.mrp');
 
       const selectClone = selectFields.map(s => {
         let sql = s.replace(/bb\./g, `${bbAlias}.`);
