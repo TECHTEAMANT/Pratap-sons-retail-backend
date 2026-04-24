@@ -817,12 +817,12 @@ export class ReportService {
     };
   }
  
-  async vendorProfitabilityReport(filters: { startDate: string, endDate: string, floorId?: string }) {
+  async vendorProfitabilityReport(filters: { startDate: string, endDate: string, floorId?: string, vendorId?: string }) {
     const start = filters.startDate.split('T')[0];
     const end = filters.endDate.split('T')[0];
 
     // 1. Returns per vendor in period
-    const returns = await AppDataSource.getRepository(SalesReturnItem)
+    const returnsQB = AppDataSource.getRepository(SalesReturnItem)
       .createQueryBuilder('sri')
       .innerJoin('sri.salesReturn', 'sr')
       .leftJoin(BarcodeBatch, 'bb', 'bb.barcode_alias_8digit = sri.barcode_8digit')
@@ -834,14 +834,17 @@ export class ReportService {
         'SUM(COALESCE(bb.cost_actual, 0) * COALESCE(sri.quantity, 0)) as return_cost',
         'SUM(COALESCE(sri.mrp, 0) * COALESCE(sri.quantity, 0)) as return_mrp'
       ])
-      .where('sr.return_date BETWEEN :start AND :end', { start, end })
-      .groupBy('COALESCE(v.name, \'Direct/Unknown\')')
-      .getRawMany();
+      .where('sr.return_date BETWEEN :start AND :end', { start, end });
 
-    const returnMap = new Map(returns.map(r => [r.vendor_name, r]));
+    if (filters.vendorId && filters.vendorId !== '' && filters.vendorId !== 'null' && filters.vendorId !== 'undefined') {
+      returnsQB.andWhere('v.id = :vendorId', { vendorId: filters.vendorId });
+    }
+
+    const returnsData = await returnsQB.groupBy('COALESCE(v.name, \'Direct/Unknown\')').getRawMany();
+    const returnMap = new Map(returnsData.map(r => [r.vendor_name, r]));
 
     // 2. Purchases per vendor in period
-    const purchases = await AppDataSource.getRepository(BarcodeBatch)
+    const purchasesQB = AppDataSource.getRepository(BarcodeBatch)
       .createQueryBuilder('bb')
       .leftJoin('bb.vendor', 'v')
       .select([
@@ -850,27 +853,33 @@ export class ReportService {
         'SUM(COALESCE(bb.cost_actual, 0) * COALESCE(bb.total_quantity, 0)) as purchase_cost',
         'SUM(COALESCE(bb.mrp, 0) * COALESCE(bb.total_quantity, 0)) as purchase_mrp'
       ])
-      .where('bb.created_at BETWEEN :start AND :end', { start, end })
-      .groupBy('COALESCE(v.name, \'Direct/Unknown\')')
-      .getRawMany();
+      .where('bb.created_at BETWEEN :start AND :end', { start, end });
 
-    const purchaseMap = new Map(purchases.map(p => [p.vendor_name, p]));
+    if (filters.vendorId && filters.vendorId !== '' && filters.vendorId !== 'null' && filters.vendorId !== 'undefined') {
+      purchasesQB.andWhere('v.id = :vendorId', { vendorId: filters.vendorId });
+    }
+
+    const purchasesData = await purchasesQB.groupBy('COALESCE(v.name, \'Direct/Unknown\')').getRawMany();
+    const purchaseMap = new Map(purchasesData.map(p => [p.vendor_name, p]));
 
     // 3. Current Stock globally for vendors
-    const stock = await AppDataSource.getRepository(BarcodeBatch)
+    const stockQB = AppDataSource.getRepository(BarcodeBatch)
       .createQueryBuilder('bb')
       .leftJoin('bb.vendor', 'v')
       .select([
         'COALESCE(v.name, \'Direct/Unknown\') as vendor_name',
         'SUM(COALESCE(bb.available_quantity, 0)) as current_stock_qty'
-      ])
-      .groupBy('COALESCE(v.name, \'Direct/Unknown\')')
-      .getRawMany();
+      ]);
 
-    const stockMap = new Map(stock.map(s => [s.vendor_name, s]));
+    if (filters.vendorId && filters.vendorId !== '' && filters.vendorId !== 'null' && filters.vendorId !== 'undefined') {
+      stockQB.andWhere('v.id = :vendorId', { vendorId: filters.vendorId });
+    }
+
+    const stockData = await stockQB.groupBy('COALESCE(v.name, \'Direct/Unknown\')').getRawMany();
+    const stockMap = new Map(stockData.map(s => [s.vendor_name, s]));
 
     // 4. Sales per vendor in period
-    const qb = AppDataSource.getRepository(SalesInvoiceItem)
+    const salesQB = AppDataSource.getRepository(SalesInvoiceItem)
       .createQueryBuilder('sii')
       .innerJoin('sii.invoice', 'si')
       .leftJoin(BarcodeBatch, 'bb', 'bb.barcode_alias_8digit = sii.barcode_8digit')
@@ -885,20 +894,24 @@ export class ReportService {
       .where('si.invoice_date BETWEEN :start AND :end', { start, end });
 
     if (filters.floorId && filters.floorId !== 'null' && filters.floorId !== 'undefined' && filters.floorId !== '') {
-      qb.andWhere('si.floor_id = :floorId', { floorId: filters.floorId });
+      salesQB.andWhere('si.floor_id = :floorId', { floorId: filters.floorId });
     }
 
-    const sales = await qb.groupBy('COALESCE(v.name, \'Direct/Unknown\')').getRawMany();
+    if (filters.vendorId && filters.vendorId !== '' && filters.vendorId !== 'null' && filters.vendorId !== 'undefined') {
+      salesQB.andWhere('v.id = :vendorId', { vendorId: filters.vendorId });
+    }
+
+    const salesDataRaw = await salesQB.groupBy('COALESCE(v.name, \'Direct/Unknown\')').getRawMany();
 
     // 5. Merge everything
     const allVendorNames = new Set([
       ...Array.from(returnMap.keys()),
       ...Array.from(purchaseMap.keys()),
-      ...sales.map(s => s.vendor_name)
+      ...salesDataRaw.map(s => s.vendor_name)
     ]);
 
     const finalResults = Array.from(allVendorNames).map(vName => {
-      const sale = sales.find(s => s.vendor_name === vName) || { total_quantity: 0, total_revenue: 0, total_cost: 0, total_mrp: 0 };
+      const sale = salesDataRaw.find(s => s.vendor_name === vName) || { total_quantity: 0, total_revenue: 0, total_cost: 0, total_mrp: 0 };
       const ret = returnMap.get(vName) || { return_quantity: 0, return_revenue: 0, return_cost: 0, return_mrp: 0 };
       const purch = purchaseMap.get(vName) || { purchase_quantity: 0, purchase_cost: 0, purchase_mrp: 0 };
       const stk = stockMap.get(vName) || { current_stock_qty: 0 };
@@ -928,7 +941,7 @@ export class ReportService {
         // Totals for table (compatibility)
         total_quantity: Math.max(0, netSoldQty), // Used by UI for compatibility
         total_cost: Math.round(netSoldCost * 100) / 100,
-        total_mrp: Math.round((parseFloat(sale.total_mrp) || 0 - parseFloat(ret.return_mrp) || 0) * 100) / 100
+        total_mrp: Math.round(((parseFloat(sale.total_mrp) || 0) - (parseFloat(ret.return_mrp) || 0)) * 100) / 100
       };
     });
 
