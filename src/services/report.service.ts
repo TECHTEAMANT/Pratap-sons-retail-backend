@@ -658,7 +658,7 @@ export class ReportService {
       .innerJoin('sii.invoice', 'si')
       .leftJoin(BarcodeBatch, 'bb', 'bb.barcode_alias_8digit = sii.barcode_8digit')
       .leftJoin('bb.vendor', 'v')
-      .leftJoin(SalesReturn, 'sr', 'sr.invoice_id = si.id')
+      .leftJoin(SalesReturn, 'sr', 'sr.invoice_id = si.id AND sr.return_date BETWEEN :start AND :end')
       .leftJoin(SalesReturnItem, 'sri', 'sri.return_id = sr.id AND sri.barcode_8digit = sii.barcode_8digit')
       .select([
         'si.invoice_number as invoice_number',
@@ -675,7 +675,8 @@ export class ReportService {
         'COALESCE(bb.cost_actual, 0) as cost',
         'sii.mrp as mrp',
         'sii.discount as discount',
-        'sii.taxable_value as original_taxable_value',
+        'COALESCE(sii.taxable_value, (sii.selling_price * 100 / (100 + COALESCE(sii.gst_percentage, 0))) * sii.quantity) as original_taxable_value',
+        '(COALESCE(sii.cgst_amount, 0) + COALESCE(sii.sgst_amount, 0) + COALESCE(sii.igst_amount, 0)) as original_gst_amount',
         'COALESCE(NULLIF(sii.selling_price, 0), sii.mrp - sii.discount) as selling_price',
         'v.name as vendor_name',
         'v.id as vendor_id'
@@ -696,6 +697,7 @@ export class ReportService {
     let totalRevenue = 0;
     let totalCost = 0;
     let totalGST = 0;
+    let totalCostGST = 0;
     let totalMRP = 0;
     let totalDiscount = 0;
     let totalQuantitySold = 0;
@@ -708,29 +710,24 @@ export class ReportService {
       const selling_price = parseFloat(item.selling_price) || 0;
       const gstPercentage = parseFloat(item.gst_percentage) || 0;
       const originalTaxable = parseFloat(item.original_taxable_value) || 0;
+      const originalGst = parseFloat(item.original_gst_amount) || 0;
       
-      // Calculate revenue based on Taxable Value (Net) to match vendor summary
-      let unitTaxable = 0;
-      if (originalTaxable > 0) {
-        unitTaxable = originalTaxable / originalQuantity;
-      } else {
-        // Fallback: If taxable_value is missing, manually deduct GST to get Net
-        unitTaxable = (selling_price * 100) / (100 + gstPercentage);
-      }
-
-      const revenue = unitTaxable * quantity; // Strict Net Revenue
-      const grossPriceTotal = selling_price * quantity;
-      const itemGst = grossPriceTotal - revenue;
+      // Calculate proportionally if there was a partial return
+      const ratio = quantity / originalQuantity;
+      const revenue = originalTaxable * ratio; 
+      const itemGst = originalGst * ratio;
       
       const mrp = parseFloat(item.mrp) || 0;
       const discount = parseFloat(item.discount) || 0;
       const itemCost = cost * quantity; 
+      const costGst = itemCost * (gstPercentage / 100);
       const profit = revenue - itemCost;
       const profitMargin = revenue > 0 ? (profit / revenue) * 100 : 0;
 
       totalRevenue += revenue;
       totalCost += itemCost;
       totalGST += itemGst;
+      totalCostGST += costGst;
       totalMRP += mrp * quantity;
       totalDiscount += discount * (quantity + return_qty);
       totalQuantitySold += quantity;
@@ -742,9 +739,11 @@ export class ReportService {
         cost,
         revenue,
         gst: itemGst,
+        cost_gst: costGst,
+        totalCost: itemCost,
+        totalCostGross: itemCost + costGst,
         mrp,
         discount,
-        totalCost: itemCost,
         profit,
         profitMargin
       };
@@ -755,6 +754,7 @@ export class ReportService {
         totalRevenue: Math.round(totalRevenue * 100) / 100,
         totalCost: Math.round(totalCost * 100) / 100,
         totalGST: Math.round(totalGST * 100) / 100,
+        totalCostGST: Math.round(totalCostGST * 100) / 100,
         grossProfit: Math.round((totalRevenue - totalCost) * 100) / 100,
         profitMargin: totalRevenue > 0 ? ((totalRevenue - totalCost) / totalRevenue) * 100 : 0,
         totalMRP: Math.round(totalMRP * 100) / 100,
@@ -842,32 +842,15 @@ export class ReportService {
   }
  
   async vendorProfitabilityReport(filters: { startDate: string, endDate: string, floorId?: string, vendorId?: string }) {
+    // 1. Get the base profitability data (this ensures item-level math is identical)
+    const baseData = await this.profitabilityReport(filters);
+    const items = baseData.details;
+
+    // 2. Fetch independent data (Purchases & Stock) - these don't depend on sales
     const start = filters.startDate.split('T')[0];
     const end = filters.endDate.split('T')[0];
 
-    // 1. Returns per vendor in period
-    const returnsQB = AppDataSource.getRepository(SalesReturnItem)
-      .createQueryBuilder('sri')
-      .innerJoin('sri.salesReturn', 'sr')
-      .leftJoin(BarcodeBatch, 'bb', 'bb.barcode_alias_8digit = sri.barcode_8digit')
-      .leftJoin('bb.vendor', 'v')
-      .select([
-        'COALESCE(v.name, \'Direct/Unknown\') as vendor_name',
-        'SUM(COALESCE(sri.quantity, 0)) as return_quantity',
-        'SUM(COALESCE(sri.taxable_value, sri.return_amount, (COALESCE(sri.mrp, 0) - COALESCE(sri.discount_amount, 0)) * COALESCE(sri.quantity, 0))) as return_revenue',
-        'SUM(COALESCE(bb.cost_actual, 0) * COALESCE(sri.quantity, 0)) as return_cost',
-        'SUM(COALESCE(sri.mrp, 0) * COALESCE(sri.quantity, 0)) as return_mrp'
-      ])
-      .where('sr.return_date BETWEEN :start AND :end', { start, end });
-
-    if (filters.vendorId && filters.vendorId !== '' && filters.vendorId !== 'null' && filters.vendorId !== 'undefined') {
-      returnsQB.andWhere('v.id = :vendorId', { vendorId: filters.vendorId });
-    }
-
-    const returnsData = await returnsQB.groupBy('COALESCE(v.name, \'Direct/Unknown\')').getRawMany();
-    const returnMap = new Map(returnsData.map(r => [r.vendor_name, r]));
-
-    // 2. Purchases per vendor in period
+    // Purchases per vendor in period
     const purchasesQB = AppDataSource.getRepository(BarcodeBatch)
       .createQueryBuilder('bb')
       .leftJoin('bb.vendor', 'v')
@@ -882,11 +865,10 @@ export class ReportService {
     if (filters.vendorId && filters.vendorId !== '' && filters.vendorId !== 'null' && filters.vendorId !== 'undefined') {
       purchasesQB.andWhere('v.id = :vendorId', { vendorId: filters.vendorId });
     }
-
     const purchasesData = await purchasesQB.groupBy('COALESCE(v.name, \'Direct/Unknown\')').getRawMany();
     const purchaseMap = new Map(purchasesData.map(p => [p.vendor_name, p]));
 
-    // 3. Current Stock globally for vendors
+    // Current Stock globally for vendors
     const stockQB = AppDataSource.getRepository(BarcodeBatch)
       .createQueryBuilder('bb')
       .leftJoin('bb.vendor', 'v')
@@ -898,80 +880,67 @@ export class ReportService {
     if (filters.vendorId && filters.vendorId !== '' && filters.vendorId !== 'null' && filters.vendorId !== 'undefined') {
       stockQB.andWhere('v.id = :vendorId', { vendorId: filters.vendorId });
     }
-
     const stockData = await stockQB.groupBy('COALESCE(v.name, \'Direct/Unknown\')').getRawMany();
     const stockMap = new Map(stockData.map(s => [s.vendor_name, s]));
 
-    // 4. Sales per vendor in period
-    const salesQB = AppDataSource.getRepository(SalesInvoiceItem)
-      .createQueryBuilder('sii')
-      .innerJoin('sii.invoice', 'si')
-      .leftJoin(BarcodeBatch, 'bb', 'bb.barcode_alias_8digit = sii.barcode_8digit')
-      .leftJoin('bb.vendor', 'v')
-      .select([
-        'COALESCE(v.name, \'Direct/Unknown\') as vendor_name',
-        'SUM(COALESCE(sii.quantity, 0)) as total_quantity',
-        'SUM(COALESCE(bb.cost_actual, 0) * COALESCE(sii.quantity, 0)) as total_cost',
-        'SUM(COALESCE(sii.taxable_value, (sii.selling_price * 100 / (100 + COALESCE(sii.gst_percentage, 0))) * sii.quantity, (COALESCE(sii.mrp, 0) - COALESCE(sii.discount, 0)) * sii.quantity * 100 / (100 + COALESCE(sii.gst_percentage, 0)))) as total_revenue',
-        'SUM(COALESCE(sii.selling_price * sii.quantity, (COALESCE(sii.mrp, 0) - COALESCE(sii.discount, 0)) * sii.quantity)) as gross_revenue',
-        'SUM(COALESCE(sii.mrp, 0) * COALESCE(sii.quantity, 0)) as total_mrp'
-      ])
-      .where('si.invoice_date BETWEEN :start AND :end', { start, end });
+    // 3. Aggregate Sales data from baseData.details
+    const vendorMap = new Map<string, any>();
 
-    if (filters.floorId && filters.floorId !== 'null' && filters.floorId !== 'undefined' && filters.floorId !== '') {
-      salesQB.andWhere('si.floor_id = :floorId', { floorId: filters.floorId });
-    }
+    items.forEach((item: any) => {
+      const vName = item.vendor_name || 'Direct/Unknown';
+      if (!vendorMap.has(vName)) {
+        vendorMap.set(vName, {
+          total_quantity: 0,
+          total_revenue: 0,
+          total_cost: 0,
+          cost_gst: 0,
+          gst_amount: 0,
+          total_mrp: 0
+        });
+      }
 
-    if (filters.vendorId && filters.vendorId !== '' && filters.vendorId !== 'null' && filters.vendorId !== 'undefined') {
-      salesQB.andWhere('v.id = :vendorId', { vendorId: filters.vendorId });
-    }
+      const v = vendorMap.get(vName);
+      v.total_quantity += (parseFloat(item.quantity) || 0);
+      v.total_revenue += (parseFloat(item.revenue) || 0);
+      v.total_cost += (parseFloat(item.totalCost) || 0);
+      v.cost_gst += (parseFloat(item.cost_gst) || 0);
+      v.gst_amount += (parseFloat(item.gst) || 0);
+      v.total_mrp += (parseFloat(item.mrp) * (parseFloat(item.quantity) || 0));
+    });
 
-    const salesDataRaw = await salesQB.groupBy('COALESCE(v.name, \'Direct/Unknown\')').getRawMany();
-
-    // 5. Merge everything
+    // 4. Merge everything
     const allVendorNames = new Set([
-      ...Array.from(returnMap.keys()),
       ...Array.from(purchaseMap.keys()),
-      ...salesDataRaw.map(s => s.vendor_name)
+      ...Array.from(stockMap.keys()),
+      ...Array.from(vendorMap.keys())
     ]);
 
     const finalResults = Array.from(allVendorNames).map(vName => {
-      const sale = salesDataRaw.find(s => s.vendor_name === vName) || { total_quantity: 0, total_revenue: 0, total_cost: 0, total_mrp: 0, gross_revenue: 0 };
-      const ret = returnMap.get(vName) || { return_quantity: 0, return_revenue: 0, return_cost: 0, return_mrp: 0 };
+      const sale = vendorMap.get(vName) || { total_quantity: 0, total_revenue: 0, total_cost: 0, cost_gst: 0, gst_amount: 0, total_mrp: 0 };
       const purch = purchaseMap.get(vName) || { purchase_quantity: 0, purchase_cost: 0, purchase_mrp: 0 };
       const stk = stockMap.get(vName) || { current_stock_qty: 0 };
 
-      const netSoldQty = (parseFloat(sale.total_quantity) || 0) - (parseFloat(ret.return_quantity) || 0);
-      const netRevenue = (parseFloat(sale.total_revenue) || 0) - (parseFloat(ret.return_revenue) || 0);
-      const netSoldCost = (parseFloat(sale.total_cost) || 0) - (parseFloat(ret.return_cost) || 0);
-      const netGrossRevenue = (parseFloat(sale.gross_revenue) || 0) - (parseFloat(ret.return_revenue) || 0); // Assuming return_revenue is already gross or handling it
-      
-      const profit = netRevenue - netSoldCost;
-      const margin = netRevenue > 0 ? (profit / netRevenue) * 100 : 0;
-      const gstAmount = Math.max(0, netGrossRevenue - netRevenue);
+      const revenue = sale.total_revenue;
+      const cost = sale.total_cost;
+      const profit = revenue - cost;
+      const margin = revenue > 0 ? (profit / revenue) * 100 : 0;
 
       return {
         vendor_name: vName,
-        // Sales logic
-        net_sold_qty: Math.max(0, netSoldQty),
-        total_revenue: Math.round(netRevenue * 100) / 100,
-        gst_amount: Math.round(gstAmount * 100) / 100,
-        profit: Math.round(profit * 100) / 100,
-        margin: Math.round(margin * 100) / 100,
-        
-        // Purchase logic
         purchase_qty: parseFloat(purch.purchase_quantity) || 0,
-        purchase_cost: Math.round((parseFloat(purch.purchase_cost) || 0) * 100) / 100,
-        
-        // Stock logic
-        current_stock: Math.max(0, parseFloat(stk.current_stock_qty) || 0),
-        
-        // Totals for table (compatibility)
-        total_quantity: Math.max(0, netSoldQty), 
-        total_cost: Math.round(netSoldCost * 100) / 100,
-        total_mrp: Math.round(((parseFloat(sale.total_mrp) || 0) - (parseFloat(ret.return_mrp) || 0)) * 100) / 100
+        purchase_cost: parseFloat(purch.purchase_cost) || 0,
+        purchase_mrp: parseFloat(purch.purchase_mrp) || 0,
+        current_stock: parseFloat(stk.current_stock_qty) || 0,
+        total_quantity: sale.total_quantity,
+        total_revenue: Math.round(revenue * 100) / 100,
+        total_cost: Math.round(cost * 100) / 100,
+        cost_gst: Math.round(sale.cost_gst * 100) / 100,
+        gst_amount: Math.round(sale.gst_amount * 100) / 100,
+        total_mrp: Math.round(sale.total_mrp * 100) / 100,
+        profit: Math.round(profit * 100) / 100,
+        margin: Math.round(margin * 100) / 100
       };
-    });
+    }).filter(v => v.purchase_qty !== 0 || v.total_quantity !== 0 || v.current_stock !== 0);
 
     return finalResults.sort((a, b) => b.total_revenue - a.total_revenue);
   }
