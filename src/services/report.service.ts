@@ -668,6 +668,7 @@ export class ReportService {
         'sii.barcode_8digit as barcode',
         'sii.design_no as design_no',
         'sii.product_description as product_description',
+        'sii.gst_percentage as gst_percentage',
         'COALESCE(SUM(sri.quantity), 0) as return_qty',
         'COALESCE(sii.quantity, 0) - COALESCE(SUM(sri.quantity), 0) as quantity',
         'sii.quantity as original_quantity',
@@ -694,6 +695,7 @@ export class ReportService {
 
     let totalRevenue = 0;
     let totalCost = 0;
+    let totalGST = 0;
     let totalMRP = 0;
     let totalDiscount = 0;
     let totalQuantitySold = 0;
@@ -704,21 +706,31 @@ export class ReportService {
       const return_qty = parseFloat(item.return_qty) || 0;
       const cost = parseFloat(item.cost) || 0;
       const selling_price = parseFloat(item.selling_price) || 0;
+      const gstPercentage = parseFloat(item.gst_percentage) || 0;
       const originalTaxable = parseFloat(item.original_taxable_value) || 0;
       
       // Calculate revenue based on Taxable Value (Net) to match vendor summary
-      // unitTaxable = total_taxable / original_qty
-      const unitTaxable = originalTaxable > 0 ? (originalTaxable / originalQuantity) : selling_price;
-      const revenue = unitTaxable * quantity;
+      let unitTaxable = 0;
+      if (originalTaxable > 0) {
+        unitTaxable = originalTaxable / originalQuantity;
+      } else {
+        // Fallback: If taxable_value is missing, manually deduct GST to get Net
+        unitTaxable = (selling_price * 100) / (100 + gstPercentage);
+      }
+
+      const revenue = unitTaxable * quantity; // Strict Net Revenue
+      const grossPriceTotal = selling_price * quantity;
+      const itemGst = grossPriceTotal - revenue;
       
       const mrp = parseFloat(item.mrp) || 0;
       const discount = parseFloat(item.discount) || 0;
-      const itemCost = cost * quantity;
+      const itemCost = cost * quantity; 
       const profit = revenue - itemCost;
       const profitMargin = revenue > 0 ? (profit / revenue) * 100 : 0;
 
       totalRevenue += revenue;
       totalCost += itemCost;
+      totalGST += itemGst;
       totalMRP += mrp * quantity;
       totalDiscount += discount * (quantity + return_qty);
       totalQuantitySold += quantity;
@@ -729,6 +741,7 @@ export class ReportService {
         return_qty,
         cost,
         revenue,
+        gst: itemGst,
         mrp,
         discount,
         totalCost: itemCost,
@@ -741,6 +754,7 @@ export class ReportService {
       summary: {
         totalRevenue: Math.round(totalRevenue * 100) / 100,
         totalCost: Math.round(totalCost * 100) / 100,
+        totalGST: Math.round(totalGST * 100) / 100,
         grossProfit: Math.round((totalRevenue - totalCost) * 100) / 100,
         profitMargin: totalRevenue > 0 ? ((totalRevenue - totalCost) / totalRevenue) * 100 : 0,
         totalMRP: Math.round(totalMRP * 100) / 100,
@@ -898,7 +912,8 @@ export class ReportService {
         'COALESCE(v.name, \'Direct/Unknown\') as vendor_name',
         'SUM(COALESCE(sii.quantity, 0)) as total_quantity',
         'SUM(COALESCE(bb.cost_actual, 0) * COALESCE(sii.quantity, 0)) as total_cost',
-        'SUM(COALESCE(sii.taxable_value, sii.selling_price * sii.quantity, (COALESCE(sii.mrp, 0) - COALESCE(sii.discount, 0)) * COALESCE(sii.quantity, 0))) as total_revenue',
+        'SUM(COALESCE(sii.taxable_value, (sii.selling_price * 100 / (100 + COALESCE(sii.gst_percentage, 0))) * sii.quantity, (COALESCE(sii.mrp, 0) - COALESCE(sii.discount, 0)) * sii.quantity * 100 / (100 + COALESCE(sii.gst_percentage, 0)))) as total_revenue',
+        'SUM(COALESCE(sii.selling_price * sii.quantity, (COALESCE(sii.mrp, 0) - COALESCE(sii.discount, 0)) * sii.quantity)) as gross_revenue',
         'SUM(COALESCE(sii.mrp, 0) * COALESCE(sii.quantity, 0)) as total_mrp'
       ])
       .where('si.invoice_date BETWEEN :start AND :end', { start, end });
@@ -921,7 +936,7 @@ export class ReportService {
     ]);
 
     const finalResults = Array.from(allVendorNames).map(vName => {
-      const sale = salesDataRaw.find(s => s.vendor_name === vName) || { total_quantity: 0, total_revenue: 0, total_cost: 0, total_mrp: 0 };
+      const sale = salesDataRaw.find(s => s.vendor_name === vName) || { total_quantity: 0, total_revenue: 0, total_cost: 0, total_mrp: 0, gross_revenue: 0 };
       const ret = returnMap.get(vName) || { return_quantity: 0, return_revenue: 0, return_cost: 0, return_mrp: 0 };
       const purch = purchaseMap.get(vName) || { purchase_quantity: 0, purchase_cost: 0, purchase_mrp: 0 };
       const stk = stockMap.get(vName) || { current_stock_qty: 0 };
@@ -929,15 +944,18 @@ export class ReportService {
       const netSoldQty = (parseFloat(sale.total_quantity) || 0) - (parseFloat(ret.return_quantity) || 0);
       const netRevenue = (parseFloat(sale.total_revenue) || 0) - (parseFloat(ret.return_revenue) || 0);
       const netSoldCost = (parseFloat(sale.total_cost) || 0) - (parseFloat(ret.return_cost) || 0);
+      const netGrossRevenue = (parseFloat(sale.gross_revenue) || 0) - (parseFloat(ret.return_revenue) || 0); // Assuming return_revenue is already gross or handling it
       
       const profit = netRevenue - netSoldCost;
       const margin = netRevenue > 0 ? (profit / netRevenue) * 100 : 0;
+      const gstAmount = Math.max(0, netGrossRevenue - netRevenue);
 
       return {
         vendor_name: vName,
         // Sales logic
         net_sold_qty: Math.max(0, netSoldQty),
         total_revenue: Math.round(netRevenue * 100) / 100,
+        gst_amount: Math.round(gstAmount * 100) / 100,
         profit: Math.round(profit * 100) / 100,
         margin: Math.round(margin * 100) / 100,
         
@@ -949,7 +967,7 @@ export class ReportService {
         current_stock: Math.max(0, parseFloat(stk.current_stock_qty) || 0),
         
         // Totals for table (compatibility)
-        total_quantity: Math.max(0, netSoldQty), // Used by UI for compatibility
+        total_quantity: Math.max(0, netSoldQty), 
         total_cost: Math.round(netSoldCost * 100) / 100,
         total_mrp: Math.round(((parseFloat(sale.total_mrp) || 0) - (parseFloat(ret.return_mrp) || 0)) * 100) / 100
       };
