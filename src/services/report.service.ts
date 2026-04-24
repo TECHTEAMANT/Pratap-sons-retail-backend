@@ -670,11 +670,14 @@ export class ReportService {
         'sii.product_description as product_description',
         'COALESCE(SUM(sri.quantity), 0) as return_qty',
         'COALESCE(sii.quantity, 0) - COALESCE(SUM(sri.quantity), 0) as quantity',
+        'sii.quantity as original_quantity',
         'COALESCE(bb.cost_actual, 0) as cost',
         'sii.mrp as mrp',
         'sii.discount as discount',
+        'sii.taxable_value as original_taxable_value',
         'COALESCE(NULLIF(sii.selling_price, 0), sii.mrp - sii.discount) as selling_price',
-        'v.name as vendor_name'
+        'v.name as vendor_name',
+        'v.id as vendor_id'
       ])
       .where('si.invoice_date BETWEEN :start AND :end', { start, end })
       .groupBy('si.id, sii.id, bb.id, v.id')
@@ -697,13 +700,20 @@ export class ReportService {
 
     const details = items.map(item => {
       const quantity = parseFloat(item.quantity) || 0;
+      const originalQuantity = parseFloat(item.original_quantity) || 1;
       const return_qty = parseFloat(item.return_qty) || 0;
       const cost = parseFloat(item.cost) || 0;
       const selling_price = parseFloat(item.selling_price) || 0;
+      const originalTaxable = parseFloat(item.original_taxable_value) || 0;
+      
+      // Calculate revenue based on Taxable Value (Net) to match vendor summary
+      // unitTaxable = total_taxable / original_qty
+      const unitTaxable = originalTaxable > 0 ? (originalTaxable / originalQuantity) : selling_price;
+      const revenue = unitTaxable * quantity;
+      
       const mrp = parseFloat(item.mrp) || 0;
       const discount = parseFloat(item.discount) || 0;
       const itemCost = cost * quantity;
-      const revenue = selling_price * quantity;
       const profit = revenue - itemCost;
       const profitMargin = revenue > 0 ? (profit / revenue) * 100 : 0;
 
