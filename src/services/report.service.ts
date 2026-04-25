@@ -505,45 +505,132 @@ export class ReportService {
     const start = filters.startDate.split('T')[0];
     const end = filters.endDate.split('T')[0];
 
+    // Use a more inclusive status filter. Usually we want everything that's not a temporary draft or cancelled.
+    // However, to be safe and "take all invoices" as per user request, we include everything except maybe deleted ones if that exists.
+    const activeStatuses = ['Completed', 'Pending', 'Draft', 'Approved', 'Partially Received', 'Received'];
+
     const qb = AppDataSource.getRepository(PurchaseOrder)
       .createQueryBuilder('po')
       .select([
         'COALESCE(SUM(po.total_amount), 0) as total_purchase',
         'COALESCE(SUM(po.total_items), 0) as total_items',
+        'COALESCE(SUM(po.taxable_value), 0) as total_taxable',
         'COALESCE(SUM(po.total_amount - po.taxable_value - COALESCE(po.ledger_freight, 0)), 0) as total_gst',
         'COUNT(po.id) as po_count',
         'COALESCE(AVG(po.total_amount), 0) as avg_po_value',
       ])
-      .where('po.order_date BETWEEN :start AND :end', { start, end })
-      .andWhere('po.status != :status', { status: 'Pending' });
+      .where('po.order_date >= :start AND po.order_date <= :end', { start, end });
 
-    if (filters.vendorId) {
+    if (filters.vendorId && filters.vendorId !== '' && filters.vendorId !== 'undefined' && filters.vendorId !== 'null') {
       qb.andWhere('po.vendor_id = :vendorId', { vendorId: filters.vendorId });
     }
 
     const result = await qb.getRawOne();
-    const detailedList = await qb.getRawMany(); // Note: qb might need to be cloned or slightly modified if summary query differs
 
-    // Re-run for detailed list with join to vendor
     const detailsQb = AppDataSource.getRepository(PurchaseOrder)
       .createQueryBuilder('po')
       .leftJoinAndSelect('po.vendor', 'vendor')
-      .where('po.order_date BETWEEN :start AND :end', { start, end })
-      .andWhere('po.status != :status', { status: 'Pending' });
+      .where('po.order_date >= :start AND po.order_date <= :end', { start, end });
 
-    if (filters.vendorId) {
+    if (filters.vendorId && filters.vendorId !== '' && filters.vendorId !== 'undefined' && filters.vendorId !== 'null') {
       detailsQb.andWhere('po.vendor_id = :vendorId', { vendorId: filters.vendorId });
     }
-    detailsQb.orderBy('po.order_date', 'DESC').limit(500);
+
+    detailsQb.orderBy('po.order_date', 'DESC').limit(1000); // Increased limit as well
     const details = await detailsQb.getMany();
 
     return {
-      totalPurchase: parseFloat(result.total_purchase),
-      totalItems: parseFloat(result.total_items),
-      totalGST: parseFloat(result.total_gst),
-      poCount: parseInt(result.po_count),
-      avgPOValue: parseFloat(result.avg_po_value),
-      detailedList: details
+      success: true,
+      data: {
+        totalPurchase: parseFloat(result.total_purchase),
+        totalItems: parseFloat(result.total_items),
+        totalGST: parseFloat(result.total_gst),
+        totalTaxable: parseFloat(result.total_taxable),
+        poCount: parseInt(result.po_count),
+        avgPOValue: parseFloat(result.avg_po_value),
+        detailedList: details
+      }
+    };
+  }
+
+  async purchaseAnalysisReport(filters: { startDate: string, endDate: string, vendorId?: string }) {
+    const start = filters.startDate.split('T')[0];
+    const end = filters.endDate.split('T')[0];
+    
+    // For timestamps, we want to include the entire end day.
+    const endPlusOne = new Date(new Date(end).getTime() + 86400000).toISOString().split('T')[0];
+
+    const qb = AppDataSource.getRepository(BarcodeBatch)
+      .createQueryBuilder('bb')
+      .leftJoinAndSelect('bb.vendor', 'v')
+      .leftJoinAndSelect('purchase_orders', 'po', 'po.id = bb.po_id')
+      .select([
+        'bb.barcode_alias_8digit as barcode',
+        'bb.design_no as design_no',
+        'bb.created_at as date',
+        'bb.total_quantity as quantity',
+        'v.name as vendor_name',
+        'COALESCE(bb.cost_actual, 0) as cost',
+        'COALESCE(bb.mrp, 0) as mrp',
+        'po.po_number as po_number',
+        'po.invoice_number as po_invoice_number',
+        'po.order_date as po_date'
+      ])
+      .where('bb.created_at >= :start AND bb.created_at < :endPlusOne', { start, endPlusOne });
+
+    if (filters.vendorId && filters.vendorId !== 'null' && filters.vendorId !== 'undefined' && filters.vendorId !== '') {
+      qb.andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
+    }
+
+    const items = await qb.getRawMany();
+
+    let totalCost = 0;
+    let totalMRP = 0;
+    let totalQuantity = 0;
+
+    const details = items.map(item => {
+      const quantity = parseFloat(item.quantity) || 0;
+      const cost = parseFloat(item.cost) || 0;
+      const mrp = parseFloat(item.mrp) || 0;
+      const totalItemCost = cost * quantity;
+      const totalItemMRP = mrp * quantity;
+      const discount = totalItemMRP - totalItemCost;
+      const margin = mrp > 0 ? ((mrp - cost) / mrp) * 100 : 0;
+
+      totalCost += totalItemCost;
+      totalMRP += totalItemMRP;
+      totalQuantity += quantity;
+
+      return {
+        ...item,
+        quantity,
+        cost,
+        mrp,
+        totalCost: totalItemCost,
+        totalMRP: totalItemMRP,
+        discount,
+        margin
+      };
+    });
+
+    return {
+      success: true,
+      data: {
+        summary: {
+          totalCost: Math.round(totalCost * 100) / 100,
+          totalMRP: Math.round(totalMRP * 100) / 100,
+          totalDiscount: Math.round((totalMRP - totalCost) * 100) / 100,
+          avgMargin: totalMRP > 0 ? ((totalMRP - totalCost) / totalMRP) * 100 : 0,
+          totalItems: totalQuantity
+        },
+        details: details.map(d => ({
+          ...d,
+          totalCost: Math.round(d.totalCost * 100) / 100,
+          totalMRP: Math.round(d.totalMRP * 100) / 100,
+          discount: Math.round(d.discount * 100) / 100,
+          margin: Math.round(d.margin * 100) / 100
+        }))
+      }
     };
   }
 
@@ -770,76 +857,6 @@ export class ReportService {
     };
   }
 
-  async purchaseAnalysisReport(filters: { startDate: string, endDate: string, vendorId?: string }) {
-    const start = filters.startDate.split('T')[0];
-    const end = filters.endDate.split('T')[0];
-
-    const qb = AppDataSource.getRepository(BarcodeBatch)
-      .createQueryBuilder('bb')
-      .leftJoin('bb.vendor', 'v')
-      .select([
-        'bb.barcode_alias_8digit as barcode',
-        'bb.design_no as design_no',
-        'bb.created_at as date',
-        'bb.total_quantity as quantity',
-        'v.name as vendor_name',
-        'COALESCE(bb.cost_actual, 0) as cost',
-        'COALESCE(bb.mrp, 0) as mrp'
-      ])
-      .where('bb.created_at BETWEEN :start AND :end', { start, end });
-
-    if (filters.vendorId && filters.vendorId !== 'null' && filters.vendorId !== 'undefined' && filters.vendorId !== '') {
-      qb.andWhere('v.id = :vendorId', { vendorId: filters.vendorId });
-    }
-
-    const items = await qb.getRawMany();
-
-    let totalCost = 0;
-    let totalMRP = 0;
-    let totalQuantity = 0;
-
-    const details = items.map(item => {
-      const quantity = parseFloat(item.quantity) || 0;
-      const cost = parseFloat(item.cost) || 0;
-      const mrp = parseFloat(item.mrp) || 0;
-      const totalItemCost = cost * quantity;
-      const totalItemMRP = mrp * quantity;
-      const discount = totalItemMRP - totalItemCost;
-      const margin = mrp > 0 ? ((mrp - cost) / mrp) * 100 : 0;
-
-      totalCost += totalItemCost;
-      totalMRP += totalItemMRP;
-      totalQuantity += quantity;
-
-      return {
-        ...item,
-        quantity,
-        cost,
-        mrp,
-        totalCost: totalItemCost,
-        totalMRP: totalItemMRP,
-        discount,
-        margin
-      };
-    });
-
-    return {
-      summary: {
-        totalCost: Math.round(totalCost * 100) / 100,
-        totalMRP: Math.round(totalMRP * 100) / 100,
-        totalDiscount: Math.round((totalMRP - totalCost) * 100) / 100,
-        avgMargin: totalMRP > 0 ? ((totalMRP - totalCost) / totalMRP) * 100 : 0,
-        totalItems: totalQuantity
-      },
-      details: details.map(d => ({
-        ...d,
-        totalCost: Math.round(d.totalCost * 100) / 100,
-        totalMRP: Math.round(d.totalMRP * 100) / 100,
-        discount: Math.round(d.discount * 100) / 100,
-        margin: Math.round(d.margin * 100) / 100
-      }))
-    };
-  }
  
   async vendorProfitabilityReport(filters: { startDate: string, endDate: string, floorId?: string, vendorId?: string }) {
     // 1. Get the base profitability data (this ensures item-level math is identical)
