@@ -197,23 +197,28 @@ export class SalesReturnService {
 
         // Calculate Excess Payment for Credit Coupon
         if (invoice) {
-          let calculatedReturnAmount = 0;
+          // CRITICAL: Trust items only. Recalculate return amount to ignore potentially buggy header values.
+          let itemBasedReturnTotal = 0;
           if (Array.isArray(data.items)) {
             for (const item of data.items) {
-              calculatedReturnAmount += Number(item.return_amount) || 0;
+              itemBasedReturnTotal += Number(item.return_amount) || 0;
             }
           }
-          calculatedReturnAmount += Number(data.additional_charges_total_returned || 0);
+          itemBasedReturnTotal += Number(data.additional_charges_total_returned || 0);
 
-          const returnAmount = calculatedReturnAmount;
+          const returnAmount = itemBasedReturnTotal;
+          // Only reduce pending by the amount that was actually owed
           const amountToReducePending = Math.min(Number(invoice.amount_pending), returnAmount);
+          // Credit coupon should ONLY be the leftover amount AFTER pending is wiped
           const refundAmount = Math.max(0, returnAmount - amountToReducePending);
 
           invoice.amount_pending = Math.max(0, Number(invoice.amount_pending) - amountToReducePending);
-          invoice.amount_paid = Math.max(0, Number(invoice.amount_paid) - refundAmount);
+          invoice.amount_paid = Math.max(0, Number(invoice.amount_paid) - Math.abs(refundAmount < 0 ? refundAmount : 0)); // Safety
           invoice.net_payable = Math.max(0, Number(invoice.net_payable) - returnAmount);
 
-          if (Number(invoice.amount_pending) <= 0.01) {
+          if (Number(invoice.net_payable) <= 0.05) {
+            invoice.payment_status = 'returned';
+          } else if (Number(invoice.amount_pending) <= 0.05) {
             invoice.payment_status = 'paid';
           } else if (Number(invoice.amount_paid) > 0.01) {
             invoice.payment_status = 'partial';

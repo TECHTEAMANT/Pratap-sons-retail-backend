@@ -136,7 +136,8 @@ export class ReportService {
         Approval: 0,
         'Credit Coupon': 0,
         'Exchange': 0,
-        'Others': 0
+        'Others': 0,
+        'Return Credit': 0
       },
       approvalItemCount: 0,
       totalQuantity: 0,
@@ -347,6 +348,7 @@ export class ReportService {
       result.paymentBreakdown['Credit Coupon'] += invoicePaymentBreakdown['Credit Coupon'];
       (result.paymentBreakdown as any).Exchange += invoicePaymentBreakdown.Exchange;
       (result.paymentBreakdown as any).Others += invoicePaymentBreakdown.Others;
+      (result.paymentBreakdown as any)['Return Credit'] += returnsAmt;
 
       result.cgst_5 += parseFloat(inv.cgst_5 as any) || 0;
       result.sgst_5 += parseFloat(inv.sgst_5 as any) || 0;
@@ -375,8 +377,9 @@ export class ReportService {
         is_on_approval: isApprovalInvoice || hasApprovalItems,
         payment_breakdown: invoicePaymentBreakdown,
         // Status logic
-        payment_status: (adjustedPending <= 0.05) ? 'paid' : (finalRealPaid > 0.1 ? 'partial' : 'pending'),
-        total_quantity: inv.items ? inv.items.reduce((sum, i) => sum + (Number(i.quantity) || 0), 0) : 0
+        payment_status: (adjustedPending <= 0.05) ? 'returned' : (adjustedPending <= 0.05 ? 'paid' : (finalRealPaid > 0.1 ? 'partial' : 'pending')),
+        total_quantity: inv.items ? inv.items.reduce((sum, i) => sum + (Number(i.quantity) || 0), 0) : 0,
+        return_credit: returnsAmt
       });
     });
 
