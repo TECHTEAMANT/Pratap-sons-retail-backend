@@ -1934,9 +1934,28 @@ export class ReportService {
   }
 
   async pendingPaymentsReport() {
+    // Step 1: Auto-correct any invoices that are marked 'paid' but still have a real pending balance.
+    // This heals the database in real-time without requiring a manual script.
+    const staleInvoices = await AppDataSource.query(`
+      SELECT id, amount_pending, amount_paid
+      FROM sales_invoices
+      WHERE payment_status = 'paid'
+        AND COALESCE(amount_pending::numeric, 0) > 1
+    `);
+    if (staleInvoices.length > 0) {
+      for (const s of staleInvoices) {
+        const status = Number(s.amount_paid) > 0.05 ? 'partial' : 'pending';
+        await AppDataSource.query(
+          `UPDATE sales_invoices SET payment_status = $1 WHERE id = $2`,
+          [status, s.id]
+        );
+      }
+    }
+
+    // Step 2: Now fetch all invoices with a real balance > 1
     const invoices = await AppDataSource.getRepository(SalesInvoice).find({
       where: {
-        amount_pending: MoreThanOrEqual(1) // Show invoices with at least 1 rupee pending to avoid ghost balances
+        amount_pending: MoreThanOrEqual(1)
       },
       order: {
         invoice_date: 'DESC'

@@ -74,7 +74,29 @@ export class SalesService {
       .take(limit);
 
     const [data, total] = await qb.getManyAndCount();
-    return { data, total, page, limit };
+
+    // Dynamically recalculate payment_status from stored amounts to fix stale DB values
+    const correctedData = data.map(inv => {
+      const pending = Number(inv.amount_pending || 0);
+      const paid = Number(inv.amount_paid || 0);
+      const net = Number(inv.net_payable || 0);
+      let correctedStatus = inv.payment_status;
+      if (pending <= 0.05 && net > 0.05) {
+        correctedStatus = 'paid';
+      } else if (pending > 0.05 && paid > 0.05) {
+        correctedStatus = 'partial';
+      } else if (pending > 0.05) {
+        correctedStatus = 'pending';
+      }
+      if (correctedStatus !== inv.payment_status) {
+        // Persist the correction silently so the DB catches up
+        AppDataSource.getRepository(SalesInvoice).update(inv.id, { payment_status: correctedStatus as any }).catch(() => {});
+        return { ...inv, payment_status: correctedStatus };
+      }
+      return inv;
+    });
+
+    return { data: correctedData, total, page, limit };
   }
 
   async getInvoiceById(id: string) {
