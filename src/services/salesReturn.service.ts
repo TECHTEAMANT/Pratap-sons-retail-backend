@@ -46,10 +46,16 @@ export class SalesReturnService {
         retNum = `${prefix}${nextNum.toString().padStart(6, '0')}`;
       }
 
+      let invoiceId = data.invoice_id;
+      if (!invoiceId && data.invoice_number) {
+        const inv = await manager.findOne(SalesInvoice, { where: { invoice_number: data.invoice_number } });
+        if (inv) invoiceId = inv.id;
+      }
+
       const ret = manager.create(SalesReturn, {
         return_number: retNum,
         return_date: data.return_date,
-        invoice_id: data.invoice_id,
+        invoice_id: invoiceId,
         invoice_number: data.invoice_number,
         customer_mobile: data.customer_mobile,
         customer_name: data.customer_name,
