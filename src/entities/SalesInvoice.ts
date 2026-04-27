@@ -5,6 +5,7 @@ import { Salesman } from './Salesman';
 import { User } from './User';
 import { Floor } from './Floor';
 import { PaymentReceiptItem } from './PaymentReceiptItem';
+import { SalesReturn } from './SalesReturn';
 
 @Entity('sales_invoices')
 export class SalesInvoice {
@@ -172,4 +173,7 @@ export class SalesInvoice {
 
   @OneToMany(() => PaymentReceiptItem, item => item.invoice)
   receipt_items: PaymentReceiptItem[];
+
+  @OneToMany(() => SalesReturn, salesReturn => salesReturn.invoice)
+  sales_returns: SalesReturn[];
 }

@@ -122,6 +122,10 @@ export class ReportController {
     if (req.user?.role === 'Vendor') return sendError(res, 'Access denied', 403);
     try { sendSuccess(res, await reportService.walletLedgerReport(req.query as any)); } catch (e: any) { sendError(res, e.message); }
   }
+  async pendingPayments(req: AuthenticatedRequest, res: Response) {
+    if (req.user?.role === 'Vendor') return sendError(res, 'Access denied', 403);
+    try { sendSuccess(res, await reportService.pendingPaymentsReport()); } catch (e: any) { sendError(res, e.message); }
+  }
 }
 
 export const reportController = new ReportController();

@@ -87,7 +87,9 @@ export class SalesService {
         'creator', 
         'floor_details',
         'receipt_items',
-        'receipt_items.receipt'
+        'receipt_items.receipt',
+        'sales_returns',
+        'sales_returns.items'
       ]
     });
   }

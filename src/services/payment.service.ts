@@ -52,20 +52,13 @@ export class PaymentService {
       // 2. Handle items and update invoice balances
       if (data.items && Array.isArray(data.items)) {
         for (const itemData of data.items) {
-          // Create receipt item
-          const item = manager.create(PaymentReceiptItem, {
-            receipt_id: savedReceipt.id,
-            invoice_id: itemData.invoice_id,
-            amount_paid: itemData.amount_paid,
-          });
-          await manager.save(item);
-
           // Update invoice balance
           const invoice = await manager.findOne(SalesInvoice, { where: { id: itemData.invoice_id } });
+          let actualToPay = 0;
           if (invoice) {
             // Safety check: Don't allow paying more than pending amount per item to avoid doubling
             const maxAllowed = Math.max(0, Number(invoice.net_payable || 0) - Number(invoice.amount_paid || 0));
-            const actualToPay = Math.min(Number(itemData.amount_paid || 0), maxAllowed);
+            actualToPay = Math.min(Number(itemData.amount_paid || 0), maxAllowed);
             
             invoice.amount_paid = Number(invoice.amount_paid || 0) + actualToPay;
             invoice.amount_pending = Math.max(0, Number(invoice.net_payable || 0) - Number(invoice.amount_paid));
@@ -81,6 +74,14 @@ export class PaymentService {
             }
             await manager.save(invoice);
           }
+
+          // Create receipt item with ACTUAL applied amount
+          const item = manager.create(PaymentReceiptItem, {
+            receipt_id: savedReceipt.id,
+            invoice_id: itemData.invoice_id,
+            amount_paid: actualToPay,
+          });
+          await manager.save(item);
         }
       }
 

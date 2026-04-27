@@ -10,7 +10,8 @@ import { SalesReturnItem } from '../entities/SalesReturnItem';
 import { PurchaseReturnItem } from '../entities/PurchaseReturnItem';
 import { SalesOrderAdvance } from '../entities/SalesOrderAdvance';
 import { PaymentReceipt } from '../entities/PaymentReceipt';
-import { Between, MoreThanOrEqual, LessThanOrEqual, Raw } from 'typeorm';
+import { PaymentReceiptItem } from '../entities/PaymentReceiptItem';
+import { Between, MoreThanOrEqual, LessThanOrEqual, Raw, In } from 'typeorm';
 import logger from '../utils/logger';
 
 export class ReportService {
@@ -212,17 +213,26 @@ export class ReportService {
       let hasCreditCoupon = false;
 
       // Unified Payment Processing (Initial Payments + Subsequent Receipts)
-      const allPaymentSources: { mode: string, amount: number }[] = [...detailsArray];
-      
-      // Integrate linked receipts (payments made later)
-      if (inv.receipt_items && inv.receipt_items.length > 0) {
-        inv.receipt_items.forEach((ri: any) => {
-          allPaymentSources.push({
-            mode: ri.receipt?.payment_mode || 'Receipt',
-            amount: parseFloat(ri.amount_paid) || 0
-          });
-        });
-      }
+      // 1. Calculate sum of actual receipts
+      const receiptPayments = (inv.receipt_items || []).map((ri: any) => ({
+        mode: ri.receipt?.payment_mode || 'Receipt',
+        amount: parseFloat(ri.amount_paid) || 0
+      })).filter(p => p.amount > 0);
+
+      const totalReceipts = receiptPayments.reduce((s, r) => s + r.amount, 0);
+
+      // 2. Adjust initial payments to avoid double counting Approval vs Receipts
+      // If an invoice has receipts, they usually cover the 'Approval' balance.
+      const adjustedInitialPayments = detailsArray.map((pd: any) => {
+        const mode = (pd.mode || '').toString().toUpperCase();
+        if (mode.includes('APPROVAL')) {
+          // Subtract receipts from Approval amount to get the UNCONVERTED pending approval
+          return { ...pd, amount: Math.max(0, (parseFloat(pd.amount) || 0) - totalReceipts) };
+        }
+        return pd;
+      });
+
+      const allPaymentSources = [...adjustedInitialPayments, ...receiptPayments];
 
       allPaymentSources.forEach((pd: any) => {
         const rawMode = (pd.mode || '').toString().toUpperCase();
@@ -1897,6 +1907,127 @@ export class ReportService {
 
     const total = Number(countRows?.[0]?.total || 0);
     return { data: rows, total, page, limit };
+  }
+
+  async pendingPaymentsReport() {
+    const invoices = await AppDataSource.getRepository(SalesInvoice).find({
+      where: {
+        amount_pending: MoreThanOrEqual(1) // Show invoices with at least 1 rupee pending to avoid ghost balances
+      },
+      order: {
+        invoice_date: 'DESC'
+      },
+      relations: ['customer']
+    });
+
+    if (invoices.length === 0) return { invoices: [], receipts: {} };
+
+    const invoiceIds = invoices.map(inv => inv.id);
+
+    // Fetch all receipt items for these invoices
+    const receiptItems = await AppDataSource.getRepository(PaymentReceiptItem).find({
+      where: {
+        invoice_id: In(invoiceIds)
+      },
+      relations: ['receipt'],
+      order: {
+        receipt: {
+          receipt_date: 'DESC'
+        }
+      }
+    });
+
+    // Fetch all sales returns for these invoices
+    const salesReturns = await AppDataSource.getRepository(SalesReturn).find({
+      where: {
+        invoice_id: In(invoiceIds)
+      },
+      order: {
+        return_date: 'DESC'
+      }
+    });
+
+    // Grouping by invoice_id
+    const receiptsMap: Record<string, any[]> = {};
+    
+    invoices.forEach(inv => {
+      // Check if there was an initial payment at the time of sale
+      // We can use the payment_details if available, or just the initial amount_paid
+      // Since amount_paid in SalesInvoice is cumulative (usually), we need to be careful.
+      // However, usually amount_paid starts with what was paid at sale.
+      
+      // Calculate sum of subsequent payments
+      const subReceipts = receiptItems.filter(ri => ri.invoice_id === inv.id);
+      const subTotal = subReceipts.reduce((sum, ri) => sum + Number(ri.amount_paid), 0);
+      
+      const subReturns = salesReturns.filter(sr => sr.invoice_id === inv.id);
+      const returnTotal = subReturns.reduce((sum, sr) => sum + Number(sr.total_return_amount), 0);
+      
+      // Initial paid = Total Paid minus sum of subsequent payment items/returns?
+      // Actually, in this system, it seems amount_paid IS updated by subsequent items.
+      const initialPaid = Number(inv.amount_paid) - subTotal + returnTotal; // returns reduce amount_pending, not necessarily increase amount_paid
+      
+      // Wait, let's look at getPaymentAmount in frontend.
+      // If we have payment_details on the invoice, that's our initial payment.
+      if (inv.payment_details && inv.payment_details.length > 0) {
+        if (!receiptsMap[inv.id]) receiptsMap[inv.id] = [];
+        
+        let details = inv.payment_details;
+        if (typeof details === 'string') {
+          try { details = JSON.parse(details); } catch(e) {}
+        }
+        
+        if (Array.isArray(details)) {
+          details.forEach((d: any) => {
+            receiptsMap[inv.id].push({
+              id: `initial-${inv.id}-${d.mode}`,
+              receipt_date: inv.invoice_date,
+              amount_received: d.amount,
+              payment_mode: d.mode,
+              receipt_number: 'Sale Payment',
+              is_initial: true
+            });
+          });
+        }
+      } else if (initialPaid > 0) {
+        // Fallback for invoices without details but with initial paid
+        if (!receiptsMap[inv.id]) receiptsMap[inv.id] = [];
+        receiptsMap[inv.id].push({
+          id: `initial-${inv.id}`,
+          receipt_date: inv.invoice_date,
+          amount_received: initialPaid,
+          payment_mode: inv.payment_mode || 'Mix',
+          receipt_number: 'Sale Payment',
+          is_initial: true
+        });
+      }
+    });
+
+    receiptItems.forEach(item => {
+      if (!receiptsMap[item.invoice_id]) receiptsMap[item.invoice_id] = [];
+      receiptsMap[item.invoice_id].push({
+        id: item.id,
+        receipt_date: item.receipt.receipt_date,
+        amount_received: item.amount_paid, // This is what was actually paid for THIS invoice
+        payment_mode: item.receipt.payment_mode,
+        receipt_number: item.receipt.receipt_number,
+        is_receipt: true
+      });
+    });
+
+    salesReturns.forEach(ret => {
+      if (!receiptsMap[ret.invoice_id]) receiptsMap[ret.invoice_id] = [];
+      receiptsMap[ret.invoice_id].push({
+        id: ret.id,
+        receipt_date: ret.return_date,
+        amount_received: ret.total_return_amount,
+        payment_mode: 'Sales Return',
+        receipt_number: ret.return_number,
+        is_return: true
+      });
+    });
+
+    return { invoices, receipts: receiptsMap };
   }
 }
 

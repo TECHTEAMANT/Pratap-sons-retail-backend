@@ -128,8 +128,8 @@ export class SalesReturnService {
         customer_name: data.customer_name,
         return_id: savedReturn.id,
         invoice_id: data.invoice_id,
-        credit_amount: data.total_return_amount,
-        balance_remaining: data.total_return_amount,
+        credit_amount: 0, // Will be updated after refundAmount is calculated
+        balance_remaining: 0, // Will be updated after refundAmount is calculated
         status: 'active',
         created_by: userId,
       });
@@ -138,9 +138,10 @@ export class SalesReturnService {
       // Update customer credit balance
       const customer = await manager.findOne(Customer, { where: { mobile: data.customer_mobile } });
       if (customer) {
-        customer.credit_balance = Number(customer.credit_balance) + Number(data.total_return_amount);
+        // 3. Update Customer History (Credit balance increases ONLY by refund value, handled later)
         customer.total_returns = Number(customer.total_returns) + Number(data.total_return_amount);
         customer.return_count = (customer.return_count || 0) + 1;
+        await manager.save(Customer, customer);
 
         const invoice = await manager.findOne(SalesInvoice, { 
           where: { id: data.invoice_id },
@@ -189,31 +190,10 @@ export class SalesReturnService {
         await manager.save(customer);
 
         // Calculate Excess Payment for Credit Coupon
-        let refundAmount = 0;
-        
         if (invoice) {
-          const initialPending = Number(invoice.amount_pending);
-          const totalItemsValue = invoice.items.reduce((sum, item) => {
-            const itemTotal = Number(item.total_value) || (Number(item.selling_price || item.mrp || 0) * Number(item.quantity || 1));
-            return sum + itemTotal;
-          }, 0);
-          
-          // The portion of the invoice net payable that corresponds to the items (after all header discounts)
-          const itemsNetPayable = Number(invoice.net_payable || 0) - Number(invoice.additional_charges_total || 0);
-          const invoiceRatio = itemsNetPayable / (totalItemsValue || 1);
-          
-          // Determine how much of the return applies to "Paid" vs "Pending"
-          // We assume a prorated chunk of the return reduces the pending amount first
           const returnAmount = Number(data.total_return_amount);
-          
-          // totalPaidItemsValue = how much cash the customer actually paid for the items so far
-          // We calculate the fraction of the settled items that was actually paid
-          const totalPaidPortion = (Number(invoice.amount_paid) / Math.max(1, Number(invoice.net_payable)));
-          const portionRelatingToReturn = returnAmount * totalPaidPortion;
-          
-          // amountToReducePending = portion of return that wasn't paid yet
-          const amountToReducePending = Math.min(Number(invoice.amount_pending), returnAmount - portionRelatingToReturn);
-          refundAmount = Math.max(0, returnAmount - amountToReducePending);
+          const amountToReducePending = Math.min(Number(invoice.amount_pending), returnAmount);
+          const refundAmount = Math.max(0, returnAmount - amountToReducePending);
 
           invoice.amount_pending = Math.max(0, Number(invoice.amount_pending) - amountToReducePending);
           invoice.amount_paid = Math.max(0, Number(invoice.amount_paid) - refundAmount);
@@ -239,6 +219,17 @@ export class SalesReturnService {
             savedReturn.credit_coupon_no = coupon.coupon_no;
             await manager.save(SalesReturn, savedReturn);
           }
+
+          if (cn) {
+            cn.credit_amount = refundAmount;
+            cn.balance_remaining = refundAmount;
+            await manager.save(cn);
+          }
+
+          if (refundAmount > 0 && !savedReturn.credit_coupon_no) {
+            customer.credit_balance = Number(customer.credit_balance || 0) + refundAmount;
+            await manager.save(customer);
+          }
         }
       }
 
@@ -253,20 +244,15 @@ export class SalesReturnService {
         relations: ['items', 'invoice', 'invoice.items'] 
       });
       if (!oldReturn) throw new Error('Sales return not found');
-      let refundAmount = 0;
 
-      // 1. Safety Check: If a credit coupon was generated and redeemed, block edit
       if (oldReturn.credit_coupon_no) {
         const coupon = await manager.findOne(CreditCoupon, { where: { coupon_no: oldReturn.credit_coupon_no } });
         if (coupon && coupon.status === 'redeemed') {
           throw new Error('This return cannot be edited because the associated Credit Coupon has already been redeemed.');
         }
-        // If coupon exists and is active, we will delete/replace it
         if (coupon) await manager.remove(CreditCoupon, coupon);
       }
 
-      // 2. Reversal Logic
-      // 2a. Revert Inventory
       for (const oldItem of oldReturn.items) {
         const batch = await manager.findOne(BarcodeBatch, { where: { barcode_alias_8digit: oldItem.barcode_8digit } });
         if (batch) {
@@ -275,22 +261,11 @@ export class SalesReturnService {
         }
       }
 
-      // 2b. Revert Customer Balance & Loyalty
       const customer = await manager.findOne(Customer, { where: { mobile: oldReturn.customer_mobile } });
       if (customer) {
-        customer.credit_balance = Number(customer.credit_balance) - Number(oldReturn.total_return_amount);
         customer.total_returns = Number(customer.total_returns) - Number(oldReturn.total_return_amount);
         customer.return_count = Math.max(0, (customer.return_count || 0) - 1);
-
-        // Delete Loyalty adjustments related to this return
         await manager.delete(LoyaltyHistory, { reference_id: oldReturn.id });
-        
-        // Note: For simplicity, we don't perfectly re-sum loyalty from history here, 
-        // we'll let the re-application step (Step 3) calculate and apply the new state.
-        // However, we should ideally revert the loyalty_points_balance.
-        // Let's assume the re-application logic will handle it by re-deducing/re-reverting.
-        // To be safe, let's actually fetch all history and re-sum if needed, 
-        // OR just revert the specific points based on the oldReturn.total_return_amount.
         
         const loyaltyConfig = await manager.findOne(LoyaltyConfig, { where: { active: true } });
         if (loyaltyConfig && Number(loyaltyConfig.points_per_rupee) > 0) {
@@ -299,7 +274,6 @@ export class SalesReturnService {
           customer.loyalty_points_balance = (Number(customer.loyalty_points_balance) || 0) + oldPointsDeducted;
         }
 
-        // Revert redeemed points reversal if applicable
         if (oldReturn.invoice && Number(oldReturn.invoice.loyalty_points_redeemed) > 0) {
           const totalInvBeforeRedemption = Number(oldReturn.invoice.net_payable) + Number(oldReturn.total_return_amount) + Number(oldReturn.invoice.loyalty_redemption_amount);
           if (totalInvBeforeRedemption > 0) {
@@ -310,7 +284,6 @@ export class SalesReturnService {
         await manager.save(customer);
       }
 
-      // 2c. Revert Invoice Totals
       if (oldReturn.invoice) {
         const inv = oldReturn.invoice;
         let oldRefundAmount = 0;
@@ -322,10 +295,6 @@ export class SalesReturnService {
           oldRefundAmount = Number(coupon?.amount || 0);
         }
         
-        // Formulas:
-        // OldNet = NewNet + ReturnTotal
-        // OldPaid = NewPaid + RefundAmount
-        // OldPending = NewPending + (ReturnTotal - RefundAmount)
         inv.net_payable = Number(inv.net_payable) + Number(oldReturn.total_return_amount);
         inv.amount_paid = Number(inv.amount_paid) + Number(oldRefundAmount);
         inv.amount_pending = Number(inv.amount_pending) + (Number(oldReturn.total_return_amount) - Number(oldRefundAmount));
@@ -337,11 +306,9 @@ export class SalesReturnService {
         await manager.save(SalesInvoice, inv);
       }
 
-      // 2d. Remove Old Items, Credit Note
       await manager.delete(SalesReturnItem, { salesReturn: { id: oldReturn.id } });
       await manager.delete(CreditNote, { return_id: oldReturn.id });
 
-      // 3. Apply New Return (Re-using logic from create)
       oldReturn.return_date = data.return_date || oldReturn.return_date;
       oldReturn.return_reason = data.return_reason || oldReturn.return_reason;
       oldReturn.total_return_amount = data.total_return_amount;
@@ -355,11 +322,6 @@ export class SalesReturnService {
       oldReturn.credit_coupon_no = null as any; 
       const savedReturn = await manager.save(oldReturn);
 
-      let returnAmountApproval = 0;
-      let returnAmountRegular = 0;
-
-      // 3. Create items and process inventory
-      // 3. Create items and process inventory
       for (const item of data.items) {
         const retItem = manager.create(SalesReturnItem, {
           salesReturn: oldReturn,
@@ -379,13 +341,6 @@ export class SalesReturnService {
         });
         await manager.save(SalesReturnItem, retItem);
 
-        const itemAmt = Number(item.return_amount) || 0;
-        if (item.on_approval) {
-          returnAmountApproval += itemAmt;
-        } else {
-          returnAmountRegular += itemAmt;
-        }
-
         const batch = await manager.findOne(BarcodeBatch, { where: { barcode_alias_8digit: item.barcode_8digit } });
         if (batch) {
           batch.available_quantity = Math.min(batch.total_quantity, batch.available_quantity + (item.quantity || 1));
@@ -393,27 +348,6 @@ export class SalesReturnService {
         }
       }
 
-      // 4. Update Invoice Balance (Only now that everything else succeeded)
-      if (oldReturn.invoice) {
-        const inv = oldReturn.invoice;
-        const returnAmountTotal = returnAmountApproval + returnAmountRegular;
-        
-        const amountToReducePending = Math.min(Number(inv.amount_pending), returnAmountTotal);
-        const actualRefundAmount = Math.max(0, returnAmountTotal - amountToReducePending);
-        
-        inv.amount_pending = Math.max(0, Number(inv.amount_pending) - amountToReducePending);
-        inv.amount_paid = Math.max(0, Number(inv.amount_paid) - actualRefundAmount);
-        inv.net_payable = Math.max(0, Number(inv.net_payable) - returnAmountTotal);
-
-        if (Number(inv.amount_pending) <= 0.01) inv.payment_status = 'paid';
-        else if (Number(inv.amount_paid) > 0.01) inv.payment_status = 'partial';
-        else inv.payment_status = 'pending';
-
-        await manager.save(SalesInvoice, inv);
-        refundAmount = actualRefundAmount;
-      }
-
-      // Re-generate Credit Note
       const prefix = `CN${getFiscalYearPrefix()}`;
       const records = await manager.query(`SELECT credit_note_number FROM credit_notes WHERE credit_note_number LIKE $1 ORDER BY credit_note_number DESC LIMIT 1`, [`${prefix}%`]);
       let nextNum = 1;
@@ -431,17 +365,15 @@ export class SalesReturnService {
         customer_name: savedReturn.customer_name,
         return_id: savedReturn.id,
         invoice_id: savedReturn.invoice_id,
-        credit_amount: savedReturn.total_return_amount,
-        balance_remaining: savedReturn.total_return_amount,
+        credit_amount: 0,
+        balance_remaining: 0,
         status: 'active',
         created_by: userId,
       });
       await manager.save(cn);
 
-      // Re-apply Customer & Invoice changes
       const updatedCustomer = await manager.findOne(Customer, { where: { mobile: savedReturn.customer_mobile } });
       if (updatedCustomer) {
-        updatedCustomer.credit_balance = Number(updatedCustomer.credit_balance) + Number(data.total_return_amount);
         updatedCustomer.total_returns = Number(updatedCustomer.total_returns) + Number(data.total_return_amount);
         updatedCustomer.return_count = (updatedCustomer.return_count || 0) + 1;
 
@@ -450,7 +382,7 @@ export class SalesReturnService {
           relations: ['items']
         });
 
-        // Loyalty Logic (Fresh Application)
+        // Loyalty Application
         const loyaltyConfig = await manager.findOne(LoyaltyConfig, { where: { active: true } });
         if (loyaltyConfig && Number(loyaltyConfig.points_per_rupee) > 0) {
           const points_to_deduct = parseFloat((Number(data.total_return_amount) * Number(loyaltyConfig.points_per_rupee)).toFixed(2));
@@ -485,15 +417,11 @@ export class SalesReturnService {
         }
         await manager.save(updatedCustomer);
 
-        // Invoice Balance Recalculation (Fresh Application)
+        // Balance Application
         if (invoice) {
-          const totalItemsValue = invoice.items.reduce((sum, item) => sum + (Number(item.total_value) || (Number(item.selling_price || item.mrp || 0) * Number(item.quantity || 1))), 0);
-          
-          const itemsNetPayable = Number(invoice.net_payable || 0) - Number(invoice.additional_charges_total || 0);
           const returnAmount = Number(data.total_return_amount);
-          
           const amountToReducePending = Math.min(Number(invoice.amount_pending), returnAmount);
-          let refundAmount = Math.max(0, returnAmount - amountToReducePending);
+          const refundAmount = Math.max(0, returnAmount - amountToReducePending);
 
           invoice.amount_pending = Math.max(0, Number(invoice.amount_pending) - amountToReducePending);
           invoice.amount_paid = Math.max(0, Number(invoice.amount_paid) - refundAmount);
@@ -506,8 +434,14 @@ export class SalesReturnService {
           } else {
             invoice.payment_status = 'pending';
           }
-
           await manager.save(SalesInvoice, invoice);
+
+          // Update the Credit Note to reflect the actual refund value
+          if (cn) {
+            cn.credit_amount = refundAmount;
+            cn.balance_remaining = refundAmount;
+            await manager.save(cn);
+          }
 
           if (refundAmount > 0) {
             const coupon = await creditCouponService.generate({
@@ -517,6 +451,12 @@ export class SalesReturnService {
             }, manager);
             savedReturn.credit_coupon_no = coupon.coupon_no;
             await manager.save(SalesReturn, savedReturn);
+          } else {
+            // No coupon generated, but if a refund exists and no coupon is used, update credit_balance
+            if (refundAmount > 0) {
+               updatedCustomer.credit_balance = Number(updatedCustomer.credit_balance || 0) + refundAmount;
+               await manager.save(updatedCustomer);
+            }
           }
         }
       }

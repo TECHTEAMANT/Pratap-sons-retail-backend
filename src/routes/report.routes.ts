@@ -31,5 +31,6 @@ router.get('/vendor-analysis', (req, res) => reportController.vendorAnalysisRepo
 router.get('/advances', (req, res) => reportController.advanceAnalysis(req, res));
 router.get('/approval', (req, res) => reportController.approvalReport(req, res));
 router.get('/wallet-ledger', (req, res) => reportController.walletLedgerReport(req, res));
+router.get('/pending-payments', (req, res) => reportController.pendingPayments(req, res));
 
 export default router;
