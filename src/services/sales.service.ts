@@ -8,6 +8,7 @@ import { Floor } from '../entities/Floor';
 import { User } from '../entities/User';
 import { LoyaltyConfig } from '../entities/LoyaltyConfig';
 import { LoyaltyHistory, LoyaltyTransactionType } from '../entities/LoyaltyHistory';
+import { SalesReturn } from '../entities/SalesReturn';
 import { EBooking } from '../entities/EBooking';
 import { voucherService } from './voucher.service';
 import { creditCouponService } from './creditCoupon.service';
