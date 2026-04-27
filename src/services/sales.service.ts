@@ -89,7 +89,13 @@ export class SalesService {
         'receipt_items',
         'receipt_items.receipt',
         'sales_returns',
-        'sales_returns.items'
+        'sales_returns.items',
+        'coupon_applications',
+        'coupon_applications.coupon',
+        'advance_applications',
+        'advance_applications.advance',
+        'credit_note_applications',
+        'credit_note_applications.creditNote'
       ]
     });
   }

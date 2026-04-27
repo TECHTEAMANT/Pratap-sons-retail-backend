@@ -94,6 +94,10 @@ export class ReportService {
       .leftJoin('items.product_item', 'bb') // Needed for vendor filtering
       .leftJoinAndSelect('si.receipt_items', 'ri')
       .leftJoinAndSelect('ri.receipt', 'receipt')
+      .leftJoinAndSelect('si.sales_returns', 'sr')
+      .leftJoinAndSelect('si.coupon_applications', 'ca')
+      .leftJoinAndSelect('si.advance_applications', 'aa')
+      .leftJoinAndSelect('si.credit_note_applications', 'cna')
       .where('si.invoice_date BETWEEN :start AND :end', { start, end });
 
     if (filters.floorId) {
@@ -175,8 +179,9 @@ export class ReportService {
                                (parseFloat((inv as any).coupon_amount as any) || 0);
 
       const totalDisc = Math.max(reconstructedItemDisc, totalHeaderBundle);
+      const returnsAmt = (inv.sales_returns || []).reduce((s: number, r: any) => s + (Number(r.total_return_amount) || 0), 0);
 
-      const calculatedNet = reconstructedMRP - totalDisc + (parseFloat(inv.additional_charges_total as any) || 0);
+      const calculatedNet = reconstructedMRP - totalDisc + (parseFloat(inv.additional_charges_total as any) || 0) - returnsAmt;
       const finalNet = Math.round(calculatedNet);
 
       // --- NEW: Parse Payment Details FIRST to use as source of truth ---
@@ -216,23 +221,39 @@ export class ReportService {
       // 1. Calculate sum of actual receipts
       const receiptPayments = (inv.receipt_items || []).map((ri: any) => ({
         mode: ri.receipt?.payment_mode || 'Receipt',
-        amount: parseFloat(ri.amount_paid) || 0
+        amount: parseFloat(ri.amount_paid as any) || 0
       })).filter(p => p.amount > 0);
 
-      const totalReceipts = receiptPayments.reduce((s, r) => s + r.amount, 0);
+      const couponReceipts = (inv.coupon_applications || []).map((ca: any) => ({
+        mode: 'Credit Coupon',
+        amount: parseFloat(ca.amount_applied as any) || 0
+      }));
 
-      // 2. Adjust initial payments to avoid double counting Approval vs Receipts
-      // If an invoice has receipts, they usually cover the 'Approval' balance.
+      const advanceReceipts = (inv.advance_applications || []).map((aa: any) => ({
+        mode: 'Advance',
+        amount: parseFloat(aa.amount_applied as any) || 0
+      }));
+
+      const creditNoteReceipts = (inv.credit_note_applications || []).map((cna: any) => ({
+        mode: 'Credit Note',
+        amount: parseFloat(cna.amount_applied as any) || 0
+      }));
+
+      const totalExternalApplications = receiptPayments.reduce((s, r) => s + r.amount, 0) + 
+                                       couponReceipts.reduce((s, r) => s + r.amount, 0) + 
+                                       advanceReceipts.reduce((s, r) => s + r.amount, 0) + 
+                                       creditNoteReceipts.reduce((s, r) => s + r.amount, 0);
+
+      // 2. Adjust initial payments to avoid double counting Approval vs Receipts/Credits
       const adjustedInitialPayments = detailsArray.map((pd: any) => {
         const mode = (pd.mode || '').toString().toUpperCase();
         if (mode.includes('APPROVAL')) {
-          // Subtract receipts from Approval amount to get the UNCONVERTED pending approval
-          return { ...pd, amount: Math.max(0, (parseFloat(pd.amount) || 0) - totalReceipts) };
+          return { ...pd, amount: Math.max(0, (parseFloat(pd.amount as any) || 0) - totalExternalApplications) };
         }
         return pd;
       });
 
-      const allPaymentSources = [...adjustedInitialPayments, ...receiptPayments];
+      const allPaymentSources = [...adjustedInitialPayments, ...receiptPayments, ...couponReceipts, ...advanceReceipts, ...creditNoteReceipts];
 
       allPaymentSources.forEach((pd: any) => {
         const rawMode = (pd.mode || '').toString().toUpperCase();
