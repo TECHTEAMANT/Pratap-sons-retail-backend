@@ -75,23 +75,30 @@ export class SalesService {
 
     const [data, total] = await qb.getManyAndCount();
 
-    // Dynamically recalculate payment_status from stored amounts to fix stale DB values
+    // Dynamically recalculate payment_status using net_payable - amount_paid as the source of truth.
+    // This is more reliable than amount_pending which can be corrupted by return bugs.
     const correctedData = data.map(inv => {
-      const pending = Number(inv.amount_pending || 0);
       const paid = Number(inv.amount_paid || 0);
       const net = Number(inv.net_payable || 0);
-      let correctedStatus = inv.payment_status;
-      if (pending <= 0.05 && net > 0.05) {
+      const truePending = Math.max(0, net - paid);
+      let correctedStatus: string;
+      if (truePending <= 0.05) {
         correctedStatus = 'paid';
-      } else if (pending > 0.05 && paid > 0.05) {
+      } else if (paid > 0.05) {
         correctedStatus = 'partial';
-      } else if (pending > 0.05) {
+      } else {
         correctedStatus = 'pending';
       }
-      if (correctedStatus !== inv.payment_status) {
-        // Persist the correction silently so the DB catches up
-        AppDataSource.getRepository(SalesInvoice).update(inv.id, { payment_status: correctedStatus as any }).catch(() => {});
-        return { ...inv, payment_status: correctedStatus };
+      // Fix amount_pending in DB if it's wrong
+      const storedPending = Number(inv.amount_pending || 0);
+      const statusChanged = correctedStatus !== inv.payment_status;
+      const pendingChanged = Math.abs(storedPending - truePending) > 1;
+      if (statusChanged || pendingChanged) {
+        AppDataSource.getRepository(SalesInvoice).update(inv.id, {
+          payment_status: correctedStatus as any,
+          amount_pending: truePending
+        }).catch(() => {});
+        return { ...inv, payment_status: correctedStatus, amount_pending: truePending };
       }
       return inv;
     });

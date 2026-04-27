@@ -1934,38 +1934,50 @@ export class ReportService {
   }
 
   async pendingPaymentsReport() {
-    // Step 1: Auto-correct any invoices that are marked 'paid' but still have a real pending balance.
-    // This heals the database in real-time without requiring a manual script.
+    // Step 1: Auto-correct ANY invoice where the customer hasn't actually paid but
+    // amount_pending was wrongly set to 0 by the return bug.
+    // SOURCE OF TRUTH: net_payable - amount_paid (not amount_pending which can be corrupted)
     const staleInvoices = await AppDataSource.query(`
-      SELECT id, amount_pending, amount_paid
+      SELECT id, net_payable, amount_paid, amount_pending, payment_status
       FROM sales_invoices
-      WHERE payment_status = 'paid'
-        AND COALESCE(amount_pending::numeric, 0) > 1
+      WHERE COALESCE(net_payable::numeric, 0) - COALESCE(amount_paid::numeric, 0) > 1
+        AND (payment_status = 'paid' OR COALESCE(amount_pending::numeric, 0) < 1)
     `);
     if (staleInvoices.length > 0) {
       for (const s of staleInvoices) {
+        const truePending = Math.max(0, Number(s.net_payable) - Number(s.amount_paid));
         const status = Number(s.amount_paid) > 0.05 ? 'partial' : 'pending';
         await AppDataSource.query(
-          `UPDATE sales_invoices SET payment_status = $1 WHERE id = $2`,
-          [status, s.id]
+          `UPDATE sales_invoices SET payment_status = $1, amount_pending = $2 WHERE id = $3`,
+          [status, truePending, s.id]
         );
       }
     }
 
-    // Step 2: Now fetch all invoices with a real balance > 1
-    const invoices = await AppDataSource.getRepository(SalesInvoice).find({
-      where: {
-        amount_pending: MoreThanOrEqual(1)
-      },
-      order: {
-        invoice_date: 'DESC'
-      },
-      relations: ['customer']
-    });
+    // Step 2: Fetch all invoices with a true pending balance (using net_payable - amount_paid)
+    const invoices = await AppDataSource.query(`
+      SELECT si.*, c.name as customer_name_rel, c.mobile as customer_mobile_rel, c.id as customer_id_rel
+      FROM sales_invoices si
+      LEFT JOIN customers c ON c.id = si.customer_id
+      WHERE COALESCE(si.net_payable::numeric, 0) - COALESCE(si.amount_paid::numeric, 0) > 1
+      ORDER BY si.invoice_date DESC
+    `);
 
-    if (invoices.length === 0) return { invoices: [], receipts: {} };
+    // Normalize customer relation for frontend compatibility
+    const normalizedInvoices = invoices.map((inv: any) => ({
+      ...inv,
+      customer: inv.customer_id_rel ? {
+        id: inv.customer_id_rel,
+        name: inv.customer_name_rel,
+        mobile: inv.customer_mobile_rel
+      } : null,
+      // Recalculate correct amounts for display
+      amount_pending: Math.max(0, Number(inv.net_payable) - Number(inv.amount_paid))
+    }));
 
-    const invoiceIds = invoices.map(inv => inv.id);
+    if (normalizedInvoices.length === 0) return { invoices: [], receipts: {} };
+
+    const invoiceIds = normalizedInvoices.map((inv: any) => inv.id);
 
     // Fetch all receipt items for these invoices
     const receiptItems = await AppDataSource.getRepository(PaymentReceiptItem).find({
@@ -1993,7 +2005,7 @@ export class ReportService {
     // Grouping by invoice_id
     const receiptsMap: Record<string, any[]> = {};
     
-    invoices.forEach(inv => {
+    normalizedInvoices.forEach((inv: any) => {
       // Check if there was an initial payment at the time of sale
       // We can use the payment_details if available, or just the initial amount_paid
       // Since amount_paid in SalesInvoice is cumulative (usually), we need to be careful.
@@ -2070,7 +2082,7 @@ export class ReportService {
       });
     });
 
-    return { invoices, receipts: receiptsMap };
+    return { invoices: normalizedInvoices, receipts: receiptsMap };
   }
 }
 
