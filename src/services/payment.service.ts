@@ -126,6 +126,72 @@ export class PaymentService {
       return await manager.remove(receipt);
     });
   }
+
+  /**
+   * REPAIR: Recalculates amount_paid for all invoices from ground truth:
+   * - Initial billing payment_details (excluding any RCP-mode entries)
+   * - Plus sum of all linked payment_receipt_items
+   * This fixes the double-counting bug where an RCP entry in payment_details
+   * AND a separate PaymentReceipt row were both adding to amount_paid.
+   */
+  async repairInvoiceBalances(): Promise<{ repaired: number; errors: number; details: string[] }> {
+    const invoiceRepo = AppDataSource.getRepository(SalesInvoice);
+    const results = { repaired: 0, errors: 0, details: [] as string[] };
+
+    // Get all invoices with their receipt items
+    const invoices = await invoiceRepo
+      .createQueryBuilder('si')
+      .leftJoinAndSelect('si.receipt_items', 'ri')
+      .getMany();
+
+    for (const invoice of invoices) {
+      try {
+        // 1. Sum actual PaymentReceipt items
+        const receiptPaid = (invoice.receipt_items || []).reduce((s, ri) => s + Number(ri.amount_paid || 0), 0);
+
+        // 2. Parse initial billing payment_details (excludes RCP mode entries to avoid double-count)
+        const rawPayments = typeof invoice.payment_details === 'string'
+          ? JSON.parse(invoice.payment_details || '[]')
+          : (invoice.payment_details || []);
+        const billPayments: { mode: string; amount: number }[] = Array.isArray(rawPayments)
+          ? rawPayments
+          : Object.entries(rawPayments).filter(([k]) => k !== 'items').map(([k, v]) => ({ mode: k, amount: Number(v) }));
+
+        const billingPaid = billPayments.reduce((s, p) => {
+          const modeUpper = String(p.mode || '').trim().toUpperCase();
+          // Skip RCP entries from payment_details - they're handled by receipt_items
+          if (modeUpper.startsWith('RCP')) return s;
+          return s + Number(p.amount || 0);
+        }, 0);
+
+        const truePaid = Math.min(billingPaid + receiptPaid, Number(invoice.net_payable || 0));
+        const truePending = Math.max(0, Number(invoice.net_payable || 0) - truePaid);
+
+        let correctedStatus: 'paid' | 'partial' | 'pending';
+        if (truePending < 0.05) correctedStatus = 'paid';
+        else if (truePaid > 0.05) correctedStatus = 'partial';
+        else correctedStatus = 'pending';
+
+        const storedPaid = Number(invoice.amount_paid || 0);
+        const storedPending = Number(invoice.amount_pending || 0);
+
+        if (Math.abs(storedPaid - truePaid) > 0.5 || Math.abs(storedPending - truePending) > 0.5 || correctedStatus !== invoice.payment_status) {
+          results.details.push(`${invoice.invoice_number}: paid ${storedPaid}→${truePaid}, pending ${storedPending}→${truePending}, status ${invoice.payment_status}→${correctedStatus}`);
+          await invoiceRepo.update(invoice.id, {
+            amount_paid: truePaid,
+            amount_pending: truePending,
+            payment_status: correctedStatus,
+          });
+          results.repaired++;
+        }
+      } catch (e: any) {
+        results.errors++;
+        results.details.push(`ERROR ${invoice.invoice_number}: ${e.message}`);
+      }
+    }
+
+    return results;
+  }
 }
 
 export const paymentService = new PaymentService();

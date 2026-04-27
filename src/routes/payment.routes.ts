@@ -10,6 +10,7 @@ router.use(requirePermission('can_manage_sales'));
 router.get('/', (req, res) => paymentController.findAll(req, res));
 router.get('/:id', (req, res) => paymentController.findById(req, res));
 router.post('/', (req, res) => paymentController.create(req, res));
+router.post('/repair-balances', (req, res) => paymentController.repairBalances(req, res));
 router.delete('/:id', (req, res) => paymentController.delete(req, res));
 
 export default router;
