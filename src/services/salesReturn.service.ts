@@ -197,7 +197,15 @@ export class SalesReturnService {
 
         // Calculate Excess Payment for Credit Coupon
         if (invoice) {
-          const returnAmount = Number(data.total_return_amount);
+          let calculatedReturnAmount = 0;
+          if (Array.isArray(data.items)) {
+            for (const item of data.items) {
+              calculatedReturnAmount += Number(item.return_amount) || 0;
+            }
+          }
+          calculatedReturnAmount += Number(data.additional_charges_total_returned || 0);
+
+          const returnAmount = calculatedReturnAmount;
           const amountToReducePending = Math.min(Number(invoice.amount_pending), returnAmount);
           const refundAmount = Math.max(0, returnAmount - amountToReducePending);
 
