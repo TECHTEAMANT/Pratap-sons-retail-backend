@@ -77,7 +77,7 @@ export class SalesService {
   }
 
   async getInvoiceById(id: string) {
-    return AppDataSource.getRepository(SalesInvoice).findOne({
+    const invoice = await AppDataSource.getRepository(SalesInvoice).findOne({
       where: { id },
       relations: [
         'items', 
@@ -88,8 +88,6 @@ export class SalesService {
         'floor_details',
         'receipt_items',
         'receipt_items.receipt',
-        'sales_returns',
-        'sales_returns.items',
         'coupon_applications',
         'coupon_applications.coupon',
         'advance_applications',
@@ -98,6 +96,19 @@ export class SalesService {
         'credit_note_applications.creditNote'
       ]
     });
+
+    if (invoice) {
+      // Robustly fetch returns by ID OR Number to handle legacy unlinked data
+      invoice.sales_returns = await AppDataSource.getRepository(SalesReturn).find({
+        where: [
+          { invoice_id: id },
+          { invoice_number: invoice.invoice_number }
+        ],
+        relations: ['items']
+      });
+    }
+
+    return invoice;
   }
 
   async createInvoice(data: any, userId: string) {
