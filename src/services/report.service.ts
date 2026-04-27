@@ -169,17 +169,17 @@ export class ReportService {
       const reconstructedItemDisc = invoiceItems.reduce((s, i) => s + (Number(i.discount || 0) * Number(i.quantity || 1)), 0);
       
       // --- Fix Discount Doubling ---
-      // We reconcile the sum of item-level discounts against the total header-level discount bundle.
-      // Since modern invoices prorate Special, Voucher, and Loyalty into the item 'discount' field, 
-      // adding the header fields again would cause double counting. 
-      // We trust the Maximum of the two approaches (Item Reconstruction vs Header Totals).
+      // Modern invoices prorate Voucher/Special/Loyalty into the individual item 'discount' field.
+      // Therefore, if item-level discounts exist, they are the single source of truth for the "Total Discount".
+      // Summing Header fields (total_discount + special_discount) on top of this causes double-counting.
+      // We fall back to the header bundle ONLY if reconstructed item discounts are zero.
       const totalHeaderBundle = (parseFloat(inv.total_discount as any) || 0) + 
                                (parseFloat(inv.special_discount as any) || 0) + 
                                (parseFloat(inv.voucher_discount as any) || 0) + 
-                               (parseFloat(inv.loyalty_redemption_amount as any) || 0) + 
-                               (parseFloat((inv as any).coupon_amount as any) || 0);
+                               (parseFloat(inv.loyalty_redemption_amount as any) || 0);
 
-      const totalDisc = Math.max(reconstructedItemDisc, totalHeaderBundle);
+      // If reconstructed disc is found, it already includes all prorated components from the header.
+      const totalDisc = (reconstructedItemDisc > 0.01) ? reconstructedItemDisc : totalHeaderBundle;
       const returnsAmt = (inv.sales_returns || []).reduce((s: number, r: any) => s + (Number(r.total_return_amount) || 0), 0);
 
       const calculatedNet = reconstructedMRP - totalDisc + (parseFloat(inv.additional_charges_total as any) || 0) - returnsAmt;
