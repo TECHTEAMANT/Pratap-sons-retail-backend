@@ -55,7 +55,7 @@ async function inspectInvoice() {
       return_number: r.return_number,
       total_return_amount: r.total_return_amount,
       items: r.items.map(ri => ({
-        product_description: ri.product_description,
+        product_description: ri.product_item?.description || ri.design_no || 'Item',
         quantity: ri.quantity,
         return_amount: ri.return_amount
       }))
