@@ -169,7 +169,19 @@ export class SalesReturnService {
             + Number(invoice.additional_charges_total || 0)
           );
 
-          const trueAmountPaid = (invoice.receipt_items || []).reduce((sum, ri) => sum + Number(ri.amount_paid || 0), 0);
+          const receiptPaid = (invoice.receipt_items || []).reduce((sum, ri) => sum + Number(ri.amount_paid || 0), 0);
+          
+          let directPaid = 0;
+          if (invoice.payment_details && typeof invoice.payment_details === 'object') {
+            directPaid = Object.values(invoice.payment_details).reduce((sum: number, val: any) => sum + (Number(val) || 0), 0);
+          } else if (invoice.payment_details && typeof invoice.payment_details === 'string') {
+            try {
+              const pd = JSON.parse(invoice.payment_details);
+              directPaid = Object.values(pd).reduce((sum: number, val: any) => sum + (Number(val) || 0), 0);
+            } catch (e) {}
+          }
+
+          const trueAmountPaid = receiptPaid + directPaid;
           const trueAmountPending = Math.max(0, trueNetPayable - trueAmountPaid);
 
           // Use these True values for the invoice state
@@ -440,7 +452,19 @@ export class SalesReturnService {
             + Number(invoice.additional_charges_total || 0)
           );
 
-          const trueAmountPaid = (invoice.receipt_items || []).reduce((sum, ri) => sum + Number(ri.amount_paid || 0), 0);
+          const receiptPaid = (invoice.receipt_items || []).reduce((sum, ri) => sum + Number(ri.amount_paid || 0), 0);
+          
+          let directPaid = 0;
+          if (invoice.payment_details && typeof invoice.payment_details === 'object') {
+            directPaid = Object.values(invoice.payment_details).reduce((sum: number, val: any) => sum + (Number(val) || 0), 0);
+          } else if (invoice.payment_details && typeof invoice.payment_details === 'string') {
+            try {
+              const pd = JSON.parse(invoice.payment_details);
+              directPaid = Object.values(pd).reduce((sum: number, val: any) => sum + (Number(val) || 0), 0);
+            } catch (e) {}
+          }
+
+          const trueAmountPaid = receiptPaid + directPaid;
           const trueAmountPending = Math.max(0, trueNetPayable - trueAmountPaid);
 
           // Use these True values for the invoice state
