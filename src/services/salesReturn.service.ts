@@ -172,13 +172,11 @@ export class SalesReturnService {
           const receiptPaid = (invoice.receipt_items || []).reduce((sum, ri) => sum + Number(ri.amount_paid || 0), 0);
           
           let directPaid = 0;
-          if (invoice.payment_details && typeof invoice.payment_details === 'object') {
-            directPaid = Object.values(invoice.payment_details).reduce((sum: number, val: any) => sum + (Number(val) || 0), 0);
-          } else if (invoice.payment_details && typeof invoice.payment_details === 'string') {
-            try {
-              const pd = JSON.parse(invoice.payment_details);
-              directPaid = Object.values(pd).reduce((sum: number, val: any) => sum + (Number(val) || 0), 0);
-            } catch (e) {}
+          const pd = typeof invoice.payment_details === 'string' ? JSON.parse(invoice.payment_details) : invoice.payment_details;
+          if (Array.isArray(pd)) {
+            directPaid = pd.reduce((sum: number, p: any) => sum + (Number(p.amount || 0)), 0);
+          } else if (pd && typeof pd === 'object') {
+            directPaid = Object.values(pd).reduce((sum: number, val: any) => sum + (Number(val) || 0), 0);
           }
 
           const trueAmountPaid = receiptPaid + directPaid;
@@ -455,13 +453,11 @@ export class SalesReturnService {
           const receiptPaid = (invoice.receipt_items || []).reduce((sum, ri) => sum + Number(ri.amount_paid || 0), 0);
           
           let directPaid = 0;
-          if (invoice.payment_details && typeof invoice.payment_details === 'object') {
-            directPaid = Object.values(invoice.payment_details).reduce((sum: number, val: any) => sum + (Number(val) || 0), 0);
-          } else if (invoice.payment_details && typeof invoice.payment_details === 'string') {
-            try {
-              const pd = JSON.parse(invoice.payment_details);
-              directPaid = Object.values(pd).reduce((sum: number, val: any) => sum + (Number(val) || 0), 0);
-            } catch (e) {}
+          const pd = typeof invoice.payment_details === 'string' ? JSON.parse(invoice.payment_details) : invoice.payment_details;
+          if (Array.isArray(pd)) {
+            directPaid = pd.reduce((sum: number, p: any) => sum + (Number(p.amount || 0)), 0);
+          } else if (pd && typeof pd === 'object') {
+            directPaid = Object.values(pd).reduce((sum: number, val: any) => sum + (Number(val) || 0), 0);
           }
 
           const trueAmountPaid = receiptPaid + directPaid;
