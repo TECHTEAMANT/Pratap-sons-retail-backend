@@ -100,18 +100,21 @@ export class BookingService {
         ) AS items
 
       FROM e_bookings b
-      LEFT JOIN floors              f   ON f.id   = b.floor::uuid
+      -- floor is stored as TEXT (nullable uuid) — use NULLIF to avoid cast errors on NULL
+      LEFT JOIN floors              f   ON f.id   = NULLIF(b.floor, '')::uuid
       LEFT JOIN customers           c   ON c.mobile = b.customer_mobile
-      LEFT JOIN salesmen            sm  ON sm.id  = b.salesman_id::uuid
-      LEFT JOIN users               du  ON du.id  = b.discount_given_by::uuid
+      -- salesman_id and discount_given_by are real uuid columns, no cast needed
+      LEFT JOIN salesmen            sm  ON sm.id  = b.salesman_id
+      LEFT JOIN users               du  ON du.id  = b.discount_given_by
       LEFT JOIN e_booking_items     bi  ON bi.e_booking_id = b.id
-      LEFT JOIN salesmen            ism ON ism.id = bi.salesman_id::uuid
+      -- bi.salesman_id is uuid nullable, no cast needed
+      LEFT JOIN salesmen            ism ON ism.id = bi.salesman_id
       -- Join inventory: barcode_batches is the actual inventory table
-      -- DB columns are named 'product_group', 'color', 'size' (not *_id)
+      -- DB columns are named 'product_group', 'color', 'size' (stored as text uuid)
       LEFT JOIN barcode_batches     inv ON inv.barcode_alias_8digit = bi.barcode_8digit
-      LEFT JOIN product_groups      pg  ON pg.id  = inv.product_group::uuid
-      LEFT JOIN colors              col ON col.id  = inv.color::uuid
-      LEFT JOIN sizes               sz  ON sz.id   = inv.size::uuid
+      LEFT JOIN product_groups      pg  ON pg.id  = NULLIF(inv.product_group, '')::uuid
+      LEFT JOIN colors              col ON col.id  = NULLIF(inv.color, '')::uuid
+      LEFT JOIN sizes               sz  ON sz.id   = NULLIF(inv.size, '')::uuid
 
       WHERE b.id = $1
       GROUP BY
