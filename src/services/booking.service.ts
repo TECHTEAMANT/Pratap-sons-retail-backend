@@ -100,18 +100,17 @@ export class BookingService {
         ) AS items
 
       FROM e_bookings b
-      -- Compare uuid id TO text column (not the other way — avoids cast errors on empty/null)
-      LEFT JOIN floors              f   ON CAST(f.id AS TEXT) = b.floor
-      LEFT JOIN customers           c   ON c.mobile = b.customer_mobile
-      LEFT JOIN salesmen            sm  ON sm.id = b.salesman_id
-      LEFT JOIN users               du  ON du.id = b.discount_given_by
-      LEFT JOIN e_booking_items     bi  ON bi.e_booking_id = b.id
-      LEFT JOIN salesmen            ism ON ism.id = bi.salesman_id
-      LEFT JOIN barcode_batches     inv ON inv.barcode_alias_8digit = bi.barcode_8digit
-      -- product_group/color/size are text columns storing uuid — compare by casting id to text
-      LEFT JOIN product_groups      pg  ON CAST(pg.id AS TEXT) = inv.product_group
-      LEFT JOIN colors              col ON CAST(col.id AS TEXT) = inv.color
-      LEFT JOIN sizes               sz  ON CAST(sz.id  AS TEXT) = inv.size
+      -- Use explicit TEXT casting on both sides for all joins to avoid 'text = uuid' operator errors
+      LEFT JOIN floors              f   ON CAST(f.id AS TEXT) = CAST(b.floor AS TEXT)
+      LEFT JOIN customers           c   ON CAST(c.mobile AS TEXT) = CAST(b.customer_mobile AS TEXT)
+      LEFT JOIN salesmen            sm  ON CAST(sm.id AS TEXT) = CAST(b.salesman_id AS TEXT)
+      LEFT JOIN users               du  ON CAST(du.id AS TEXT) = CAST(b.discount_given_by AS TEXT)
+      LEFT JOIN e_booking_items     bi  ON CAST(bi.e_booking_id AS TEXT) = CAST(b.id AS TEXT)
+      LEFT JOIN salesmen            ism ON CAST(ism.id AS TEXT) = CAST(bi.salesman_id AS TEXT)
+      LEFT JOIN barcode_batches     inv ON CAST(inv.barcode_alias_8digit AS TEXT) = CAST(bi.barcode_8digit AS TEXT)
+      LEFT JOIN product_groups      pg  ON CAST(pg.id AS TEXT) = CAST(inv.product_group AS TEXT)
+      LEFT JOIN colors              col ON CAST(col.id AS TEXT) = CAST(inv.color AS TEXT)
+      LEFT JOIN sizes               sz  ON CAST(sz.id AS TEXT) = CAST(inv.size AS TEXT)
 
       WHERE b.id = $1
       GROUP BY
