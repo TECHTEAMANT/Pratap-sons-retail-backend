@@ -731,6 +731,14 @@ export class PurchaseService {
       }
  
       // ── 2. Update purchase_orders header ──────────────────────────────────
+      if (currentPO.vendor !== vendor) {
+        console.log(`[BULK-UPDATE] Vendor changed from ${currentPO.vendor} to ${vendor}. Updating associated barcode batches.`);
+        await manager.query(
+          `UPDATE barcode_batches SET vendor = $1 WHERE po_id = $2`,
+          [vendor, poId]
+        );
+      }
+
       await manager.query(
         `UPDATE purchase_orders SET
            vendor = $1, order_date = $2, invoice_number = $3,

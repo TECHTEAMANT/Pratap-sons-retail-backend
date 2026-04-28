@@ -5,6 +5,10 @@ import { Salesman } from './Salesman';
 import { User } from './User';
 import { Floor } from './Floor';
 import { PaymentReceiptItem } from './PaymentReceiptItem';
+import { SalesReturn } from './SalesReturn';
+import { CreditCouponApplication } from './CreditCouponApplication';
+import { SalesOrderAdvanceApplication } from './SalesOrderAdvanceApplication';
+import { CreditNoteApplication } from './CreditNoteApplication';
 
 @Entity('sales_invoices')
 export class SalesInvoice {
@@ -172,4 +176,16 @@ export class SalesInvoice {
 
   @OneToMany(() => PaymentReceiptItem, item => item.invoice)
   receipt_items: PaymentReceiptItem[];
+
+  @OneToMany(() => SalesReturn, salesReturn => salesReturn.invoice)
+  sales_returns: SalesReturn[];
+
+  @OneToMany(() => CreditCouponApplication, app => app.invoice)
+  coupon_applications: CreditCouponApplication[];
+
+  @OneToMany(() => SalesOrderAdvanceApplication, app => app.invoice)
+  advance_applications: SalesOrderAdvanceApplication[];
+
+  @OneToMany(() => CreditNoteApplication, app => app.invoice)
+  credit_note_applications: CreditNoteApplication[];
 }

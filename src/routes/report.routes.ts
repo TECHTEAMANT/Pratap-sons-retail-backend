@@ -20,6 +20,8 @@ router.get('/salesman', (req, res) => reportController.salesmanReport(req, res))
 router.get('/customers', (req, res) => reportController.customerReport(req, res));
 router.get('/purchases', (req, res) => reportController.purchaseReport(req, res));
 router.get('/profitability', (req, res) => reportController.profitabilityReport(req, res));
+router.get('/purchase-analysis', (req, res) => reportController.purchaseAnalysisReport(req, res));
+router.get('/vendor-profitability', (req, res) => reportController.vendorProfitability(req, res));
 router.get('/top-selling', (req, res) => reportController.topSellingReport(req, res));
 router.get('/slow-moving', (req, res) => reportController.slowMovingReport(req, res));
 router.get('/floorwise-sales', (req, res) => reportController.floorwiseReport(req, res));
@@ -29,5 +31,6 @@ router.get('/vendor-analysis', (req, res) => reportController.vendorAnalysisRepo
 router.get('/advances', (req, res) => reportController.advanceAnalysis(req, res));
 router.get('/approval', (req, res) => reportController.approvalReport(req, res));
 router.get('/wallet-ledger', (req, res) => reportController.walletLedgerReport(req, res));
+router.get('/pending-payments', (req, res) => reportController.pendingPayments(req, res));
 
 export default router;

@@ -10,7 +10,8 @@ import { SalesReturnItem } from '../entities/SalesReturnItem';
 import { PurchaseReturnItem } from '../entities/PurchaseReturnItem';
 import { SalesOrderAdvance } from '../entities/SalesOrderAdvance';
 import { PaymentReceipt } from '../entities/PaymentReceipt';
-import { Between, MoreThanOrEqual, LessThanOrEqual, Raw } from 'typeorm';
+import { PaymentReceiptItem } from '../entities/PaymentReceiptItem';
+import { Between, MoreThanOrEqual, LessThanOrEqual, Raw, In } from 'typeorm';
 import logger from '../utils/logger';
 
 export class ReportService {
@@ -93,6 +94,10 @@ export class ReportService {
       .leftJoin('items.product_item', 'bb') // Needed for vendor filtering
       .leftJoinAndSelect('si.receipt_items', 'ri')
       .leftJoinAndSelect('ri.receipt', 'receipt')
+      .leftJoinAndSelect('si.sales_returns', 'sr')
+      .leftJoinAndSelect('si.coupon_applications', 'ca')
+      .leftJoinAndSelect('si.advance_applications', 'aa')
+      .leftJoinAndSelect('si.credit_note_applications', 'cna')
       .where('si.invoice_date BETWEEN :start AND :end', { start, end });
 
     if (filters.floorId) {
@@ -131,7 +136,8 @@ export class ReportService {
         Approval: 0,
         'Credit Coupon': 0,
         'Exchange': 0,
-        'Others': 0
+        'Others': 0,
+        'Return Credit': 0
       },
       approvalItemCount: 0,
       totalQuantity: 0,
@@ -163,19 +169,20 @@ export class ReportService {
       const reconstructedItemDisc = invoiceItems.reduce((s, i) => s + (Number(i.discount || 0) * Number(i.quantity || 1)), 0);
       
       // --- Fix Discount Doubling ---
-      // We reconcile the sum of item-level discounts against the total header-level discount bundle.
-      // Since modern invoices prorate Special, Voucher, and Loyalty into the item 'discount' field, 
-      // adding the header fields again would cause double counting. 
-      // We trust the Maximum of the two approaches (Item Reconstruction vs Header Totals).
+      // Modern invoices prorate Voucher/Special/Loyalty into the individual item 'discount' field.
+      // Therefore, if item-level discounts exist, they are the single source of truth for the "Total Discount".
+      // Summing Header fields (total_discount + special_discount) on top of this causes double-counting.
+      // We fall back to the header bundle ONLY if reconstructed item discounts are zero.
       const totalHeaderBundle = (parseFloat(inv.total_discount as any) || 0) + 
                                (parseFloat(inv.special_discount as any) || 0) + 
                                (parseFloat(inv.voucher_discount as any) || 0) + 
-                               (parseFloat(inv.loyalty_redemption_amount as any) || 0) + 
-                               (parseFloat((inv as any).coupon_amount as any) || 0);
+                               (parseFloat(inv.loyalty_redemption_amount as any) || 0);
 
-      const totalDisc = Math.max(reconstructedItemDisc, totalHeaderBundle);
+      // If reconstructed disc is found, it already includes all prorated components from the header.
+      const totalDisc = (reconstructedItemDisc > 0.01) ? reconstructedItemDisc : totalHeaderBundle;
+      const returnsAmt = (inv.sales_returns || []).reduce((s: number, r: any) => s + (Number(r.total_return_amount) || 0), 0);
 
-      const calculatedNet = reconstructedMRP - totalDisc + (parseFloat(inv.additional_charges_total as any) || 0);
+      const calculatedNet = reconstructedMRP - totalDisc + (parseFloat(inv.additional_charges_total as any) || 0) - returnsAmt;
       const finalNet = Math.round(calculatedNet);
 
       // --- NEW: Parse Payment Details FIRST to use as source of truth ---
@@ -212,17 +219,42 @@ export class ReportService {
       let hasCreditCoupon = false;
 
       // Unified Payment Processing (Initial Payments + Subsequent Receipts)
-      const allPaymentSources: { mode: string, amount: number }[] = [...detailsArray];
-      
-      // Integrate linked receipts (payments made later)
-      if (inv.receipt_items && inv.receipt_items.length > 0) {
-        inv.receipt_items.forEach((ri: any) => {
-          allPaymentSources.push({
-            mode: ri.receipt?.payment_mode || 'Receipt',
-            amount: parseFloat(ri.amount_paid) || 0
-          });
-        });
-      }
+      // 1. Calculate sum of actual receipts
+      const receiptPayments = (inv.receipt_items || []).map((ri: any) => ({
+        mode: ri.receipt?.payment_mode || 'Receipt',
+        amount: parseFloat(ri.amount_paid as any) || 0
+      })).filter(p => p.amount > 0);
+
+      const couponReceipts = (inv.coupon_applications || []).map((ca: any) => ({
+        mode: 'Credit Coupon',
+        amount: parseFloat(ca.amount_applied as any) || 0
+      }));
+
+      const advanceReceipts = (inv.advance_applications || []).map((aa: any) => ({
+        mode: 'Advance',
+        amount: parseFloat(aa.amount_applied as any) || 0
+      }));
+
+      const creditNoteReceipts = (inv.credit_note_applications || []).map((cna: any) => ({
+        mode: 'Credit Note',
+        amount: parseFloat(cna.amount_applied as any) || 0
+      }));
+
+      const totalExternalApplications = receiptPayments.reduce((s, r) => s + r.amount, 0) + 
+                                       couponReceipts.reduce((s, r) => s + r.amount, 0) + 
+                                       advanceReceipts.reduce((s, r) => s + r.amount, 0) + 
+                                       creditNoteReceipts.reduce((s, r) => s + r.amount, 0);
+
+      // 2. Adjust initial payments to avoid double counting Approval vs Receipts/Credits
+      const adjustedInitialPayments = detailsArray.map((pd: any) => {
+        const mode = (pd.mode || '').toString().toUpperCase();
+        if (mode.includes('APPROVAL')) {
+          return { ...pd, amount: Math.max(0, (parseFloat(pd.amount as any) || 0) - totalExternalApplications) };
+        }
+        return pd;
+      });
+
+      const allPaymentSources = [...adjustedInitialPayments, ...receiptPayments, ...couponReceipts, ...advanceReceipts, ...creditNoteReceipts];
 
       allPaymentSources.forEach((pd: any) => {
         const rawMode = (pd.mode || '').toString().toUpperCase();
@@ -316,6 +348,7 @@ export class ReportService {
       result.paymentBreakdown['Credit Coupon'] += invoicePaymentBreakdown['Credit Coupon'];
       (result.paymentBreakdown as any).Exchange += invoicePaymentBreakdown.Exchange;
       (result.paymentBreakdown as any).Others += invoicePaymentBreakdown.Others;
+      (result.paymentBreakdown as any)['Return Credit'] += returnsAmt;
 
       result.cgst_5 += parseFloat(inv.cgst_5 as any) || 0;
       result.sgst_5 += parseFloat(inv.sgst_5 as any) || 0;
@@ -344,8 +377,9 @@ export class ReportService {
         is_on_approval: isApprovalInvoice || hasApprovalItems,
         payment_breakdown: invoicePaymentBreakdown,
         // Status logic
-        payment_status: (adjustedPending <= 0.05) ? 'paid' : (finalRealPaid > 0.1 ? 'partial' : 'pending'),
-        total_quantity: inv.items ? inv.items.reduce((sum, i) => sum + (Number(i.quantity) || 0), 0) : 0
+        payment_status: (adjustedPending <= 0.05) ? 'returned' : (adjustedPending <= 0.05 ? 'paid' : (finalRealPaid > 0.1 ? 'partial' : 'pending')),
+        total_quantity: inv.items ? inv.items.reduce((sum, i) => sum + (Number(i.quantity) || 0), 0) : 0,
+        return_credit: returnsAmt
       });
     });
 
@@ -505,45 +539,132 @@ export class ReportService {
     const start = filters.startDate.split('T')[0];
     const end = filters.endDate.split('T')[0];
 
+    // Use a more inclusive status filter. Usually we want everything that's not a temporary draft or cancelled.
+    // However, to be safe and "take all invoices" as per user request, we include everything except maybe deleted ones if that exists.
+    const activeStatuses = ['Completed', 'Pending', 'Draft', 'Approved', 'Partially Received', 'Received'];
+
     const qb = AppDataSource.getRepository(PurchaseOrder)
       .createQueryBuilder('po')
       .select([
         'COALESCE(SUM(po.total_amount), 0) as total_purchase',
         'COALESCE(SUM(po.total_items), 0) as total_items',
+        'COALESCE(SUM(po.taxable_value), 0) as total_taxable',
         'COALESCE(SUM(po.total_amount - po.taxable_value - COALESCE(po.ledger_freight, 0)), 0) as total_gst',
         'COUNT(po.id) as po_count',
         'COALESCE(AVG(po.total_amount), 0) as avg_po_value',
       ])
-      .where('po.order_date BETWEEN :start AND :end', { start, end })
-      .andWhere('po.status != :status', { status: 'Pending' });
+      .where('po.order_date >= :start AND po.order_date <= :end', { start, end });
 
-    if (filters.vendorId) {
+    if (filters.vendorId && filters.vendorId !== '' && filters.vendorId !== 'undefined' && filters.vendorId !== 'null') {
       qb.andWhere('po.vendor_id = :vendorId', { vendorId: filters.vendorId });
     }
 
     const result = await qb.getRawOne();
-    const detailedList = await qb.getRawMany(); // Note: qb might need to be cloned or slightly modified if summary query differs
 
-    // Re-run for detailed list with join to vendor
     const detailsQb = AppDataSource.getRepository(PurchaseOrder)
       .createQueryBuilder('po')
       .leftJoinAndSelect('po.vendor', 'vendor')
-      .where('po.order_date BETWEEN :start AND :end', { start, end })
-      .andWhere('po.status != :status', { status: 'Pending' });
+      .where('po.order_date >= :start AND po.order_date <= :end', { start, end });
 
-    if (filters.vendorId) {
+    if (filters.vendorId && filters.vendorId !== '' && filters.vendorId !== 'undefined' && filters.vendorId !== 'null') {
       detailsQb.andWhere('po.vendor_id = :vendorId', { vendorId: filters.vendorId });
     }
-    detailsQb.orderBy('po.order_date', 'DESC').limit(500);
+
+    detailsQb.orderBy('po.order_date', 'DESC').limit(1000); // Increased limit as well
     const details = await detailsQb.getMany();
 
     return {
-      totalPurchase: parseFloat(result.total_purchase),
-      totalItems: parseFloat(result.total_items),
-      totalGST: parseFloat(result.total_gst),
-      poCount: parseInt(result.po_count),
-      avgPOValue: parseFloat(result.avg_po_value),
-      detailedList: details
+      success: true,
+      data: {
+        totalPurchase: parseFloat(result.total_purchase),
+        totalItems: parseFloat(result.total_items),
+        totalGST: parseFloat(result.total_gst),
+        totalTaxable: parseFloat(result.total_taxable),
+        poCount: parseInt(result.po_count),
+        avgPOValue: parseFloat(result.avg_po_value),
+        detailedList: details
+      }
+    };
+  }
+
+  async purchaseAnalysisReport(filters: { startDate: string, endDate: string, vendorId?: string }) {
+    const start = filters.startDate.split('T')[0];
+    const end = filters.endDate.split('T')[0];
+    
+    // For timestamps, we want to include the entire end day.
+    const endPlusOne = new Date(new Date(end).getTime() + 86400000).toISOString().split('T')[0];
+
+    const qb = AppDataSource.getRepository(BarcodeBatch)
+      .createQueryBuilder('bb')
+      .leftJoinAndSelect('bb.vendor', 'v')
+      .leftJoinAndSelect('purchase_orders', 'po', 'po.id = bb.po_id')
+      .select([
+        'bb.barcode_alias_8digit as barcode',
+        'bb.design_no as design_no',
+        'bb.created_at as date',
+        'bb.total_quantity as quantity',
+        'v.name as vendor_name',
+        'COALESCE(bb.cost_actual, 0) as cost',
+        'COALESCE(bb.mrp, 0) as mrp',
+        'po.po_number as po_number',
+        'po.invoice_number as po_invoice_number',
+        'po.order_date as po_date'
+      ])
+      .where('bb.created_at >= :start AND bb.created_at < :endPlusOne', { start, endPlusOne });
+
+    if (filters.vendorId && filters.vendorId !== 'null' && filters.vendorId !== 'undefined' && filters.vendorId !== '') {
+      qb.andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
+    }
+
+    const items = await qb.getRawMany();
+
+    let totalCost = 0;
+    let totalMRP = 0;
+    let totalQuantity = 0;
+
+    const details = items.map(item => {
+      const quantity = parseFloat(item.quantity) || 0;
+      const cost = parseFloat(item.cost) || 0;
+      const mrp = parseFloat(item.mrp) || 0;
+      const totalItemCost = cost * quantity;
+      const totalItemMRP = mrp * quantity;
+      const discount = totalItemMRP - totalItemCost;
+      const margin = mrp > 0 ? ((mrp - cost) / mrp) * 100 : 0;
+
+      totalCost += totalItemCost;
+      totalMRP += totalItemMRP;
+      totalQuantity += quantity;
+
+      return {
+        ...item,
+        quantity,
+        cost,
+        mrp,
+        totalCost: totalItemCost,
+        totalMRP: totalItemMRP,
+        discount,
+        margin
+      };
+    });
+
+    return {
+      success: true,
+      data: {
+        summary: {
+          totalCost: Math.round(totalCost * 100) / 100,
+          totalMRP: Math.round(totalMRP * 100) / 100,
+          totalDiscount: Math.round((totalMRP - totalCost) * 100) / 100,
+          avgMargin: totalMRP > 0 ? ((totalMRP - totalCost) / totalMRP) * 100 : 0,
+          totalItems: totalQuantity
+        },
+        details: details.map(d => ({
+          ...d,
+          totalCost: Math.round(d.totalCost * 100) / 100,
+          totalMRP: Math.round(d.totalMRP * 100) / 100,
+          discount: Math.round(d.discount * 100) / 100,
+          margin: Math.round(d.margin * 100) / 100
+        }))
+      }
     };
   }
 
@@ -657,6 +778,9 @@ export class ReportService {
       .createQueryBuilder('sii')
       .innerJoin('sii.invoice', 'si')
       .leftJoin(BarcodeBatch, 'bb', 'bb.barcode_alias_8digit = sii.barcode_8digit')
+      .leftJoin('bb.vendor', 'v')
+      .leftJoin(SalesReturn, 'sr', 'sr.invoice_id = si.id AND sr.return_date BETWEEN :start AND :end')
+      .leftJoin(SalesReturnItem, 'sri', 'sri.return_id = sr.id AND sri.barcode_8digit = sii.barcode_8digit')
       .select([
         'si.invoice_number as invoice_number',
         'si.invoice_date as invoice_date',
@@ -665,18 +789,27 @@ export class ReportService {
         'sii.barcode_8digit as barcode',
         'sii.design_no as design_no',
         'sii.product_description as product_description',
-        'sii.quantity as quantity',
+        'sii.gst_percentage as gst_percentage',
+        'COALESCE(SUM(sri.quantity), 0) as return_qty',
+        'COALESCE(sii.quantity, 0) - COALESCE(SUM(sri.quantity), 0) as quantity',
+        'sii.quantity as original_quantity',
         'COALESCE(bb.cost_actual, 0) as cost',
         'sii.mrp as mrp',
         'sii.discount as discount',
-        'sii.selling_price as revenue'
+        'COALESCE(sii.taxable_value, (sii.selling_price * 100 / (100 + COALESCE(sii.gst_percentage, 0))) * sii.quantity) as original_taxable_value',
+        '(COALESCE(sii.cgst_amount, 0) + COALESCE(sii.sgst_amount, 0) + COALESCE(sii.igst_amount, 0)) as original_gst_amount',
+        'COALESCE(NULLIF(sii.selling_price, 0), sii.mrp - sii.discount) as selling_price',
+        'v.name as vendor_name',
+        'v.id as vendor_id'
       ])
-      .where('si.invoice_date BETWEEN :start AND :end', { start, end });
+      .where('si.invoice_date BETWEEN :start AND :end', { start, end })
+      .groupBy('si.id, sii.id, bb.id, v.id')
+      .having('COALESCE(sii.quantity, 0) - COALESCE(SUM(sri.quantity), 0) > 0');
 
-    if (filters.vendorId) {
-      qb.andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
+    if (filters.vendorId && filters.vendorId !== 'null' && filters.vendorId !== 'undefined' && filters.vendorId !== '') {
+      qb.andWhere('v.id = :vendorId', { vendorId: filters.vendorId });
     }
-    if (filters.floorId) {
+    if (filters.floorId && filters.floorId !== 'null' && filters.floorId !== 'undefined' && filters.floorId !== '') {
       qb.andWhere('si.floor_id = :floorId', { floorId: filters.floorId });
     }
 
@@ -684,34 +817,54 @@ export class ReportService {
 
     let totalRevenue = 0;
     let totalCost = 0;
+    let totalGST = 0;
+    let totalCostGST = 0;
     let totalMRP = 0;
     let totalDiscount = 0;
     let totalQuantitySold = 0;
 
     const details = items.map(item => {
       const quantity = parseFloat(item.quantity) || 0;
+      const originalQuantity = parseFloat(item.original_quantity) || 1;
+      const return_qty = parseFloat(item.return_qty) || 0;
       const cost = parseFloat(item.cost) || 0;
-      const revenue = parseFloat(item.revenue) || 0;
+      const selling_price = parseFloat(item.selling_price) || 0;
+      const gstPercentage = parseFloat(item.gst_percentage) || 0;
+      const originalTaxable = parseFloat(item.original_taxable_value) || 0;
+      const originalGst = parseFloat(item.original_gst_amount) || 0;
+      
+      // Calculate proportionally if there was a partial return
+      const ratio = quantity / originalQuantity;
+      const revenue = originalTaxable * ratio; 
+      const itemGst = originalGst * ratio;
+      
       const mrp = parseFloat(item.mrp) || 0;
       const discount = parseFloat(item.discount) || 0;
-      const itemCost = cost * quantity;
+      const itemCost = cost * quantity; 
+      const costGst = itemCost * (gstPercentage / 100);
       const profit = revenue - itemCost;
       const profitMargin = revenue > 0 ? (profit / revenue) * 100 : 0;
 
-      totalRevenue += revenue * quantity;
+      totalRevenue += revenue;
       totalCost += itemCost;
+      totalGST += itemGst;
+      totalCostGST += costGst;
       totalMRP += mrp * quantity;
-      totalDiscount += discount * quantity;
+      totalDiscount += discount * (quantity + return_qty);
       totalQuantitySold += quantity;
 
       return {
         ...item,
         quantity,
+        return_qty,
         cost,
         revenue,
+        gst: itemGst,
+        cost_gst: costGst,
+        totalCost: itemCost,
+        totalCostGross: itemCost + costGst,
         mrp,
         discount,
-        totalCost: itemCost,
         profit,
         profitMargin
       };
@@ -719,18 +872,130 @@ export class ReportService {
 
     return {
       summary: {
-        totalRevenue,
-        totalCost,
-        grossProfit: totalRevenue - totalCost,
+        totalRevenue: Math.round(totalRevenue * 100) / 100,
+        totalCost: Math.round(totalCost * 100) / 100,
+        totalGST: Math.round(totalGST * 100) / 100,
+        totalCostGST: Math.round(totalCostGST * 100) / 100,
+        grossProfit: Math.round((totalRevenue - totalCost) * 100) / 100,
         profitMargin: totalRevenue > 0 ? ((totalRevenue - totalCost) / totalRevenue) * 100 : 0,
-        totalMRP,
-        totalDiscount,
+        totalMRP: Math.round(totalMRP * 100) / 100,
+        totalDiscount: Math.round(totalDiscount * 100) / 100,
         itemsSold: totalQuantitySold
       },
-      details
+      details: details.map(d => ({
+        ...d,
+        revenue: Math.round(d.revenue * 100) / 100,
+        profit: Math.round(d.profit * 100) / 100,
+        selling_price: Math.round(d.selling_price * 100) / 100
+      }))
     };
   }
+
  
+  async vendorProfitabilityReport(filters: { startDate: string, endDate: string, floorId?: string, vendorId?: string }) {
+    // 1. Get the base profitability data (this ensures item-level math is identical)
+    const baseData = await this.profitabilityReport(filters);
+    const items = baseData.details;
+
+    // 2. Fetch independent data (Purchases & Stock) - these don't depend on sales
+    const start = filters.startDate.split('T')[0];
+    const end = filters.endDate.split('T')[0];
+
+    // Purchases per vendor in period
+    const purchasesQB = AppDataSource.getRepository(BarcodeBatch)
+      .createQueryBuilder('bb')
+      .leftJoin('bb.vendor', 'v')
+      .select([
+        'COALESCE(v.name, \'Direct/Unknown\') as vendor_name',
+        'SUM(COALESCE(bb.total_quantity, 0)) as purchase_quantity',
+        'SUM(COALESCE(bb.cost_actual, 0) * COALESCE(bb.total_quantity, 0)) as purchase_cost',
+        'SUM(COALESCE(bb.mrp, 0) * COALESCE(bb.total_quantity, 0)) as purchase_mrp'
+      ])
+      .where('bb.created_at BETWEEN :start AND :end', { start, end });
+
+    if (filters.vendorId && filters.vendorId !== '' && filters.vendorId !== 'null' && filters.vendorId !== 'undefined') {
+      purchasesQB.andWhere('v.id = :vendorId', { vendorId: filters.vendorId });
+    }
+    const purchasesData = await purchasesQB.groupBy('COALESCE(v.name, \'Direct/Unknown\')').getRawMany();
+    const purchaseMap = new Map(purchasesData.map(p => [p.vendor_name, p]));
+
+    // Current Stock globally for vendors
+    const stockQB = AppDataSource.getRepository(BarcodeBatch)
+      .createQueryBuilder('bb')
+      .leftJoin('bb.vendor', 'v')
+      .select([
+        'COALESCE(v.name, \'Direct/Unknown\') as vendor_name',
+        'SUM(COALESCE(bb.available_quantity, 0)) as current_stock_qty'
+      ]);
+
+    if (filters.vendorId && filters.vendorId !== '' && filters.vendorId !== 'null' && filters.vendorId !== 'undefined') {
+      stockQB.andWhere('v.id = :vendorId', { vendorId: filters.vendorId });
+    }
+    const stockData = await stockQB.groupBy('COALESCE(v.name, \'Direct/Unknown\')').getRawMany();
+    const stockMap = new Map(stockData.map(s => [s.vendor_name, s]));
+
+    // 3. Aggregate Sales data from baseData.details
+    const vendorMap = new Map<string, any>();
+
+    items.forEach((item: any) => {
+      const vName = item.vendor_name || 'Direct/Unknown';
+      if (!vendorMap.has(vName)) {
+        vendorMap.set(vName, {
+          total_quantity: 0,
+          total_revenue: 0,
+          total_cost: 0,
+          cost_gst: 0,
+          gst_amount: 0,
+          total_mrp: 0
+        });
+      }
+
+      const v = vendorMap.get(vName);
+      v.total_quantity += (parseFloat(item.quantity) || 0);
+      v.total_revenue += (parseFloat(item.revenue) || 0);
+      v.total_cost += (parseFloat(item.totalCost) || 0);
+      v.cost_gst += (parseFloat(item.cost_gst) || 0);
+      v.gst_amount += (parseFloat(item.gst) || 0);
+      v.total_mrp += (parseFloat(item.mrp) * (parseFloat(item.quantity) || 0));
+    });
+
+    // 4. Merge everything
+    const allVendorNames = new Set([
+      ...Array.from(purchaseMap.keys()),
+      ...Array.from(stockMap.keys()),
+      ...Array.from(vendorMap.keys())
+    ]);
+
+    const finalResults = Array.from(allVendorNames).map(vName => {
+      const sale = vendorMap.get(vName) || { total_quantity: 0, total_revenue: 0, total_cost: 0, cost_gst: 0, gst_amount: 0, total_mrp: 0 };
+      const purch = purchaseMap.get(vName) || { purchase_quantity: 0, purchase_cost: 0, purchase_mrp: 0 };
+      const stk = stockMap.get(vName) || { current_stock_qty: 0 };
+
+      const revenue = sale.total_revenue;
+      const cost = sale.total_cost;
+      const profit = revenue - cost;
+      const margin = revenue > 0 ? (profit / revenue) * 100 : 0;
+
+      return {
+        vendor_name: vName,
+        purchase_qty: parseFloat(purch.purchase_quantity) || 0,
+        purchase_cost: parseFloat(purch.purchase_cost) || 0,
+        purchase_mrp: parseFloat(purch.purchase_mrp) || 0,
+        current_stock: parseFloat(stk.current_stock_qty) || 0,
+        total_quantity: sale.total_quantity,
+        total_revenue: Math.round(revenue * 100) / 100,
+        total_cost: Math.round(cost * 100) / 100,
+        cost_gst: Math.round(sale.cost_gst * 100) / 100,
+        gst_amount: Math.round(sale.gst_amount * 100) / 100,
+        total_mrp: Math.round(sale.total_mrp * 100) / 100,
+        profit: Math.round(profit * 100) / 100,
+        margin: Math.round(margin * 100) / 100
+      };
+    }).filter(v => v.purchase_qty !== 0 || v.total_quantity !== 0 || v.current_stock !== 0);
+
+    return finalResults.sort((a, b) => b.total_revenue - a.total_revenue);
+  }
+
   async topSellingReport(filters: { startDate: string, endDate: string, vendorId?: string, floorId?: string }) {
     const start = filters.startDate.split('T')[0];
     const end = filters.endDate.split('T')[0];
@@ -1047,13 +1312,17 @@ export class ReportService {
           'sz.name as size_name', 
           'cl.name as color_name',
           'COALESCE(SUM(quantity_expr), 0) as qty',
-          'COALESCE(SUM(value_expr), 0) as value'
+          'COALESCE(SUM(value_expr), 0) as value',
+          'COALESCE(SUM(mrp_expr), 0) as mrp_value',
+          'MAX(bb.cost_actual) as cost_actual'
         ]
       : [
           'v.id as id',
           'v.name as name',
           'COALESCE(SUM(quantity_expr), 0) as qty',
-          'COALESCE(SUM(value_expr), 0) as value'
+          'COALESCE(SUM(value_expr), 0) as value',
+          'COALESCE(SUM(mrp_expr), 0) as mrp_value',
+          'MAX(bb.cost_actual) as cost_actual'
         ];
 
     const buildQuery = (repo: any, dateField: string, isRange = false) => {
@@ -1095,9 +1364,12 @@ export class ReportService {
                      (repo === SalesInvoiceItem ? 'base.total_value' : 
                      (repo === SalesReturnItem ? 'base.return_amount' : 'base.cost * base.quantity'));
       
+      const mrpExpr = repo === BarcodeBatch ? `${bbAlias}.total_quantity * ${bbAlias}.mrp` : 
+                      ((repo === SalesInvoiceItem || repo === SalesReturnItem) ? 'base.quantity * base.mrp' : 'base.quantity * ' + bbAlias + '.mrp');
+
       const selectClone = selectFields.map(s => {
         let sql = s.replace(/bb\./g, `${bbAlias}.`);
-        sql = sql.replace('quantity_expr', qtyExpr).replace('value_expr', valExpr);
+        sql = sql.replace('quantity_expr', qtyExpr).replace('value_expr', valExpr).replace('mrp_expr', mrpExpr);
         return sql;
       });
 
@@ -1129,7 +1401,8 @@ export class ReportService {
           vendor_name: vend.name,
           opening_qty: 0, received_qty: 0, purchase_return_qty: 0, 
           sold_qty: 0, sales_return_qty: 0, closing_qty: 0, 
-          sales_value: 0, purchase_value: 0, unit_cost: 0
+          sales_value: 0, purchase_value: 0, unit_cost: 0,
+          received_mrp_value: 0, sold_mrp_value: 0
         });
       });
     }
@@ -1146,7 +1419,9 @@ export class ReportService {
           size_name: d.size_name,
           color_name: d.color_name,
           display_name: vendorId ? `${d.design_no} (${d.color_name || 'N/A'} / ${d.size_name || 'N/A'})` : d.name,
-          opening_qty: 0, received_qty: 0, sold_qty: 0, returns_qty: 0, closing_qty: 0, sales_value: 0, purchase_value: 0
+          opening_qty: 0, received_qty: 0, sold_qty: 0, returns_qty: 0, closing_qty: 0, 
+          sales_value: 0, purchase_value: 0, unit_cost: 0,
+          received_mrp_value: 0, sold_mrp_value: 0
         });
       }
       return dataMap.get(id);
@@ -1155,7 +1430,7 @@ export class ReportService {
     opRaw.forEach(d => { 
       const v = getEntry(d); 
       if (v) {
-        v.opening_qty += parseFloat(d.qty); 
+        v.opening_qty += parseFloat(d.qty || 0); 
         // Populate unit_cost from opening if not already set
         if (!v.unit_cost) {
           const qty = parseFloat(d.qty);
@@ -1164,50 +1439,68 @@ export class ReportService {
         }
       }
     });
-    osRaw.forEach(d => { const v = getEntry(d); if (v) v.opening_qty -= parseFloat(d.qty); });
-    orRaw.forEach(d => { const v = getEntry(d); if (v) v.opening_qty += parseFloat(d.qty); });
-    poRaw.forEach(d => { const v = getEntry(d); if (v) v.opening_qty -= parseFloat(d.qty); });
+
+    osRaw.forEach(d => { const v = getEntry(d); if (v) v.opening_qty -= parseFloat(d.qty || 0); });
+    orRaw.forEach(d => { const v = getEntry(d); if (v) v.opening_qty += parseFloat(d.qty || 0); });
+    poRaw.forEach(d => { const v = getEntry(d); if (v) v.opening_qty -= parseFloat(d.qty || 0); });
 
     ppRaw.forEach(d => { 
       const v = getEntry(d); 
       if (v) {
-        v.received_qty = parseFloat(d.qty);
-        v.purchase_value = parseFloat(d.value);
+        v.received_qty += parseFloat(d.qty || 0);
+        v.purchase_value += parseFloat(d.value || 0);
+        v.received_mrp_value += parseFloat(d.mrp_value || 0);
         v.unit_cost = v.received_qty > 0 ? (v.purchase_value / v.received_qty) : 0;
       }
     });
 
     prRaw.forEach(d => { 
       const v = getEntry(d); 
-      if (v) v.purchase_return_qty = parseFloat(d.qty); 
+      if (v) {
+        v.purchase_return_qty += parseFloat(d.qty || 0);
+        // Also subtract from purchase_value to get net purchase value
+        v.purchase_value -= parseFloat(d.value || 0);
+        v.received_mrp_value -= parseFloat(d.mrp_value || 0);
+      }
     });
 
     psRaw.forEach(d => { 
       const v = getEntry(d); 
       if (v) {
-        v.sold_qty = parseFloat(d.qty); 
-        v.sales_value = parseFloat(d.value);
-        // Fallback unit_cost from sales item (MRP-linked cost in BarcodeBatch)
+        v.sold_qty += parseFloat(d.qty || 0); 
+        v.sales_value += parseFloat(d.value || 0);
+        v.sold_mrp_value += parseFloat(d.mrp_value || 0);
+        // Fallback unit_cost from sales item
         if (!v.unit_cost) {
-          const res = d.cost || 0; // buildQuery selects bb.cost_actual for sales items
-          v.unit_cost = parseFloat(res);
+          v.unit_cost = parseFloat(d.cost_actual || d.cost || 0);
         }
       }
     });
 
     srRaw.forEach(d => { 
       const v = getEntry(d); 
-      if (v) v.sales_return_qty = parseFloat(d.qty); 
+      if (v) {
+        v.sales_return_qty += parseFloat(d.qty || 0); 
+        // SUBTRACT from sales_value to get NET SALES VALUE
+        v.sales_value -= parseFloat(d.value || 0);
+        v.sold_mrp_value -= parseFloat(d.mrp_value || 0);
+      }
     });
 
     let results = Array.from(dataMap.values())
       .map(v => {
         const net_purchase_qty = (v.received_qty || 0) - (v.purchase_return_qty || 0);
         const net_sales_qty = (v.sold_qty || 0) - (v.sales_return_qty || 0);
-        const closing_qty = (v.opening_qty || 0) + net_purchase_qty - net_sales_qty;
+        const raw_closing = (v.opening_qty || 0) + net_purchase_qty - net_sales_qty;
         
+        // Final reporting: Do not show negative stock to the vendor/user. 
+        // Negative stock usually indicates unrecorded purchases or old data errors.
+        const opening_qty = Math.max(0, v.opening_qty || 0);
+        const closing_qty = Math.max(0, raw_closing);
+
         return {
           ...v,
+          opening_qty,
           net_purchase_qty,
           net_sales_qty,
           closing_qty,
@@ -1216,12 +1509,14 @@ export class ReportService {
         };
       })
       .filter(v => 
-        Math.abs(v.opening_qty || 0) > 0.001 || 
-        (v.received_qty || 0) > 0.001 || 
-        (v.purchase_return_qty || 0) > 0.001 ||
-        (v.sold_qty || 0) > 0.001 || 
-        (v.sales_return_qty || 0) > 0.001 || 
-        Math.abs(v.closing_qty || 0) > 0.001
+        // Only show items with actual stock OR activity in the period.
+        // Hides purely negative "ghost" items from old data errors.
+        v.opening_qty > 0.001 || 
+        v.closing_qty > 0.001 || 
+        Math.abs(v.received_qty || 0) > 0.001 || 
+        Math.abs(v.purchase_return_qty || 0) > 0.001 ||
+        Math.abs(v.sold_qty || 0) > 0.001 || 
+        Math.abs(v.sales_return_qty || 0) > 0.001
       );
 
     // Apply Sorting
@@ -1636,6 +1931,158 @@ export class ReportService {
 
     const total = Number(countRows?.[0]?.total || 0);
     return { data: rows, total, page, limit };
+  }
+
+  async pendingPaymentsReport() {
+    // Step 1: Auto-correct ANY invoice where the customer hasn't actually paid but
+    // amount_pending was wrongly set to 0 by the return bug.
+    // SOURCE OF TRUTH: net_payable - amount_paid (not amount_pending which can be corrupted)
+    const staleInvoices = await AppDataSource.query(`
+      SELECT id, net_payable, amount_paid, amount_pending, payment_status
+      FROM sales_invoices
+      WHERE COALESCE(net_payable::numeric, 0) - COALESCE(amount_paid::numeric, 0) > 1
+        AND (payment_status = 'paid' OR COALESCE(amount_pending::numeric, 0) < 1)
+    `);
+    if (staleInvoices.length > 0) {
+      for (const s of staleInvoices) {
+        const truePending = Math.max(0, Number(s.net_payable) - Number(s.amount_paid));
+        const status = Number(s.amount_paid) > 0.05 ? 'partial' : 'pending';
+        await AppDataSource.query(
+          `UPDATE sales_invoices SET payment_status = $1, amount_pending = $2 WHERE id = $3`,
+          [status, truePending, s.id]
+        );
+      }
+    }
+
+    // Step 2: Fetch all invoices with a true pending balance (using net_payable - amount_paid)
+    const invoices = await AppDataSource.query(`
+      SELECT si.*, c.name as customer_name_rel, c.mobile as customer_mobile_rel, c.id as customer_id_rel
+      FROM sales_invoices si
+      LEFT JOIN customers c ON c.id = si.customer_id
+      WHERE COALESCE(si.net_payable::numeric, 0) - COALESCE(si.amount_paid::numeric, 0) > 1
+      ORDER BY si.invoice_date DESC
+    `);
+
+    // Normalize customer relation for frontend compatibility
+    const normalizedInvoices = invoices.map((inv: any) => ({
+      ...inv,
+      customer: inv.customer_id_rel ? {
+        id: inv.customer_id_rel,
+        name: inv.customer_name_rel,
+        mobile: inv.customer_mobile_rel
+      } : null,
+      // Recalculate correct amounts for display
+      amount_pending: Math.max(0, Number(inv.net_payable) - Number(inv.amount_paid))
+    }));
+
+    if (normalizedInvoices.length === 0) return { invoices: [], receipts: {} };
+
+    const invoiceIds = normalizedInvoices.map((inv: any) => inv.id);
+
+    // Fetch all receipt items for these invoices
+    const receiptItems = await AppDataSource.getRepository(PaymentReceiptItem).find({
+      where: {
+        invoice_id: In(invoiceIds)
+      },
+      relations: ['receipt'],
+      order: {
+        receipt: {
+          receipt_date: 'DESC'
+        }
+      }
+    });
+
+    // Fetch all sales returns for these invoices
+    const salesReturns = await AppDataSource.getRepository(SalesReturn).find({
+      where: {
+        invoice_id: In(invoiceIds)
+      },
+      order: {
+        return_date: 'DESC'
+      }
+    });
+
+    // Grouping by invoice_id
+    const receiptsMap: Record<string, any[]> = {};
+    
+    normalizedInvoices.forEach((inv: any) => {
+      // Check if there was an initial payment at the time of sale
+      // We can use the payment_details if available, or just the initial amount_paid
+      // Since amount_paid in SalesInvoice is cumulative (usually), we need to be careful.
+      // However, usually amount_paid starts with what was paid at sale.
+      
+      // Calculate sum of subsequent payments
+      const subReceipts = receiptItems.filter(ri => ri.invoice_id === inv.id);
+      const subTotal = subReceipts.reduce((sum, ri) => sum + Number(ri.amount_paid), 0);
+      
+      const subReturns = salesReturns.filter(sr => sr.invoice_id === inv.id);
+      const returnTotal = subReturns.reduce((sum, sr) => sum + Number(sr.total_return_amount), 0);
+      
+      // Initial paid = Total Paid minus sum of subsequent payment items/returns?
+      // Actually, in this system, it seems amount_paid IS updated by subsequent items.
+      const initialPaid = Number(inv.amount_paid) - subTotal + returnTotal; // returns reduce amount_pending, not necessarily increase amount_paid
+      
+      // Wait, let's look at getPaymentAmount in frontend.
+      // If we have payment_details on the invoice, that's our initial payment.
+      if (inv.payment_details && inv.payment_details.length > 0) {
+        if (!receiptsMap[inv.id]) receiptsMap[inv.id] = [];
+        
+        let details = inv.payment_details;
+        if (typeof details === 'string') {
+          try { details = JSON.parse(details); } catch(e) {}
+        }
+        
+        if (Array.isArray(details)) {
+          details.forEach((d: any) => {
+            receiptsMap[inv.id].push({
+              id: `initial-${inv.id}-${d.mode}`,
+              receipt_date: inv.invoice_date,
+              amount_received: d.amount,
+              payment_mode: d.mode,
+              receipt_number: 'Sale Payment',
+              is_initial: true
+            });
+          });
+        }
+      } else if (initialPaid > 0) {
+        // Fallback for invoices without details but with initial paid
+        if (!receiptsMap[inv.id]) receiptsMap[inv.id] = [];
+        receiptsMap[inv.id].push({
+          id: `initial-${inv.id}`,
+          receipt_date: inv.invoice_date,
+          amount_received: initialPaid,
+          payment_mode: inv.payment_mode || 'Mix',
+          receipt_number: 'Sale Payment',
+          is_initial: true
+        });
+      }
+    });
+
+    receiptItems.forEach(item => {
+      if (!receiptsMap[item.invoice_id]) receiptsMap[item.invoice_id] = [];
+      receiptsMap[item.invoice_id].push({
+        id: item.id,
+        receipt_date: item.receipt.receipt_date,
+        amount_received: item.amount_paid, // This is what was actually paid for THIS invoice
+        payment_mode: item.receipt.payment_mode,
+        receipt_number: item.receipt.receipt_number,
+        is_receipt: true
+      });
+    });
+
+    salesReturns.forEach(ret => {
+      if (!receiptsMap[ret.invoice_id]) receiptsMap[ret.invoice_id] = [];
+      receiptsMap[ret.invoice_id].push({
+        id: ret.id,
+        receipt_date: ret.return_date,
+        amount_received: ret.total_return_amount,
+        payment_mode: 'Sales Return',
+        receipt_number: ret.return_number,
+        is_return: true
+      });
+    });
+
+    return { invoices: normalizedInvoices, receipts: receiptsMap };
   }
 }
 

@@ -8,6 +8,7 @@ import { Floor } from '../entities/Floor';
 import { User } from '../entities/User';
 import { LoyaltyConfig } from '../entities/LoyaltyConfig';
 import { LoyaltyHistory, LoyaltyTransactionType } from '../entities/LoyaltyHistory';
+import { SalesReturn } from '../entities/SalesReturn';
 import { EBooking } from '../entities/EBooking';
 import { voucherService } from './voucher.service';
 import { creditCouponService } from './creditCoupon.service';
@@ -73,11 +74,40 @@ export class SalesService {
       .take(limit);
 
     const [data, total] = await qb.getManyAndCount();
-    return { data, total, page, limit };
+
+    // Dynamically recalculate payment_status using net_payable - amount_paid as the source of truth.
+    // This is more reliable than amount_pending which can be corrupted by return bugs.
+    const correctedData = data.map(inv => {
+      const paid = Number(inv.amount_paid || 0);
+      const net = Number(inv.net_payable || 0);
+      const truePending = Math.max(0, net - paid);
+      let correctedStatus: string;
+      if (truePending <= 0.05) {
+        correctedStatus = 'paid';
+      } else if (paid > 0.05) {
+        correctedStatus = 'partial';
+      } else {
+        correctedStatus = 'pending';
+      }
+      // Fix amount_pending in DB if it's wrong
+      const storedPending = Number(inv.amount_pending || 0);
+      const statusChanged = correctedStatus !== inv.payment_status;
+      const pendingChanged = Math.abs(storedPending - truePending) > 1;
+      if (statusChanged || pendingChanged) {
+        AppDataSource.getRepository(SalesInvoice).update(inv.id, {
+          payment_status: correctedStatus as any,
+          amount_pending: truePending
+        }).catch(() => {});
+        return { ...inv, payment_status: correctedStatus, amount_pending: truePending };
+      }
+      return inv;
+    });
+
+    return { data: correctedData, total, page, limit };
   }
 
   async getInvoiceById(id: string) {
-    return AppDataSource.getRepository(SalesInvoice).findOne({
+    const invoice = await AppDataSource.getRepository(SalesInvoice).findOne({
       where: { id },
       relations: [
         'items', 
@@ -87,9 +117,28 @@ export class SalesService {
         'creator', 
         'floor_details',
         'receipt_items',
-        'receipt_items.receipt'
+        'receipt_items.receipt',
+        'coupon_applications',
+        'coupon_applications.coupon',
+        'advance_applications',
+        'advance_applications.advance',
+        'credit_note_applications',
+        'credit_note_applications.creditNote'
       ]
     });
+
+    if (invoice) {
+      // Robustly fetch returns by ID OR Number to handle legacy unlinked data
+      invoice.sales_returns = await AppDataSource.getRepository(SalesReturn).find({
+        where: [
+          { invoice_id: id },
+          { invoice_number: invoice.invoice_number }
+        ],
+        relations: ['items']
+      });
+    }
+
+    return invoice;
   }
 
   async createInvoice(data: any, userId: string) {
