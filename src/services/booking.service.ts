@@ -107,10 +107,11 @@ export class BookingService {
       LEFT JOIN e_booking_items     bi  ON bi.e_booking_id = b.id
       LEFT JOIN salesmen            ism ON ism.id = bi.salesman_id::uuid
       -- Join inventory: barcode_batches is the actual inventory table
+      -- DB columns are named 'product_group', 'color', 'size' (not *_id)
       LEFT JOIN barcode_batches     inv ON inv.barcode_alias_8digit = bi.barcode_8digit
-      LEFT JOIN product_groups      pg  ON pg.id  = inv.product_group_id
-      LEFT JOIN colors              col ON col.id  = inv.color_id
-      LEFT JOIN sizes               sz  ON sz.id   = inv.size_id
+      LEFT JOIN product_groups      pg  ON pg.id  = inv.product_group::uuid
+      LEFT JOIN colors              col ON col.id  = inv.color::uuid
+      LEFT JOIN sizes               sz  ON sz.id   = inv.size::uuid
 
       WHERE b.id = $1
       GROUP BY
