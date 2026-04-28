@@ -79,8 +79,21 @@ export class SalesService {
     // This is more reliable than amount_pending which can be corrupted by return bugs.
     const correctedData = data.map(inv => {
       const paid = Number(inv.amount_paid || 0);
-      const net = Number(inv.net_payable || 0);
-      const truePending = Math.max(0, net - paid);
+      
+      // Calculate TRUE Net (Ground Truth from MRP, all Discounts, and Charges)
+      // Billing Rule: Higher of Item Discounts OR Voucher Discount (they don't stack)
+      const effectiveBaseDiscount = Math.max(Number(inv.total_discount || 0), Number(inv.voucher_discount || 0));
+      const trueNet = Math.max(0, 
+        Number(inv.total_mrp || 0) 
+        - effectiveBaseDiscount 
+        - Number(inv.special_discount || 0) 
+        - Number(inv.loyalty_redemption_amount || 0)
+        - Number(inv.coupon_amount || 0)
+        + Number(inv.additional_charges_total || 0)
+      );
+
+      const truePending = Math.max(0, trueNet - paid);
+      
       let correctedStatus: string;
       if (truePending <= 0.05) {
         correctedStatus = 'paid';
@@ -89,16 +102,21 @@ export class SalesService {
       } else {
         correctedStatus = 'pending';
       }
-      // Fix amount_pending in DB if it's wrong
+
+      // Check for discrepancies in status, pending amount, or net_payable itself
       const storedPending = Number(inv.amount_pending || 0);
+      const storedNet = Number(inv.net_payable || 0);
       const statusChanged = correctedStatus !== inv.payment_status;
       const pendingChanged = Math.abs(storedPending - truePending) > 1;
-      if (statusChanged || pendingChanged) {
+      const netChanged = Math.abs(storedNet - trueNet) > 1;
+
+      if (statusChanged || pendingChanged || netChanged) {
         AppDataSource.getRepository(SalesInvoice).update(inv.id, {
           payment_status: correctedStatus as any,
-          amount_pending: truePending
+          amount_pending: truePending,
+          net_payable: trueNet
         }).catch(() => {});
-        return { ...inv, payment_status: correctedStatus, amount_pending: truePending };
+        return { ...inv, payment_status: correctedStatus, amount_pending: truePending, net_payable: trueNet };
       }
       return inv;
     });

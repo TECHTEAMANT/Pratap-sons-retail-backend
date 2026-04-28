@@ -164,8 +164,19 @@ export class PaymentService {
           return s + Number(p.amount || 0);
         }, 0);
 
-        const truePaid = Math.min(billingPaid + receiptPaid, Number(invoice.net_payable || 0));
-        const truePending = Math.max(0, Number(invoice.net_payable || 0) - truePaid);
+        // Billing Rule: Higher of Item Discounts OR Voucher Discount
+        const effectiveBaseDiscount = Math.max(Number(invoice.total_discount || 0), Number(invoice.voucher_discount || 0));
+        const trueNet = Math.max(0, 
+          Number(invoice.total_mrp || 0) 
+          - effectiveBaseDiscount 
+          - Number(invoice.special_discount || 0) 
+          - Number(invoice.loyalty_redemption_amount || 0)
+          - Number(invoice.coupon_amount || 0)
+          + Number(invoice.additional_charges_total || 0)
+        );
+
+        const truePaid = Math.min(billingPaid + receiptPaid, trueNet);
+        const truePending = Math.max(0, trueNet - truePaid);
 
         let correctedStatus: 'paid' | 'partial' | 'pending';
         if (truePending < 0.05) correctedStatus = 'paid';
@@ -174,12 +185,14 @@ export class PaymentService {
 
         const storedPaid = Number(invoice.amount_paid || 0);
         const storedPending = Number(invoice.amount_pending || 0);
+        const storedNet = Number(invoice.net_payable || 0);
 
-        if (Math.abs(storedPaid - truePaid) > 0.5 || Math.abs(storedPending - truePending) > 0.5 || correctedStatus !== invoice.payment_status) {
-          results.details.push(`${invoice.invoice_number}: paid ${storedPaid}→${truePaid}, pending ${storedPending}→${truePending}, status ${invoice.payment_status}→${correctedStatus}`);
+        if (Math.abs(storedPaid - truePaid) > 0.5 || Math.abs(storedPending - truePending) > 0.5 || Math.abs(storedNet - trueNet) > 0.5 || correctedStatus !== invoice.payment_status) {
+          results.details.push(`${invoice.invoice_number}: paid ${storedPaid}→${truePaid}, pending ${storedPending}→${truePending}, net ${storedNet}→${trueNet}, status ${invoice.payment_status}→${correctedStatus}`);
           await invoiceRepo.update(invoice.id, {
             amount_paid: truePaid,
             amount_pending: truePending,
+            net_payable: trueNet,
             payment_status: correctedStatus,
           });
           results.repaired++;
