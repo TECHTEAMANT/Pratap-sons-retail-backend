@@ -47,10 +47,102 @@ export class BookingService {
   }
 
   async findById(id: string) {
-    return this.repo.findOne({
-      where: { id },
-      relations: ['items', 'items.salesman', 'floor_details', 'created_by_details', 'salesman_master']
-    });
+    // Use a single optimized query that joins inventory data so the print slip
+    // doesn't need to make separate API calls per barcode.
+    const rows = await AppDataSource.query(`
+      SELECT
+        b.id,
+        b.booking_number,
+        b.customer_mobile      AS customer_identity,
+        b.floor,
+        b.booking_date,
+        b.booking_expiry,
+        b.status,
+        b.notes,
+        b.discount_amount,
+        b.discount_type,
+        b.created_at,
+        b.updated_at,
+
+        -- Floor details
+        f.name                 AS floor_name,
+
+        -- Customer name from customers table
+        c.name                 AS customer_name,
+
+        -- Salesman (header level)
+        sm.name                AS salesman_name,
+        sm.salesman_code       AS salesman_code,
+
+        -- Discount given by
+        du.name                AS discount_given_by_name,
+
+        -- Items (aggregated as JSON)
+        COALESCE(
+          json_agg(
+            json_build_object(
+              'id',              bi.id,
+              'barcode_8digit',  bi.barcode_8digit,
+              'status',          bi.status,
+              'invoice_id',      bi.invoice_id,
+              'salesman_id',     bi.salesman_id,
+              'salesman_name',   ism.name,
+              'salesman_code',   ism.salesman_code,
+              -- Inventory enrichment (MRP + product details)
+              'mrp',             inv.mrp,
+              'design_no',       inv.design_no,
+              'product_group_name', pg.name,
+              'color_name',      col.name,
+              'size_name',       sz.name
+            )
+          ) FILTER (WHERE bi.id IS NOT NULL),
+          '[]'
+        ) AS items
+
+      FROM e_bookings b
+      LEFT JOIN floors              f   ON f.id   = b.floor::uuid
+      LEFT JOIN customers           c   ON c.mobile = b.customer_mobile
+      LEFT JOIN salesmen            sm  ON sm.id  = b.salesman_id::uuid
+      LEFT JOIN users               du  ON du.id  = b.discount_given_by::uuid
+      LEFT JOIN e_booking_items     bi  ON bi.e_booking_id = b.id
+      LEFT JOIN salesmen            ism ON ism.id = bi.salesman_id::uuid
+      -- Join inventory: barcode_batches is the actual inventory table
+      LEFT JOIN barcode_batches     inv ON inv.barcode_alias_8digit = bi.barcode_8digit
+      LEFT JOIN product_groups      pg  ON pg.id  = inv.product_group_id
+      LEFT JOIN colors              col ON col.id  = inv.color_id
+      LEFT JOIN sizes               sz  ON sz.id   = inv.size_id
+
+      WHERE b.id = $1
+      GROUP BY
+        b.id, b.booking_number, b.customer_mobile, b.floor,
+        b.booking_date, b.booking_expiry, b.status, b.notes,
+        b.discount_amount, b.discount_type, b.created_at, b.updated_at,
+        f.name, c.name, sm.name, sm.salesman_code, du.name
+    `, [id]);
+
+    if (!rows || rows.length === 0) return null;
+
+    const row = rows[0];
+    return {
+      id:                    row.id,
+      booking_number:        row.booking_number,
+      customer_identity:     row.customer_identity,
+      customer_name:         row.customer_name || 'Walk-in Customer',
+      floor:                 row.floor,
+      floor_name:            row.floor_name,
+      booking_date:          row.booking_date,
+      booking_expiry:        row.booking_expiry,
+      status:                row.status,
+      notes:                 row.notes,
+      discount_amount:       row.discount_amount,
+      discount_type:         row.discount_type,
+      created_at:            row.created_at,
+      updated_at:            row.updated_at,
+      salesman_name:         row.salesman_name,
+      salesman_code:         row.salesman_code,
+      discount_given_by_name: row.discount_given_by_name,
+      items: Array.isArray(row.items) ? row.items : [],
+    };
   }
 
   async create(data: any, userId: string) {
