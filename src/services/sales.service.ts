@@ -649,6 +649,61 @@ export class SalesService {
       return manager.findOne(SalesInvoice, { where: { id }, relations: ['items'] });
     });
   }
+
+  async getGroundTruth(id: string) {
+    const invoice = await AppDataSource.getRepository(SalesInvoice).findOne({
+      where: { id },
+      relations: [
+        'items', 
+        'receipt_items', 
+        'coupon_applications', 
+        'credit_note_applications', 
+        'advance_applications'
+      ]
+    });
+
+    if (!invoice) return null;
+
+    // 1. Calculate True Net
+    const trueTotalMrp = (invoice.items || []).reduce((sum, i) => sum + (Number(i.mrp || 0) * Number(i.quantity || 1)), 0);
+    const trueItemDisc = (invoice.items || []).reduce((sum, i) => sum + (Number(i.discount || 0) * Number(i.quantity || 1)), 0);
+    const effectiveBaseDiscount = Math.max(trueItemDisc, Number(invoice.voucher_discount || 0));
+    
+    const trueNetPayable = Math.max(0, 
+      trueTotalMrp 
+      - effectiveBaseDiscount 
+      - Number(invoice.special_discount || 0) 
+      - Number(invoice.loyalty_redemption_amount || 0)
+      - Number(invoice.coupon_amount || 0)
+      + Number(invoice.additional_charges_total || 0)
+    );
+
+    // 2. Calculate True Paid
+    const receiptPaid = (invoice.receipt_items || []).reduce((sum, ri) => sum + Number(ri.amount_paid || 0), 0);
+    const advancesPaid = (invoice.advance_applications || []).reduce((sum, aa) => sum + Number(aa.amount_applied || 0), 0);
+    const couponsApplied = (invoice.coupon_applications || []).reduce((sum, ca) => sum + Number(ca.amount_applied || 0), 0);
+    const creditNotesApplied = (invoice.credit_note_applications || []).reduce((sum, cna) => sum + Number(cna.amount_applied || 0), 0);
+    
+    let directPaid = 0;
+    const pd = typeof invoice.payment_details === 'string' ? JSON.parse(invoice.payment_details || '[]') : (invoice.payment_details || []);
+    if (Array.isArray(pd)) {
+      directPaid = pd.reduce((sum: number, p: any) => sum + (Number(p.amount || 0)), 0);
+    } else if (pd && typeof pd === 'object') {
+      directPaid = Object.values(pd).reduce((sum: number, val: any) => sum + (Number(val) || 0), 0);
+    }
+
+    const trueAmountPaid = receiptPaid + directPaid + advancesPaid + couponsApplied + creditNotesApplied;
+    const trueAmountPending = Math.max(0, trueNetPayable - trueAmountPaid);
+
+    return {
+      total_mrp: trueTotalMrp,
+      total_discount: trueItemDisc,
+      net_payable: trueNetPayable,
+      amount_paid: trueAmountPaid,
+      amount_pending: trueAmountPending,
+      items: invoice.items
+    };
+  }
 }
 
 export const salesService = new SalesService();
