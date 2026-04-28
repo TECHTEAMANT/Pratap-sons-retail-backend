@@ -151,53 +151,74 @@ export class SalesReturnService {
 
         const invoice = await manager.findOne(SalesInvoice, { 
           where: { id: data.invoice_id },
-          relations: ['items']
+          relations: ['items', 'receipt_items']
         });
         
-        // Deduct loyalty points earned
-        const loyaltyConfig = await manager.findOne(LoyaltyConfig, { where: { active: true } });
-        if (loyaltyConfig && Number(loyaltyConfig.points_per_rupee) > 0) {
-          const points_to_deduct = parseFloat((Number(data.total_return_amount) * Number(loyaltyConfig.points_per_rupee)).toFixed(2));
-          if (points_to_deduct > 0) {
-            customer.loyalty_points = (Number(customer.loyalty_points) || 0) - points_to_deduct;
-            customer.loyalty_points_balance = (Number(customer.loyalty_points_balance) || 0) - points_to_deduct;
-            
-            const history = manager.create(LoyaltyHistory, {
-              customer_id: customer.id,
-              points: -points_to_deduct,
-              type: LoyaltyTransactionType.ADJUSTMENT,
-              notes: `Deduction for sales return ${retNum}`,
-              reference_id: savedReturn.id
-            });
-            await manager.save(history);
-          }
-        }
+        if (invoice) {
+          // 4. RECALCULATE GROUND TRUTH for the invoice before applying return
+          const trueTotalMrp = (invoice.items || []).reduce((sum, i) => sum + (Number(i.mrp || 0) * Number(i.quantity || 1)), 0);
+          const trueItemDisc = (invoice.items || []).reduce((sum, i) => sum + (Number(i.discount || 0) * Number(i.quantity || 1)), 0);
+          const effectiveBaseDiscount = Math.max(trueItemDisc, Number(invoice.voucher_discount || 0));
+          
+          const trueNetPayable = Math.max(0, 
+            trueTotalMrp 
+            - effectiveBaseDiscount 
+            - Number(invoice.special_discount || 0) 
+            - Number(invoice.loyalty_redemption_amount || 0)
+            - Number(invoice.coupon_amount || 0)
+            + Number(invoice.additional_charges_total || 0)
+          );
 
-        // Revert redeemed points if applicable
-        if (invoice && Number(invoice.loyalty_points_redeemed) > 0) {
-          const totalInvBeforeRedemption = Number(invoice.net_payable) + Number(invoice.loyalty_redemption_amount);
-          if (totalInvBeforeRedemption > 0) {
-            const points_to_revert = parseFloat(((Number(data.total_return_amount) / totalInvBeforeRedemption) * Number(invoice.loyalty_points_redeemed)).toFixed(2));
-            if (points_to_revert > 0) {
-              customer.loyalty_points_balance = (Number(customer.loyalty_points_balance) || 0) + points_to_revert;
+          const trueAmountPaid = (invoice.receipt_items || []).reduce((sum, ri) => sum + Number(ri.amount_paid || 0), 0);
+          const trueAmountPending = Math.max(0, trueNetPayable - trueAmountPaid);
+
+          // Use these True values for the invoice state
+          invoice.net_payable = trueNetPayable;
+          invoice.amount_paid = trueAmountPaid;
+          invoice.amount_pending = trueAmountPending;
+          
+          // 4.1 Deduct loyalty points earned
+          const loyaltyConfig = await manager.findOne(LoyaltyConfig, { where: { active: true } });
+          if (loyaltyConfig && Number(loyaltyConfig.points_per_rupee) > 0) {
+            const points_to_deduct = parseFloat((Number(data.total_return_amount) * Number(loyaltyConfig.points_per_rupee)).toFixed(2));
+            if (points_to_deduct > 0) {
+              customer.loyalty_points = (Number(customer.loyalty_points) || 0) - points_to_deduct;
+              customer.loyalty_points_balance = (Number(customer.loyalty_points_balance) || 0) - points_to_deduct;
               
-              const revertHistory = manager.create(LoyaltyHistory, {
+              const history = manager.create(LoyaltyHistory, {
                 customer_id: customer.id,
-                points: points_to_revert,
+                points: -points_to_deduct,
                 type: LoyaltyTransactionType.ADJUSTMENT,
-                notes: `Reversed redeemed points for sales return ${retNum}`,
+                notes: `Deduction for sales return ${retNum}`,
                 reference_id: savedReturn.id
               });
-              await manager.save(revertHistory);
+              await manager.save(history);
             }
           }
-        }
 
-        await manager.save(customer);
+          // 4.2 Revert redeemed points if applicable
+          if (invoice && Number(invoice.loyalty_points_redeemed) > 0) {
+            const totalInvBeforeRedemption = Number(invoice.net_payable) + Number(invoice.loyalty_redemption_amount);
+            if (totalInvBeforeRedemption > 0) {
+              const points_to_revert = parseFloat(((Number(data.total_return_amount) / totalInvBeforeRedemption) * Number(invoice.loyalty_points_redeemed)).toFixed(2));
+              if (points_to_revert > 0) {
+                customer.loyalty_points_balance = (Number(customer.loyalty_points_balance) || 0) + points_to_revert;
+                
+                const revertHistory = manager.create(LoyaltyHistory, {
+                  customer_id: customer.id,
+                  points: points_to_revert,
+                  type: LoyaltyTransactionType.ADJUSTMENT,
+                  notes: `Reversed redeemed points for sales return ${retNum}`,
+                  reference_id: savedReturn.id
+                });
+                await manager.save(revertHistory);
+              }
+            }
+          }
 
-        // Calculate Excess Payment for Credit Coupon
-        if (invoice) {
-          // CRITICAL: Trust items only. Recalculate return amount to ignore potentially buggy header values.
+          await manager.save(customer);
+
+          // 5. Calculate Return impact
           let itemBasedReturnTotal = 0;
           if (Array.isArray(data.items)) {
             for (const item of data.items) {
@@ -207,16 +228,15 @@ export class SalesReturnService {
           itemBasedReturnTotal += Number(data.additional_charges_total_returned || 0);
 
           const returnAmount = itemBasedReturnTotal;
-          // Only reduce pending by the amount that was actually owed
+          // Only reduce pending by the amount that was actually owed (using True Pending)
           const amountToReducePending = Math.min(Number(invoice.amount_pending), returnAmount);
           
           // CRITICAL FINANCIAL CAP: Credit coupon (refund) should ONLY be the leftover amount 
-          // AFTER pending is wiped, AND it MUST NOT exceed the actual amount paid by the customer.
+          // AFTER pending is wiped, AND it MUST NOT exceed the actual amount paid (True Amount Paid).
           const rawRefundAmount = Math.max(0, returnAmount - amountToReducePending);
           const refundAmount = Math.min(Number(invoice.amount_paid), rawRefundAmount);
 
           invoice.amount_pending = Math.max(0, Number(invoice.amount_pending) - amountToReducePending);
-          // Reduce amount_paid by the refund amount we are giving back
           invoice.amount_paid = Math.max(0, Number(invoice.amount_paid) - refundAmount); 
           invoice.net_payable = Math.max(0, Number(invoice.net_payable) - returnAmount);
 
@@ -402,46 +422,70 @@ export class SalesReturnService {
 
         const invoice = await manager.findOne(SalesInvoice, { 
           where: { id: savedReturn.invoice_id },
-          relations: ['items']
+          relations: ['items', 'receipt_items']
         });
+        
+        if (invoice) {
+          // 4. RECALCULATE GROUND TRUTH for the invoice before applying return update
+          const trueTotalMrp = (invoice.items || []).reduce((sum, i) => sum + (Number(i.mrp || 0) * Number(i.quantity || 1)), 0);
+          const trueItemDisc = (invoice.items || []).reduce((sum, i) => sum + (Number(i.discount || 0) * Number(i.quantity || 1)), 0);
+          const effectiveBaseDiscount = Math.max(trueItemDisc, Number(invoice.voucher_discount || 0));
+          
+          const trueNetPayable = Math.max(0, 
+            trueTotalMrp 
+            - effectiveBaseDiscount 
+            - Number(invoice.special_discount || 0) 
+            - Number(invoice.loyalty_redemption_amount || 0)
+            - Number(invoice.coupon_amount || 0)
+            + Number(invoice.additional_charges_total || 0)
+          );
 
-        // Loyalty Application
-        const loyaltyConfig = await manager.findOne(LoyaltyConfig, { where: { active: true } });
-        if (loyaltyConfig && Number(loyaltyConfig.points_per_rupee) > 0) {
-          const points_to_deduct = parseFloat((Number(data.total_return_amount) * Number(loyaltyConfig.points_per_rupee)).toFixed(2));
-          if (points_to_deduct > 0) {
-            updatedCustomer.loyalty_points = (Number(updatedCustomer.loyalty_points) || 0) - points_to_deduct;
-            updatedCustomer.loyalty_points_balance = (Number(updatedCustomer.loyalty_points_balance) || 0) - points_to_deduct;
-            await manager.save(manager.create(LoyaltyHistory, {
-              customer_id: updatedCustomer.id,
-              points: -points_to_deduct,
-              type: LoyaltyTransactionType.ADJUSTMENT,
-              notes: `Adjustment for updated sales return ${savedReturn.return_number}`,
-              reference_id: savedReturn.id
-            }));
-          }
-        }
+          const trueAmountPaid = (invoice.receipt_items || []).reduce((sum, ri) => sum + Number(ri.amount_paid || 0), 0);
+          const trueAmountPending = Math.max(0, trueNetPayable - trueAmountPaid);
 
-        if (invoice && Number(invoice.loyalty_points_redeemed) > 0) {
-          const totalInvBeforeRedemption = Number(invoice.net_payable) + Number(invoice.loyalty_redemption_amount);
-          if (totalInvBeforeRedemption > 0) {
-            const points_to_revert = parseFloat(((Number(data.total_return_amount) / totalInvBeforeRedemption) * Number(invoice.loyalty_points_redeemed)).toFixed(2));
-            if (points_to_revert > 0) {
-              updatedCustomer.loyalty_points_balance = (Number(updatedCustomer.loyalty_points_balance) || 0) + points_to_revert;
+          // Use these True values for the invoice state
+          invoice.net_payable = trueNetPayable;
+          invoice.amount_paid = trueAmountPaid;
+          invoice.amount_pending = trueAmountPending;
+
+          await manager.save(SalesInvoice, invoice);
+
+          // Loyalty Application
+          const loyaltyConfig = await manager.findOne(LoyaltyConfig, { where: { active: true } });
+          if (loyaltyConfig && Number(loyaltyConfig.points_per_rupee) > 0) {
+            const points_to_deduct = parseFloat((Number(data.total_return_amount) * Number(loyaltyConfig.points_per_rupee)).toFixed(2));
+            if (points_to_deduct > 0) {
+              updatedCustomer.loyalty_points = (Number(updatedCustomer.loyalty_points) || 0) - points_to_deduct;
+              updatedCustomer.loyalty_points_balance = (Number(updatedCustomer.loyalty_points_balance) || 0) - points_to_deduct;
               await manager.save(manager.create(LoyaltyHistory, {
                 customer_id: updatedCustomer.id,
-                points: points_to_revert,
+                points: -points_to_deduct,
                 type: LoyaltyTransactionType.ADJUSTMENT,
-                notes: `Reversed redeemed points for updated sales return ${savedReturn.return_number}`,
+                notes: `Adjustment for updated sales return ${savedReturn.return_number}`,
                 reference_id: savedReturn.id
               }));
             }
           }
-        }
-        await manager.save(updatedCustomer);
 
-        // Balance Application
-        if (invoice) {
+          if (invoice && Number(invoice.loyalty_points_redeemed) > 0) {
+            const totalInvBeforeRedemption = Number(invoice.net_payable) + Number(invoice.loyalty_redemption_amount);
+            if (totalInvBeforeRedemption > 0) {
+              const points_to_revert = parseFloat(((Number(data.total_return_amount) / totalInvBeforeRedemption) * Number(invoice.loyalty_points_redeemed)).toFixed(2));
+              if (points_to_revert > 0) {
+                updatedCustomer.loyalty_points_balance = (Number(updatedCustomer.loyalty_points_balance) || 0) + points_to_revert;
+                await manager.save(manager.create(LoyaltyHistory, {
+                  customer_id: updatedCustomer.id,
+                  points: points_to_revert,
+                  type: LoyaltyTransactionType.ADJUSTMENT,
+                  notes: `Reversed redeemed points for updated sales return ${savedReturn.return_number}`,
+                  reference_id: savedReturn.id
+                }));
+              }
+            }
+          }
+          await manager.save(updatedCustomer);
+
+          // Balance Application
           const returnAmount = Number(data.total_return_amount);
           const amountToReducePending = Math.min(Number(invoice.amount_pending), returnAmount);
           const rawRefundAmount = Math.max(0, returnAmount - amountToReducePending);
