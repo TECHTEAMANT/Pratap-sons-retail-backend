@@ -209,11 +209,15 @@ export class SalesReturnService {
           const returnAmount = itemBasedReturnTotal;
           // Only reduce pending by the amount that was actually owed
           const amountToReducePending = Math.min(Number(invoice.amount_pending), returnAmount);
-          // Credit coupon should ONLY be the leftover amount AFTER pending is wiped
-          const refundAmount = Math.max(0, returnAmount - amountToReducePending);
+          
+          // CRITICAL FINANCIAL CAP: Credit coupon (refund) should ONLY be the leftover amount 
+          // AFTER pending is wiped, AND it MUST NOT exceed the actual amount paid by the customer.
+          const rawRefundAmount = Math.max(0, returnAmount - amountToReducePending);
+          const refundAmount = Math.min(Number(invoice.amount_paid), rawRefundAmount);
 
           invoice.amount_pending = Math.max(0, Number(invoice.amount_pending) - amountToReducePending);
-          invoice.amount_paid = Math.max(0, Number(invoice.amount_paid) - Math.abs(refundAmount < 0 ? refundAmount : 0)); // Safety
+          // Reduce amount_paid by the refund amount we are giving back
+          invoice.amount_paid = Math.max(0, Number(invoice.amount_paid) - refundAmount); 
           invoice.net_payable = Math.max(0, Number(invoice.net_payable) - returnAmount);
 
           if (Number(invoice.net_payable) <= 0.05) {
@@ -440,7 +444,8 @@ export class SalesReturnService {
         if (invoice) {
           const returnAmount = Number(data.total_return_amount);
           const amountToReducePending = Math.min(Number(invoice.amount_pending), returnAmount);
-          const refundAmount = Math.max(0, returnAmount - amountToReducePending);
+          const rawRefundAmount = Math.max(0, returnAmount - amountToReducePending);
+          const refundAmount = Math.min(Number(invoice.amount_paid), rawRefundAmount);
 
           invoice.amount_pending = Math.max(0, Number(invoice.amount_pending) - amountToReducePending);
           invoice.amount_paid = Math.max(0, Number(invoice.amount_paid) - refundAmount);
