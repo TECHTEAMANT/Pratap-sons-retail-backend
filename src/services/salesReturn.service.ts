@@ -151,7 +151,7 @@ export class SalesReturnService {
 
         const invoice = await manager.findOne(SalesInvoice, { 
           where: { id: data.invoice_id },
-          relations: ['items', 'receipt_items']
+          relations: ['items', 'receipt_items', 'coupon_applications', 'credit_note_applications', 'advance_applications']
         });
         
         if (invoice) {
@@ -169,7 +169,11 @@ export class SalesReturnService {
             + Number(invoice.additional_charges_total || 0)
           );
 
+          // Payment Ground Truth: Sum EVERYTHING that reduced the balance
           const receiptPaid = (invoice.receipt_items || []).reduce((sum, ri) => sum + Number(ri.amount_paid || 0), 0);
+          const advancesPaid = (invoice.advance_applications || []).reduce((sum, aa) => sum + Number(aa.amount_applied || 0), 0);
+          const couponsApplied = (invoice.coupon_applications || []).reduce((sum, ca) => sum + Number(ca.amount_applied || 0), 0);
+          const creditNotesApplied = (invoice.credit_note_applications || []).reduce((sum, cna) => sum + Number(cna.amount_applied || 0), 0);
           
           let directPaid = 0;
           const pd = typeof invoice.payment_details === 'string' ? JSON.parse(invoice.payment_details) : invoice.payment_details;
@@ -179,7 +183,7 @@ export class SalesReturnService {
             directPaid = Object.values(pd).reduce((sum: number, val: any) => sum + (Number(val) || 0), 0);
           }
 
-          const trueAmountPaid = receiptPaid + directPaid;
+          const trueAmountPaid = receiptPaid + directPaid + advancesPaid + couponsApplied + creditNotesApplied;
           const trueAmountPending = Math.max(0, trueNetPayable - trueAmountPaid);
 
           // Use these True values for the invoice state
@@ -432,7 +436,7 @@ export class SalesReturnService {
 
         const invoice = await manager.findOne(SalesInvoice, { 
           where: { id: savedReturn.invoice_id },
-          relations: ['items', 'receipt_items']
+          relations: ['items', 'receipt_items', 'coupon_applications', 'credit_note_applications', 'advance_applications']
         });
         
         if (invoice) {
@@ -450,7 +454,11 @@ export class SalesReturnService {
             + Number(invoice.additional_charges_total || 0)
           );
 
+          // Payment Ground Truth: Sum EVERYTHING that reduced the balance
           const receiptPaid = (invoice.receipt_items || []).reduce((sum, ri) => sum + Number(ri.amount_paid || 0), 0);
+          const advancesPaid = (invoice.advance_applications || []).reduce((sum, aa) => sum + Number(aa.amount_applied || 0), 0);
+          const couponsApplied = (invoice.coupon_applications || []).reduce((sum, ca) => sum + Number(ca.amount_applied || 0), 0);
+          const creditNotesApplied = (invoice.credit_note_applications || []).reduce((sum, cna) => sum + Number(cna.amount_applied || 0), 0);
           
           let directPaid = 0;
           const pd = typeof invoice.payment_details === 'string' ? JSON.parse(invoice.payment_details) : invoice.payment_details;
@@ -460,7 +468,7 @@ export class SalesReturnService {
             directPaid = Object.values(pd).reduce((sum: number, val: any) => sum + (Number(val) || 0), 0);
           }
 
-          const trueAmountPaid = receiptPaid + directPaid;
+          const trueAmountPaid = receiptPaid + directPaid + advancesPaid + couponsApplied + creditNotesApplied;
           const trueAmountPending = Math.max(0, trueNetPayable - trueAmountPaid);
 
           // Use these True values for the invoice state
