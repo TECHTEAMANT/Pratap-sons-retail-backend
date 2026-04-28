@@ -30,20 +30,86 @@ export class BookingService {
     // Expire any overdue bookings before returning results
     await this.expireStaleBookings();
 
-    const qb = this.repo.createQueryBuilder('b')
-      .leftJoinAndSelect('b.items', 'items')
-      .leftJoinAndSelect('items.salesman', 'item_salesman')
-      .leftJoinAndSelect('b.floor_details', 'floor')
-      .leftJoinAndSelect('b.created_by_details', 'user')
-      .leftJoinAndSelect('b.discount_given_by_details', 'discount_user');
-    
-    if (filters.status) qb.andWhere('b.status = :status', { status: filters.status });
-    if (filters.floor) qb.andWhere('b.floor = :floor', { floor: filters.floor });
+    const queryParams: any[] = [];
+    const conditions: string[] = [];
+    let paramIdx = 1;
+
+    if (filters.status) {
+      conditions.push(`b.status = $${paramIdx++}`);
+      queryParams.push(filters.status);
+    }
+    if (filters.floor) {
+      conditions.push(`b.floor = $${paramIdx++}`);
+      queryParams.push(filters.floor);
+    }
     const identity = filters.customer_identity || (filters as any).customer_mobile;
-    if (identity) qb.andWhere('b.customer_identity = :ci', { ci: identity });
-    
-    qb.orderBy('b.created_at', 'DESC');
-    return qb.getMany();
+    if (identity) {
+      conditions.push(`b.customer_mobile = $${paramIdx++}`);
+      queryParams.push(identity);
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    const sql = `
+      SELECT
+        b.id,
+        b.booking_number,
+        b.customer_mobile      AS customer_identity,
+        b.floor,
+        b.booking_date,
+        b.booking_expiry,
+        b.status,
+        b.notes,
+        b.discount_amount,
+        b.discount_type,
+        b.created_at,
+        b.updated_at,
+
+        f.name                 AS floor_name,
+        c.name                 AS customer_name,
+        sm.name                AS salesman_name,
+        du.name                AS discount_given_by_name,
+
+        COALESCE(
+          json_agg(
+            json_build_object(
+              'id',              bi.id,
+              'barcode_8digit',  bi.barcode_8digit,
+              'status',          bi.status,
+              'mrp',             inv.mrp,
+              'design_no',       inv.design_no,
+              'product_group',   pg.name,
+              'color',           col.name,
+              'size',            sz.name
+            )
+          ) FILTER (WHERE bi.id IS NOT NULL),
+          '[]'
+        ) AS items
+
+      FROM e_bookings b
+      LEFT JOIN floors              f   ON CAST(f.id AS TEXT) = CAST(b.floor AS TEXT)
+      LEFT JOIN customers           c   ON CAST(c.mobile AS TEXT) = CAST(b.customer_mobile AS TEXT)
+      LEFT JOIN salesmen            sm  ON CAST(sm.id AS TEXT) = CAST(b.salesman_id AS TEXT)
+      LEFT JOIN users               du  ON CAST(du.id AS TEXT) = CAST(b.discount_given_by AS TEXT)
+      LEFT JOIN e_booking_items     bi  ON CAST(bi.e_booking_id AS TEXT) = CAST(b.id AS TEXT)
+      LEFT JOIN barcode_batches     inv ON CAST(inv.barcode_alias_8digit AS TEXT) = CAST(bi.barcode_8digit AS TEXT)
+      LEFT JOIN product_groups      pg  ON CAST(pg.id AS TEXT) = CAST(inv.product_group AS TEXT)
+      LEFT JOIN colors              col ON CAST(col.id AS TEXT) = CAST(inv.color AS TEXT)
+      LEFT JOIN sizes               sz  ON CAST(sz.id  AS TEXT) = CAST(inv.size AS TEXT)
+
+      ${whereClause}
+
+      GROUP BY
+        b.id, b.booking_number, b.customer_mobile, b.floor,
+        b.booking_date, b.booking_expiry, b.status, b.notes,
+        b.discount_amount, b.discount_type, b.created_at, b.updated_at,
+        f.name, c.name, sm.name, du.name
+      
+      ORDER BY b.created_at DESC
+      LIMIT 1000
+    `;
+
+    return AppDataSource.query(sql, queryParams);
   }
 
   async findById(id: string) {
@@ -91,9 +157,9 @@ export class BookingService {
               -- Inventory enrichment (MRP + product details)
               'mrp',             inv.mrp,
               'design_no',       inv.design_no,
-              'product_group_name', pg.name,
-              'color_name',      col.name,
-              'size_name',       sz.name
+              'product_group',   pg.name,
+              'color',           col.name,
+              'size',            sz.name
             )
           ) FILTER (WHERE bi.id IS NOT NULL),
           '[]'
