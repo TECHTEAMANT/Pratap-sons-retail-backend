@@ -499,7 +499,7 @@ export class ReportService {
         'c.name as customer_name',
         'c.mobile as customer_mobile',
         'c.card_no as card_no',
-        'COALESCE(c.credit_balance, 0) as credit_balance',
+        'COALESCE(c.credit_balance, 0) + COALESCE((SELECT SUM(cc.amount::numeric - COALESCE(used.used_amount, 0)) FROM credit_coupons cc LEFT JOIN (SELECT coupon_id, SUM(amount_applied)::numeric as used_amount FROM credit_coupon_applications GROUP BY coupon_id) used ON used.coupon_id = cc.id WHERE cc.customer_mobile = c.mobile), 0) as credit_balance',
         'COALESCE(c.loyalty_points_balance, 0) as loyalty_points',
         'COALESCE((SELECT SUM(net_payable) FROM sales_invoices WHERE customer_mobile = c.mobile), 0) as total_spent',
         'COALESCE((SELECT COUNT(*) FROM sales_invoices WHERE customer_mobile = c.mobile), 0) as total_invoices',
@@ -1787,7 +1787,7 @@ export class ReportService {
     const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
 
     const baseSql = `
-      WITH t AS (
+      WITH raw_data AS (
         -- Credit Coupons: Issuance (Credit)
         SELECT
           'Credit'::text AS entry_type,
@@ -1798,7 +1798,6 @@ export class ReportService {
           cc.coupon_no::text AS external_no,
           cc.amount::numeric AS transaction_amount,
           cc.amount::numeric AS original_amount,
-          GREATEST(0, (cc.amount::numeric - COALESCE(used.used_amount, 0)))::numeric AS remaining_amount,
           '-'::text AS invoice_no,
           COALESCE(
             'Return: ' || sr.return_number || ' | Invoice: ' || sr.invoice_number,
@@ -1807,11 +1806,6 @@ export class ReportService {
         FROM credit_coupons cc
         LEFT JOIN customers c ON c.mobile = cc.customer_mobile
         LEFT JOIN sales_returns sr ON sr.id = cc.original_sales_return_id
-        LEFT JOIN (
-          SELECT coupon_id, COALESCE(SUM(amount_applied)::numeric, 0) AS used_amount
-          FROM credit_coupon_applications
-          GROUP BY coupon_id
-        ) used ON used.coupon_id = cc.id
 
         UNION ALL
 
@@ -1821,22 +1815,16 @@ export class ReportService {
           'Credit Coupon'::text AS type,
           cc.customer_mobile::text AS mobile,
           COALESCE(c.name, '-')::text AS name,
-          cc.created_at::timestamptz AS transaction_date,
+          cca.created_at::timestamptz AS transaction_date,
           cc.coupon_no::text AS external_no,
           (-1 * cca.amount_applied)::numeric AS transaction_amount,
           cc.amount::numeric AS original_amount,
-          GREATEST(0, (cc.amount::numeric - COALESCE(used.used_amount, 0)))::numeric AS remaining_amount,
           si.invoice_number::text AS invoice_no,
           'Applied to Invoice'::text AS reference
         FROM credit_coupon_applications cca
         INNER JOIN credit_coupons cc ON cc.id = cca.coupon_id
         INNER JOIN sales_invoices si ON si.id = cca.invoice_id
         LEFT JOIN customers c ON c.mobile = cc.customer_mobile
-        LEFT JOIN (
-          SELECT coupon_id, COALESCE(SUM(amount_applied)::numeric, 0) AS used_amount
-          FROM credit_coupon_applications
-          GROUP BY coupon_id
-        ) used ON used.coupon_id = cc.id
 
         UNION ALL
 
@@ -1850,17 +1838,11 @@ export class ReportService {
           soa.receipt_number::text AS external_no,
           soa.amount::numeric AS transaction_amount,
           soa.amount::numeric AS original_amount,
-          GREATEST(0, (soa.amount::numeric - COALESCE(used.used_amount, 0)))::numeric AS remaining_amount,
           '-'::text AS invoice_no,
           COALESCE('Sales Order: ' || so.order_number, 'Manual Advance')::text AS reference
         FROM sales_order_advances soa
         INNER JOIN sales_orders so ON so.id = soa.sales_order_id
         LEFT JOIN customers c ON c.id = so.customer_id
-        LEFT JOIN (
-          SELECT advance_id, COALESCE(SUM(amount_applied)::numeric, 0) AS used_amount
-          FROM sales_order_advance_applications
-          GROUP BY advance_id
-        ) used ON used.advance_id = soa.id
 
         UNION ALL
 
@@ -1874,7 +1856,6 @@ export class ReportService {
           soa.receipt_number::text AS external_no,
           (-1 * soaa.amount_applied)::numeric AS transaction_amount,
           soa.amount::numeric AS original_amount,
-          GREATEST(0, (soa.amount::numeric - COALESCE(used.used_amount, 0)))::numeric AS remaining_amount,
           si.invoice_number::text AS invoice_no,
           'Applied to Invoice'::text AS reference
         FROM sales_order_advance_applications soaa
@@ -1882,11 +1863,15 @@ export class ReportService {
         INNER JOIN sales_invoices si ON si.id = soaa.invoice_id
         INNER JOIN sales_orders so ON so.id = soa.sales_order_id
         LEFT JOIN customers c ON c.id = so.customer_id
-        LEFT JOIN (
-          SELECT advance_id, COALESCE(SUM(amount_applied)::numeric, 0) AS used_amount
-          FROM sales_order_advance_applications
-          GROUP BY advance_id
-        ) used ON used.advance_id = soa.id
+      ),
+      t AS (
+        SELECT 
+          rd.*,
+          SUM(rd.transaction_amount) OVER (
+            PARTITION BY rd.external_no, rd.type 
+            ORDER BY rd.transaction_date ASC, rd.entry_type DESC
+          )::numeric AS remaining_amount
+        FROM raw_data rd
       )
       SELECT *
       FROM t

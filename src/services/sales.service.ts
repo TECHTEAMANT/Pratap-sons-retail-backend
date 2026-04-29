@@ -431,11 +431,6 @@ export class SalesService {
             }
           }
         }
-      } else {
-        // Fallback for old-style single coupon
-        if (data.coupon_no) {
-          await creditCouponService.apply(data.coupon_no, savedInvoice.id, savedInvoice.coupon_amount || 0, manager);
-        }
       }
 
       logger.info(`Invoice created: ${invoiceNumber}`, { items: data.items?.length || 0, total: data.net_payable });
@@ -618,10 +613,6 @@ export class SalesService {
               }
             }
           }
-        }
-      } else {
-        if (data.coupon_no && data.coupon_no !== oldInvoice.coupon_no) {
-          await creditCouponService.apply(data.coupon_no, oldInvoice.id, Number(data.coupon_amount || 0), manager);
         }
       }
 
