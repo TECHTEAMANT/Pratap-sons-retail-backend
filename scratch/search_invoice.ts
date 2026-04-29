@@ -1,18 +1,22 @@
 import { AppDataSource } from '../src/config/data-source';
 import { SalesInvoice } from '../src/entities/SalesInvoice';
 
-async function listInvoices() {
+async function searchInvoice() {
   try {
     await AppDataSource.initialize();
+    
     const invoices = await AppDataSource.getRepository(SalesInvoice).find({
-      take: 1,
-      order: { created_at: 'DESC' }
+      where: { customer_name: 'anita jain' },
+      order: { created_at: 'DESC' },
+      take: 5
     });
-    console.log("PD SAMPLE:", JSON.stringify(invoices[0].payment_details, null, 2));
+    
+    console.log("INVOICES FOUND:", JSON.stringify(invoices, null, 2));
+    
     await AppDataSource.destroy();
   } catch (error) {
     console.error(error);
   }
 }
 
-listInvoices();
+searchInvoice();

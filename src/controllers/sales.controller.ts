@@ -34,6 +34,12 @@ export class SalesController {
       sendSuccess(res, { message: 'Items updated successfully' });
     } catch (e: any) { sendError(res, e.message); }
   }
+  async getGroundTruth(req: Request, res: Response) {
+    try {
+      const data = await salesService.getGroundTruth(req.params.id);
+      data ? sendSuccess(res, data) : sendNotFound(res, 'Invoice');
+    } catch (e: any) { sendError(res, e.message); }
+  }
 }
 
 export const salesController = new SalesController();

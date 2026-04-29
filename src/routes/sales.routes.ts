@@ -14,5 +14,6 @@ router.post('/invoices', (req, res) => salesController.createInvoice(req, res));
 router.put('/invoices/:id', (req, res) => salesController.updateInvoice(req as any, res));
 router.get('/invoice-items', (req, res) => salesController.getInvoiceItems(req, res));
 router.put('/invoice-items', (req, res) => salesController.updateInvoiceItems(req, res));
+router.get('/invoices/:id/ground-truth', (req, res) => salesController.getGroundTruth(req, res));
 
 export default router;
