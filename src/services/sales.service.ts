@@ -130,6 +130,8 @@ export class SalesService {
       relations: [
         'items', 
         'items.salesman', 
+        'items.product_item',
+        'items.product_item.product_group',
         'customer', 
         'salesman', 
         'creator', 

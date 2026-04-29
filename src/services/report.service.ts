@@ -397,6 +397,7 @@ export class ReportService {
       .leftJoin('bb.size', 'sz')
       .leftJoin('bb.color', 'cl')
       .leftJoin('bb.vendor', 'v')
+      .leftJoin('purchase_orders', 'po', 'po.id = bb.po_id')
       .select([
         'bb.barcode_alias_8digit as barcode',
         'bb.design_no as design',
@@ -409,6 +410,8 @@ export class ReportService {
         'COALESCE(bb.total_quantity - bb.available_quantity, 0) as "soldQty"',
         'COALESCE(bb.cost_actual, 0) as cost',
         'COALESCE(bb.mrp, 0) as mrp',
+        'po.invoice_number as "poInvoiceNumber"',
+        'po.order_date as "poDate"',
         'CASE WHEN bb.gst_logic = \'AUTO_5_18\' THEN (CASE WHEN bb.cost_actual < 2500 THEN 5 ELSE 18 END) ELSE 5 END as "gstRate"',
         'COALESCE(bb.available_quantity * bb.cost_actual, 0) as "inventoryValue"'
       ]);
