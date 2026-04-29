@@ -180,6 +180,10 @@ export class ReportService {
 
       // If reconstructed disc is found, it already includes all prorated components from the header.
       const totalDisc = (reconstructedItemDisc > 0.01) ? reconstructedItemDisc : totalHeaderBundle;
+      
+      // For visual column display: Item Discount should be the "pure" item discount (excluding header specials)
+      const visualItemDiscount = Math.max(0, reconstructedItemDisc - (parseFloat(inv.special_discount as any) || 0) - (parseFloat(inv.loyalty_redemption_amount as any) || 0) - (parseFloat(inv.voucher_discount as any) || 0));
+      
       const returnsAmt = (inv.sales_returns || []).reduce((s: number, r: any) => s + (Number(r.total_return_amount) || 0), 0);
 
       const calculatedNet = reconstructedMRP - totalDisc + (parseFloat(inv.additional_charges_total as any) || 0) - returnsAmt;
@@ -194,15 +198,22 @@ export class ReportService {
       let detailsArray: any[] = [];
       if (paymentDetails) {
         if (Array.isArray(paymentDetails)) {
-          detailsArray = paymentDetails;
+          detailsArray = paymentDetails.filter((pd: any) => {
+            const k = (pd.mode || '').toString().toUpperCase();
+            if (k.includes('COUPON') || k.includes('ADVANCE') || k.includes('CREDIT NOTE') || k.includes('RETURN')) return false;
+            return true;
+          });
         } else if (typeof paymentDetails === 'object' && paymentDetails !== null) {
           // Normalize old object format { "MODE": amount } to [{ mode, amount }]
           // IMPORTANT: Ignore technical keys like total_mrp, net_payable, etc.
+          // ALSO ignore wallet modes that are handled by dedicated join tables (Coupons, Advances, Notes)
           const techKeys = ['TOTAL_MRP', 'NET_PAYABLE', 'ITEMS', 'ID', 'TOTAL_AMOUNT', 'ROUND_OFF', 'AMOUNT_PAID', 'AMOUNT_PENDING', 'SPECIAL_DISCOUNT', 'VOUCHER_DISCOUNT', 'LOYALTY_REDEMPTION_AMOUNT', 'TOTAL_GST', 'TAXABLE_VALUE'];
           detailsArray = Object.entries(paymentDetails)
             .filter(([key, val]) => {
               const k = key.toUpperCase();
-              return !techKeys.includes(k) && (typeof val === 'number' || typeof val === 'string');
+              if (techKeys.includes(k)) return false;
+              if (k.includes('COUPON') || k.includes('ADVANCE') || k.includes('CREDIT NOTE') || k.includes('RETURN')) return false;
+              return (typeof val === 'number' || typeof val === 'string');
             })
             .map(([key, val]) => ({
               mode: key,
@@ -213,17 +224,22 @@ export class ReportService {
 
       let invoicePaymentBreakdown = {
         Cash: 0, UPI: 0, Card: 0, Online: 0, Advance: 0, Approval: 0,
-        'Credit Coupon': 0, 'Exchange': 0, 'Others': 0
+        'Credit Coupon': 0, 'Credit Note': 0, 'Exchange': 0, 'Others': 0
       };
 
       let hasCreditCoupon = false;
 
       // Unified Payment Processing (Initial Payments + Subsequent Receipts)
-      // 1. Calculate sum of actual receipts
+      // 1. Calculate sum of actual receipts (Excluding wallet modes to avoid double-count)
       const receiptPayments = (inv.receipt_items || []).map((ri: any) => ({
         mode: ri.receipt?.payment_mode || 'Receipt',
         amount: parseFloat(ri.amount_paid as any) || 0
-      })).filter(p => p.amount > 0);
+      })).filter(p => {
+        if (p.amount <= 0) return false;
+        const k = (p.mode || '').toString().toUpperCase();
+        if (k.includes('COUPON') || k.includes('ADVANCE') || k.includes('CREDIT NOTE') || k.includes('RETURN')) return false;
+        return true;
+      });
 
       const couponReceipts = (inv.coupon_applications || []).map((ca: any) => ({
         mode: 'Credit Coupon',
@@ -274,6 +290,9 @@ export class ReportService {
           invoicePaymentBreakdown['Credit Coupon'] += amount; 
           hasCreditCoupon = true; 
         }
+        else if (rawMode.includes('CREDIT NOTE')) {
+          invoicePaymentBreakdown['Credit Note'] += amount;
+        }
         else if (rawMode.includes('CARD') || rawMode.includes('VISA') || rawMode.includes('POS') || rawMode.includes('MASTER') || rawMode.includes('DEBIT') || rawMode.includes('CREDIT')) {
           invoicePaymentBreakdown.Card += amount;
         }
@@ -296,29 +315,10 @@ export class ReportService {
       });
 
       // --- Financial Reconciliation Logic ---
-      const realPaidAmount = 
-        invoicePaymentBreakdown.Cash + 
-        invoicePaymentBreakdown.UPI + 
-        invoicePaymentBreakdown.Card + 
-        invoicePaymentBreakdown.Online + 
-        invoicePaymentBreakdown.Advance + 
-        invoicePaymentBreakdown.Approval +
-        invoicePaymentBreakdown['Credit Coupon'] + 
-        invoicePaymentBreakdown.Exchange + 
-        invoicePaymentBreakdown.Others;
-
-      // Handle inferred coupon if missing from breakdown
-      if (!hasCreditCoupon && (inv as any).coupon_no) {
-        const inferredCoupon = Math.max(0, reconstructedMRP - totalDisc - (parseFloat((inv as any).loyalty_redemption_amount as any) || 0) - finalNet);
-        if (inferredCoupon > 0) {
-          invoicePaymentBreakdown['Credit Coupon'] += inferredCoupon;
-        }
-      }
-
       const finalRealPaid = 
         invoicePaymentBreakdown.Cash + invoicePaymentBreakdown.UPI + invoicePaymentBreakdown.Card + 
         invoicePaymentBreakdown.Online + invoicePaymentBreakdown.Advance + invoicePaymentBreakdown['Credit Coupon'] + 
-        invoicePaymentBreakdown.Exchange + invoicePaymentBreakdown.Others;
+        invoicePaymentBreakdown['Credit Note'] + invoicePaymentBreakdown.Exchange + invoicePaymentBreakdown.Others;
 
       // Adjusted Pending = Net Payable - (All Real Payments)
       let adjustedPending = Math.max(0, finalNet - finalRealPaid);
@@ -369,16 +369,23 @@ export class ReportService {
       // Add to detailed list
       detailedList.push({
         ...inv,
-        total_mrp: reconstructedMRP,
-        total_discount: totalDisc,
+        gross_mrp: reconstructedMRP,
+        base_discount: visualItemDiscount,
+        special_discount: parseFloat(inv.special_discount as any) || 0,
+        loyalty_redemption: parseFloat(inv.loyalty_redemption_amount as any) || 0,
         net_payable: finalNet,
+        cash_payment: invoicePaymentBreakdown.Cash,
+        upi_payment: invoicePaymentBreakdown.UPI,
+        coupon_payment: invoicePaymentBreakdown['Credit Coupon'],
+        advance_payment: invoicePaymentBreakdown.Advance,
+        credit_note_payment: invoicePaymentBreakdown['Credit Note'],
+        total_payment: finalRealPaid,
         amount_pending: adjustedPending,
         approval_amount: isApprovalInvoice ? adjustedPending : 0,
         is_on_approval: isApprovalInvoice || hasApprovalItems,
         payment_breakdown: invoicePaymentBreakdown,
-        // Status logic
-        payment_status: (adjustedPending <= 0.05) ? 'returned' : (adjustedPending <= 0.05 ? 'paid' : (finalRealPaid > 0.1 ? 'partial' : 'pending')),
-        total_quantity: inv.items ? inv.items.reduce((sum, i) => sum + (Number(i.quantity) || 0), 0) : 0,
+        payment_status: (adjustedPending <= 0.05) ? 'paid' : (finalRealPaid > 0.1 ? 'partial' : 'pending'),
+        total_qty: inv.items ? inv.items.reduce((sum, i) => sum + (Number(i.quantity) || 0), 0) : 0,
         return_credit: returnsAmt
       });
     });
@@ -484,20 +491,21 @@ export class ReportService {
     return this.salesmanPerformance(startDate, endDate);
   }
 
-  async customerReport(limit: number = 100) {
-    const qb = AppDataSource.getRepository(SalesInvoice)
-      .createQueryBuilder('si')
+  async customerReport(limit: number = 200) {
+    const qb = AppDataSource.getRepository(Customer)
+      .createQueryBuilder('c')
       .select([
-        'si.customer_mobile as customer_mobile',
-        'si.customer_name as customer_name',
-        'COUNT(*) as total_invoices',
-        'COALESCE(SUM(si.net_payable), 0) as total_spent',
-        'MIN(si.invoice_date) as first_purchase',
-        'MAX(si.invoice_date) as last_purchase',
+        'c.id as customer_id',
+        'c.name as customer_name',
+        'c.mobile as customer_mobile',
+        'c.card_no as card_no',
+        'COALESCE(c.credit_balance, 0) as credit_balance',
+        'COALESCE(c.loyalty_points_balance, 0) as loyalty_points',
+        'COALESCE((SELECT SUM(net_payable) FROM sales_invoices WHERE customer_mobile = c.mobile), 0) as total_spent',
+        'COALESCE((SELECT COUNT(*) FROM sales_invoices WHERE customer_mobile = c.mobile), 0) as total_invoices',
+        '(SELECT MAX(invoice_date) FROM sales_invoices WHERE customer_mobile = c.mobile) as last_purchase',
+        'COALESCE((SELECT SUM(soa.amount) FROM sales_order_advances soa JOIN sales_orders so ON so.id = soa.sales_order_id WHERE so.customer_id = c.id), 0) - COALESCE((SELECT SUM(soaa.amount_applied) FROM sales_order_advance_applications soaa JOIN sales_order_advances soa ON soa.id = soaa.advance_id JOIN sales_orders so ON so.id = soa.sales_order_id WHERE so.customer_id = c.id), 0) as advance_balance'
       ])
-      .where('si.customer_mobile IS NOT NULL')
-      .groupBy('si.customer_mobile')
-      .addGroupBy('si.customer_name')
       .orderBy('total_spent', 'DESC')
       .limit(limit);
 
@@ -505,7 +513,10 @@ export class ReportService {
     return results.map(r => ({
       ...r,
       total_invoices: parseInt(r.total_invoices),
-      total_spent: parseFloat(r.total_spent)
+      total_spent: parseFloat(r.total_spent),
+      credit_balance: parseFloat(r.credit_balance),
+      advance_balance: parseFloat(r.advance_balance),
+      loyalty_points: parseFloat(r.loyalty_points)
     }));
   }
 
@@ -1546,13 +1557,13 @@ export class ReportService {
     const start = filters.startDate.split('T')[0];
     const end = filters.endDate.split('T')[0];
 
-    const advances = await AppDataSource.getRepository(SalesOrderAdvance).find({
-      where: {
-        created_at: Raw((alias: string) => `${alias}::date BETWEEN :start AND :end`, { start, end })
-      },
-      relations: ['salesOrder', 'salesOrder.customer'],
-      order: { created_at: 'DESC' }
-    });
+    const advances = await AppDataSource.getRepository(SalesOrderAdvance)
+      .createQueryBuilder('soa')
+      .leftJoinAndSelect('soa.salesOrder', 'so')
+      .leftJoinAndSelect('so.customer', 'c')
+      .where('soa.created_at::date BETWEEN :start AND :end', { start, end })
+      .orderBy('soa.created_at', 'DESC')
+      .getMany();
 
     const summary = {
       total: 0,

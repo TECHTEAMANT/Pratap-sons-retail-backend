@@ -51,7 +51,12 @@ export class CreditCouponService {
 
     const amt = Number(amountToApply || 0);
     if (amt <= 0) return;
-    if (amt > remaining) {
+
+    // Use a small epsilon or round to 2 decimal places to avoid floating point precision errors
+    const roundedAmt = Math.round(amt * 100);
+    const roundedRemaining = Math.round(remaining * 100);
+
+    if (roundedAmt > roundedRemaining) {
       throw new Error(`Coupon ${couponNo} has only ₹${remaining.toFixed(2)} remaining`);
     }
 
