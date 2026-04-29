@@ -138,18 +138,26 @@ export class PaymentService {
     const invoiceRepo = AppDataSource.getRepository(SalesInvoice);
     const results = { repaired: 0, errors: 0, details: [] as string[] };
 
-    // Get all invoices with their receipt items
+    // Get all invoices with their receipts and wallet applications
     const invoices = await invoiceRepo
       .createQueryBuilder('si')
       .leftJoinAndSelect('si.receipt_items', 'ri')
+      .leftJoinAndSelect('ri.receipt', 'r')
+      .leftJoinAndSelect('si.coupon_applications', 'ca')
+      .leftJoinAndSelect('si.advance_applications', 'aa')
+      .leftJoinAndSelect('si.credit_note_applications', 'cna')
       .getMany();
 
     for (const invoice of invoices) {
       try {
-        // 1. Sum actual PaymentReceipt items
-        const receiptPaid = (invoice.receipt_items || []).reduce((s, ri) => s + Number(ri.amount_paid || 0), 0);
+        // 1. Sum actual physical PaymentReceipt items (Exclude wallet modes to avoid double-count)
+        const receiptPaid = (invoice.receipt_items || []).reduce((s, ri) => {
+          const mode = (ri.receipt?.payment_mode || '').toString().toUpperCase();
+          if (mode.includes('COUPON') || mode.includes('ADVANCE') || mode.includes('CREDIT NOTE') || mode.includes('RETURN')) return s;
+          return s + Number(ri.amount_paid || 0);
+        }, 0);
 
-        // 2. Parse initial billing payment_details (excludes RCP mode entries to avoid double-count)
+        // 2. Parse initial billing payment_details (excludes RCP and wallet modes)
         const rawPayments = typeof invoice.payment_details === 'string'
           ? JSON.parse(invoice.payment_details || '[]')
           : (invoice.payment_details || []);
@@ -159,10 +167,15 @@ export class PaymentService {
 
         const billingPaid = billPayments.reduce((s, p) => {
           const modeUpper = String(p.mode || '').trim().toUpperCase();
-          // Skip RCP entries from payment_details - they're handled by receipt_items
           if (modeUpper.startsWith('RCP')) return s;
+          if (modeUpper.includes('COUPON') || modeUpper.includes('ADVANCE') || modeUpper.includes('CREDIT NOTE') || modeUpper.includes('RETURN')) return s;
           return s + Number(p.amount || 0);
         }, 0);
+
+        // 3. Sum wallet applications
+        const couponPaid = (invoice.coupon_applications || []).reduce((s, ca) => s + Number(ca.amount_applied || 0), 0);
+        const advancePaid = (invoice.advance_applications || []).reduce((s, aa) => s + Number(aa.amount_applied || 0), 0);
+        const creditNotePaid = (invoice.credit_note_applications || []).reduce((s, cna) => s + Number(cna.amount_applied || 0), 0);
 
         // Billing Rule: Higher of Item Discounts OR Voucher Discount
         const effectiveBaseDiscount = Math.max(Number(invoice.total_discount || 0), Number(invoice.voucher_discount || 0));
@@ -171,11 +184,10 @@ export class PaymentService {
           - effectiveBaseDiscount 
           - Number(invoice.special_discount || 0) 
           - Number(invoice.loyalty_redemption_amount || 0)
-          - Number(invoice.coupon_amount || 0)
           + Number(invoice.additional_charges_total || 0)
         );
 
-        const truePaid = Math.min(billingPaid + receiptPaid, trueNet);
+        const truePaid = Math.min(billingPaid + receiptPaid + couponPaid + advancePaid + creditNotePaid, trueNet);
         const truePending = Math.max(0, trueNet - truePaid);
 
         let correctedStatus: 'paid' | 'partial' | 'pending';

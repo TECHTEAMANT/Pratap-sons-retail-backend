@@ -88,7 +88,6 @@ export class SalesService {
         - effectiveBaseDiscount 
         - Number(inv.special_discount || 0) 
         - Number(inv.loyalty_redemption_amount || 0)
-        - Number(inv.coupon_amount || 0)
         + Number(inv.additional_charges_total || 0)
       );
 
@@ -130,6 +129,8 @@ export class SalesService {
       relations: [
         'items', 
         'items.salesman', 
+        'items.product_item',
+        'items.product_item.product_group',
         'customer', 
         'salesman', 
         'creator', 
@@ -674,7 +675,6 @@ export class SalesService {
       - effectiveBaseDiscount 
       - Number(invoice.special_discount || 0) 
       - Number(invoice.loyalty_redemption_amount || 0)
-      - Number(invoice.coupon_amount || 0)
       + Number(invoice.additional_charges_total || 0)
     );
 
