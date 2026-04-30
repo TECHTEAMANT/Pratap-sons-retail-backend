@@ -79,26 +79,26 @@ export class SalesService {
     // Dynamically recalculate payment_status using ground truth reconstruction.
     // This is the source of truth for the list view and payment allocations.
     const correctedData = data.map(inv => {
-      // 1. Reconstruct TRUE Net Payable (MRP - Discounts + Charges - Returns)
-      const effectiveBaseDiscount = Math.max(Number(inv.total_discount || 0), Number(inv.voucher_discount || 0));
+      // 1. Reconstruct TRUE Net Payable (MRP - Final Discount + Charges - Returns)
+      // Business Rule (from PDF): If Item Discounts exist (>0.1), use them. 
+      // Otherwise, sum the Header Discounts (Special, Loyalty, Voucher). They DO NOT stack.
+      const itemDisc = Number(inv.total_discount || 0);
+      const headerDiscounts = Number(inv.special_discount || 0) + 
+                             Number(inv.loyalty_redemption_amount || 0) + 
+                             Number(inv.voucher_discount || 0);
+      
+      const finalDiscount = (itemDisc > 0.1) ? itemDisc : headerDiscounts;
       const returnsAmt = (inv.sales_returns || []).reduce((sum, r) => sum + Number(r.total_return_amount || 0), 0);
       
       const trueNet = Math.max(0, 
         Number(inv.total_mrp || 0) 
-        - effectiveBaseDiscount 
-        - Number(inv.special_discount || 0) 
-        - Number(inv.loyalty_redemption_amount || 0)
+        - finalDiscount 
         + Number(inv.additional_charges_total || 0)
         - returnsAmt
       );
 
-      // 2. Reconstruct TRUE Paid Amount (Excluding Approvals)
-      // Note: For the list view, we use the stored amount_paid as a base but we should 
-      // ideally reconstruct it too if we want 100% accuracy matching the repair script.
-      // However, for performance in the list, we'll use the DB value but ENSURE 
-      // it matches the logic of our repair script.
+      // 2. TRUE Paid Amount (Using stored amount_paid as baseline)
       const paid = Number(inv.amount_paid || 0);
-
       const truePending = Math.max(0, trueNet - paid);
       
       let correctedStatus: string;

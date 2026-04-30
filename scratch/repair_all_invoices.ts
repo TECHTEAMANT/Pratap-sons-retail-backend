@@ -26,18 +26,15 @@ async function repairHistoricalData() {
 
   for (const inv of allInvoices) {
     // --- Ground Truth Reconstruction ---
-    const invoiceItems = inv.items || [];
-    const reconstructedMRP = invoiceItems.reduce((s, i) => s + (Number(i.mrp || i.selling_price || 0) * Number(i.quantity || 1)), 0);
-    const reconstructedItemDisc = invoiceItems.reduce((s, i) => s + (Number(i.discount || 0) * Number(i.quantity || 1)), 0);
+    const itemDisc = Number(inv.total_discount || 0);
+    const headerDiscounts = Number(inv.special_discount || 0) + 
+                           Number(inv.loyalty_redemption_amount || 0) + 
+                           Number(inv.voucher_discount || 0);
     
-    const totalHeaderBundle = (parseFloat(inv.total_discount as any) || 0) + 
-                             (parseFloat(inv.special_discount as any) || 0) + 
-                             (parseFloat(inv.voucher_discount as any) || 0) + 
-                             (parseFloat(inv.loyalty_redemption_amount as any) || 0);
-
-    const totalDisc = (reconstructedItemDisc > 0.01) ? reconstructedItemDisc : totalHeaderBundle;
+    const finalDiscount = (itemDisc > 0.1) ? itemDisc : headerDiscounts;
     const returnsAmt = (inv.sales_returns || []).reduce((s: number, r: any) => s + (Number(r.total_return_amount) || 0), 0);
-    const calculatedNet = reconstructedMRP - totalDisc + (parseFloat(inv.additional_charges_total as any) || 0) - returnsAmt;
+    
+    const calculatedNet = Number(inv.total_mrp || 0) - finalDiscount + (parseFloat(inv.additional_charges_total as any) || 0) - returnsAmt;
     const finalNet = Math.round(calculatedNet);
 
     // Paid reconstruction (EXCLUDING APPROVAL)
