@@ -11,7 +11,7 @@ import { PurchaseReturnItem } from '../entities/PurchaseReturnItem';
 import { SalesOrderAdvance } from '../entities/SalesOrderAdvance';
 import { PaymentReceipt } from '../entities/PaymentReceipt';
 import { PaymentReceiptItem } from '../entities/PaymentReceiptItem';
-import { Between, MoreThanOrEqual, LessThanOrEqual, Raw, In } from 'typeorm';
+import { Between, MoreThanOrEqual, LessThanOrEqual, Raw, In, Not, MoreThan } from 'typeorm';
 import logger from '../utils/logger';
 
 export class ReportService {
@@ -19,7 +19,7 @@ export class ReportService {
   async dailySales(date: string) {
     const invoices = await AppDataSource.getRepository(SalesInvoice).find({
       where: { invoice_date: new Date(date) as any },
-      relations: ['items'],
+      relations: ['items', 'salesman', 'items.salesman', 'items.product_item'],
       order: { created_at: 'ASC' },
     });
 
@@ -91,13 +91,15 @@ export class ReportService {
     const qb = AppDataSource.getRepository(SalesInvoice)
       .createQueryBuilder('si')
       .leftJoinAndSelect('si.items', 'items')
-      .leftJoin('items.product_item', 'bb') // Needed for vendor filtering
+      .leftJoinAndSelect('items.product_item', 'bb') // Needed for vendor filtering and photos
       .leftJoinAndSelect('si.receipt_items', 'ri')
       .leftJoinAndSelect('ri.receipt', 'receipt')
       .leftJoinAndSelect('si.sales_returns', 'sr')
       .leftJoinAndSelect('si.coupon_applications', 'ca')
       .leftJoinAndSelect('si.advance_applications', 'aa')
       .leftJoinAndSelect('si.credit_note_applications', 'cna')
+      .leftJoinAndSelect('si.salesman', 'salesman')
+      .leftJoinAndSelect('items.salesman', 'itemSalesman')
       .where('si.invoice_date BETWEEN :start AND :end', { start, end });
 
     if (filters.floorId) {
@@ -336,7 +338,7 @@ export class ReportService {
       result.totalSpecialDiscount += parseFloat(inv.special_discount as any) || 0;
       result.totalLoyalty += parseFloat(inv.loyalty_redemption_amount as any) || 0;
       result.totalVoucher += parseFloat(inv.voucher_discount as any) || 0;
-      result.totalPending += isApprovalInvoice ? adjustedPending : 0;
+      result.totalPending += adjustedPending;
 
       // Global Payment Breakdown update
       result.paymentBreakdown.Cash += invoicePaymentBreakdown.Cash;
@@ -366,9 +368,12 @@ export class ReportService {
         });
       }
 
+      const displaySalesmanName = inv.salesman?.name || (inv.items && inv.items[0] && (inv.items[0] as any).salesman?.name) || '-';
+
       // Add to detailed list
       detailedList.push({
         ...inv,
+        salesman_name_display: displaySalesmanName,
         gross_mrp: reconstructedMRP,
         base_discount: visualItemDiscount,
         special_discount: parseFloat(inv.special_discount as any) || 0,
@@ -420,7 +425,8 @@ export class ReportService {
         'po.invoice_number as "poInvoiceNumber"',
         'po.order_date as "poDate"',
         'CASE WHEN bb.gst_logic = \'AUTO_5_18\' THEN (CASE WHEN bb.cost_actual < 2500 THEN 5 ELSE 18 END) ELSE 5 END as "gstRate"',
-        'COALESCE(bb.available_quantity * bb.cost_actual, 0) as "inventoryValue"'
+        'COALESCE(bb.available_quantity * bb.cost_actual, 0) as "inventoryValue"',
+        'bb.photos as photos'
       ]);
 
     qb.where('bb.status IN (:...statuses)', { statuses: ['active', 'Available', 'defective', 'Sold', 'Returned'] });
@@ -600,31 +606,39 @@ export class ReportService {
       }
     };
   }
-
-  async purchaseAnalysisReport(filters: { startDate: string, endDate: string, vendorId?: string }) {
-    const start = filters.startDate.split('T')[0];
-    const end = filters.endDate.split('T')[0];
+  async purchaseAnalysisReport(filters: { startDate: string, endDate: string, vendorId?: string, includePhotos?: boolean | string }) {
+    const { startDate, endDate } = filters;
+    const start = startDate.split('T')[0];
+    const end = endDate.split('T')[0];
     
     // For timestamps, we want to include the entire end day.
     const endPlusOne = new Date(new Date(end).getTime() + 86400000).toISOString().split('T')[0];
 
+    const includePhotos = filters.includePhotos === true || filters.includePhotos === 'true';
+
+    const selectFields = [
+      'bb.barcode_alias_8digit as barcode',
+      'bb.design_no as design_no',
+      'COALESCE(po.order_date, bb.created_at) as date',
+      'bb.total_quantity as quantity',
+      'v.name as vendor_name',
+      'COALESCE(bb.cost_actual, 0) as cost',
+      'COALESCE(bb.mrp, 0) as mrp',
+      'po.po_number as po_number',
+      'po.invoice_number as po_invoice_number',
+      'po.order_date as po_date'
+    ];
+
+    if (includePhotos) {
+      selectFields.push('bb.photos as photos');
+    }
+
     const qb = AppDataSource.getRepository(BarcodeBatch)
       .createQueryBuilder('bb')
-      .leftJoinAndSelect('bb.vendor', 'v')
-      .leftJoinAndSelect('purchase_orders', 'po', 'po.id = bb.po_id')
-      .select([
-        'bb.barcode_alias_8digit as barcode',
-        'bb.design_no as design_no',
-        'bb.created_at as date',
-        'bb.total_quantity as quantity',
-        'v.name as vendor_name',
-        'COALESCE(bb.cost_actual, 0) as cost',
-        'COALESCE(bb.mrp, 0) as mrp',
-        'po.po_number as po_number',
-        'po.invoice_number as po_invoice_number',
-        'po.order_date as po_date'
-      ])
-      .where('bb.created_at >= :start AND bb.created_at < :endPlusOne', { start, endPlusOne });
+      .leftJoin('bb.vendor', 'v')
+      .leftJoin(PurchaseOrder, 'po', 'po.id = bb.po_id')
+      .select(selectFields)
+      .where('COALESCE(po.order_date, bb.created_at) >= :start AND COALESCE(po.order_date, bb.created_at) < :endPlusOne', { start, endPlusOne });
 
     if (filters.vendorId && filters.vendorId !== 'null' && filters.vendorId !== 'undefined' && filters.vendorId !== '') {
       qb.andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
@@ -635,50 +649,54 @@ export class ReportService {
     let totalCost = 0;
     let totalMRP = 0;
     let totalQuantity = 0;
+    let totalCostGross = 0;
 
-    const details = items.map(item => {
+    const details = [];
+    for (const item of items) {
       const quantity = parseFloat(item.quantity) || 0;
       const cost = parseFloat(item.cost) || 0;
       const mrp = parseFloat(item.mrp) || 0;
       const totalItemCost = cost * quantity;
       const totalItemMRP = mrp * quantity;
-      const discount = totalItemMRP - totalItemCost;
-      const margin = mrp > 0 ? ((mrp - cost) / mrp) * 100 : 0;
+      const totalItemCostGross = totalItemCost * 1.12;
 
       totalCost += totalItemCost;
       totalMRP += totalItemMRP;
       totalQuantity += quantity;
+      totalCostGross += totalItemCostGross;
 
-      return {
+      // Handle potential string-formatted Postgres array from getRawMany
+      let photos = item.photos;
+      if (typeof photos === 'string' && photos.startsWith('{')) {
+        photos = photos.substring(1, photos.length - 1).split(',').map(s => s.trim().replace(/^"(.*)"$/, '$1'));
+      }
+      if (!Array.isArray(photos)) photos = [];
+
+      details.push({
         ...item,
+        photos,
         quantity,
         cost,
         mrp,
-        totalCost: totalItemCost,
-        totalMRP: totalItemMRP,
-        discount,
-        margin
-      };
-    });
+        totalCost: Math.round(totalItemCost * 100) / 100,
+        totalCostGross: Math.round(totalItemCostGross * 100) / 100,
+        totalMRP: Math.round(totalItemMRP * 100) / 100,
+        discount: Math.round((totalItemMRP - totalItemCost) * 100) / 100,
+        margin: Math.round((mrp > 0 ? ((mrp - cost) / mrp) * 100 : 0) * 100) / 100
+      });
+    }
 
     return {
-      success: true,
-      data: {
-        summary: {
-          totalCost: Math.round(totalCost * 100) / 100,
-          totalMRP: Math.round(totalMRP * 100) / 100,
-          totalDiscount: Math.round((totalMRP - totalCost) * 100) / 100,
-          avgMargin: totalMRP > 0 ? ((totalMRP - totalCost) / totalMRP) * 100 : 0,
-          totalItems: totalQuantity
-        },
-        details: details.map(d => ({
-          ...d,
-          totalCost: Math.round(d.totalCost * 100) / 100,
-          totalMRP: Math.round(d.totalMRP * 100) / 100,
-          discount: Math.round(d.discount * 100) / 100,
-          margin: Math.round(d.margin * 100) / 100
-        }))
-      }
+      summary: {
+        totalCost: Math.round(totalCost * 100) / 100,
+        totalCostGross: Math.round(totalCostGross * 100) / 100,
+        totalMRP: Math.round(totalMRP * 100) / 100,
+        totalDiscount: Math.round((totalMRP - totalCost) * 100) / 100,
+        avgMargin: totalMRP > 0 ? ((totalMRP - totalCost) / totalMRP) * 100 : 0,
+        totalItems: totalQuantity,
+        itemsSold: totalQuantity // Compatibility key for UI cards
+      },
+      details
     };
   }
 
@@ -814,10 +832,11 @@ export class ReportService {
         '(COALESCE(sii.cgst_amount, 0) + COALESCE(sii.sgst_amount, 0) + COALESCE(sii.igst_amount, 0)) as original_gst_amount',
         'COALESCE(NULLIF(sii.selling_price, 0), sii.mrp - sii.discount) as selling_price',
         'v.name as vendor_name',
-        'v.id as vendor_id'
+        'v.id as vendor_id',
+        'bb.photos as photos'
       ])
       .where('si.invoice_date BETWEEN :start AND :end', { start, end })
-      .groupBy('si.id, sii.id, bb.id, v.id')
+      .groupBy('si.id, sii.id, bb.id, v.id, bb.photos')
       .having('COALESCE(sii.quantity, 0) - COALESCE(SUM(sri.quantity), 0) > 0');
 
     if (filters.vendorId && filters.vendorId !== 'null' && filters.vendorId !== 'undefined' && filters.vendorId !== '') {
@@ -1933,153 +1952,197 @@ export class ReportService {
   }
 
   async pendingPaymentsReport() {
-    // Step 1: Auto-correct ANY invoice where the customer hasn't actually paid but
-    // amount_pending was wrongly set to 0 by the return bug.
-    // SOURCE OF TRUTH: net_payable - amount_paid (not amount_pending which can be corrupted)
-    const staleInvoices = await AppDataSource.query(`
-      SELECT id, net_payable, amount_paid, amount_pending, payment_status
-      FROM sales_invoices
-      WHERE COALESCE(net_payable::numeric, 0) - COALESCE(amount_paid::numeric, 0) > 1
-        AND (payment_status = 'paid' OR COALESCE(amount_pending::numeric, 0) < 1)
-    `);
-    if (staleInvoices.length > 0) {
-      for (const s of staleInvoices) {
-        const truePending = Math.max(0, Number(s.net_payable) - Number(s.amount_paid));
-        const status = Number(s.amount_paid) > 0.05 ? 'partial' : 'pending';
-        await AppDataSource.query(
-          `UPDATE sales_invoices SET payment_status = $1, amount_pending = $2 WHERE id = $3`,
-          [status, truePending, s.id]
-        );
-      }
-    }
-
-    // Step 2: Fetch all invoices with a true pending balance (using net_payable - amount_paid)
-    const invoices = await AppDataSource.query(`
-      SELECT si.*, c.name as customer_name_rel, c.mobile as customer_mobile_rel, c.id as customer_id_rel
-      FROM sales_invoices si
-      LEFT JOIN customers c ON c.id = si.customer_id
-      WHERE COALESCE(si.net_payable::numeric, 0) - COALESCE(si.amount_paid::numeric, 0) > 1
-      ORDER BY si.invoice_date DESC
-    `);
-
-    // Normalize customer relation for frontend compatibility
-    const normalizedInvoices = invoices.map((inv: any) => ({
-      ...inv,
-      customer: inv.customer_id_rel ? {
-        id: inv.customer_id_rel,
-        name: inv.customer_name_rel,
-        mobile: inv.customer_mobile_rel
-      } : null,
-      // Recalculate correct amounts for display
-      amount_pending: Math.max(0, Number(inv.net_payable) - Number(inv.amount_paid))
-    }));
-
-    if (normalizedInvoices.length === 0) return { invoices: [], receipts: {} };
-
-    const invoiceIds = normalizedInvoices.map((inv: any) => inv.id);
-
-    // Fetch all receipt items for these invoices
-    const receiptItems = await AppDataSource.getRepository(PaymentReceiptItem).find({
-      where: {
-        invoice_id: In(invoiceIds)
-      },
-      relations: ['receipt'],
-      order: {
-        receipt: {
-          receipt_date: 'DESC'
-        }
-      }
+    // 1. Fetch all invoices that are not marked as fully paid in DB, 
+    // OR have a balance > 1 based on DB fields.
+    // We load all relations to enable Ground-Truth reconstruction.
+    const invoices = await AppDataSource.getRepository(SalesInvoice).find({
+      where: [
+        { payment_status: Not('paid') },
+        { amount_pending: MoreThan(1) }
+      ],
+      relations: [
+        'items', 
+        'items.product_item',
+        'customer',
+        'receipt_items', 
+        'receipt_items.receipt', 
+        'sales_returns', 
+        'coupon_applications', 
+        'advance_applications', 
+        'credit_note_applications'
+      ],
+      order: { invoice_date: 'DESC' }
     });
 
-    // Fetch all sales returns for these invoices
-    const salesReturns = await AppDataSource.getRepository(SalesReturn).find({
-      where: {
-        invoice_id: In(invoiceIds)
-      },
-      order: {
-        return_date: 'DESC'
-      }
-    });
-
-    // Grouping by invoice_id
+    const normalizedInvoices: any[] = [];
     const receiptsMap: Record<string, any[]> = {};
-    
-    normalizedInvoices.forEach((inv: any) => {
-      // Check if there was an initial payment at the time of sale
-      // We can use the payment_details if available, or just the initial amount_paid
-      // Since amount_paid in SalesInvoice is cumulative (usually), we need to be careful.
-      // However, usually amount_paid starts with what was paid at sale.
+
+    for (const inv of invoices) {
+      // --- RECONSTRUCTION LOGIC (Mirrors salesReport) ---
+      const invoiceItems = inv.items || [];
+      const reconstructedMRP = invoiceItems.reduce((s, i) => s + (Number(i.mrp || i.selling_price || 0) * Number(i.quantity || 1)), 0);
+      const reconstructedItemDisc = invoiceItems.reduce((s, i) => s + (Number(i.discount || 0) * Number(i.quantity || 1)), 0);
       
-      // Calculate sum of subsequent payments
-      const subReceipts = receiptItems.filter(ri => ri.invoice_id === inv.id);
-      const subTotal = subReceipts.reduce((sum, ri) => sum + Number(ri.amount_paid), 0);
-      
-      const subReturns = salesReturns.filter(sr => sr.invoice_id === inv.id);
-      const returnTotal = subReturns.reduce((sum, sr) => sum + Number(sr.total_return_amount), 0);
-      
-      // Initial paid = Total Paid minus sum of subsequent payment items/returns?
-      // Actually, in this system, it seems amount_paid IS updated by subsequent items.
-      const initialPaid = Number(inv.amount_paid) - subTotal + returnTotal; // returns reduce amount_pending, not necessarily increase amount_paid
-      
-      // Wait, let's look at getPaymentAmount in frontend.
-      // If we have payment_details on the invoice, that's our initial payment.
-      if (inv.payment_details && inv.payment_details.length > 0) {
-        if (!receiptsMap[inv.id]) receiptsMap[inv.id] = [];
-        
-        let details = inv.payment_details;
-        if (typeof details === 'string') {
-          try { details = JSON.parse(details); } catch(e) {}
-        }
-        
-        if (Array.isArray(details)) {
-          details.forEach((d: any) => {
-            receiptsMap[inv.id].push({
-              id: `initial-${inv.id}-${d.mode}`,
-              receipt_date: inv.invoice_date,
-              amount_received: d.amount,
-              payment_mode: d.mode,
-              receipt_number: 'Sale Payment',
-              is_initial: true
-            });
-          });
-        }
-      } else if (initialPaid > 0) {
-        // Fallback for invoices without details but with initial paid
-        if (!receiptsMap[inv.id]) receiptsMap[inv.id] = [];
-        receiptsMap[inv.id].push({
-          id: `initial-${inv.id}`,
-          receipt_date: inv.invoice_date,
-          amount_received: initialPaid,
-          payment_mode: inv.payment_mode || 'Mix',
-          receipt_number: 'Sale Payment',
-          is_initial: true
-        });
+      const totalHeaderBundle = (parseFloat(inv.total_discount as any) || 0) + 
+                               (parseFloat(inv.special_discount as any) || 0) + 
+                               (parseFloat(inv.voucher_discount as any) || 0) + 
+                               (parseFloat(inv.loyalty_redemption_amount as any) || 0);
+
+      const totalDisc = (reconstructedItemDisc > 0.01) ? reconstructedItemDisc : totalHeaderBundle;
+      const returnsAmt = (inv.sales_returns || []).reduce((s: number, r: any) => s + (Number(r.total_return_amount) || 0), 0);
+      const calculatedNet = reconstructedMRP - totalDisc + (parseFloat(inv.additional_charges_total as any) || 0) - returnsAmt;
+      const finalNet = Math.round(calculatedNet);
+
+      // Payment Reconstruction
+      let paymentDetails = inv.payment_details;
+      if (typeof paymentDetails === 'string') {
+        try { paymentDetails = JSON.parse(paymentDetails); } catch (e) { paymentDetails = null; }
       }
-    });
 
-    receiptItems.forEach(item => {
-      if (!receiptsMap[item.invoice_id]) receiptsMap[item.invoice_id] = [];
-      receiptsMap[item.invoice_id].push({
-        id: item.id,
-        receipt_date: item.receipt.receipt_date,
-        amount_received: item.amount_paid, // This is what was actually paid for THIS invoice
-        payment_mode: item.receipt.payment_mode,
-        receipt_number: item.receipt.receipt_number,
+      let initialDetails: any[] = [];
+      if (paymentDetails) {
+        if (Array.isArray(paymentDetails)) {
+          initialDetails = paymentDetails.filter((pd: any) => {
+            const k = (pd.mode || '').toString().toUpperCase();
+            return !(k.includes('COUPON') || k.includes('ADVANCE') || k.includes('CREDIT NOTE') || k.includes('RETURN'));
+          });
+        } else if (typeof paymentDetails === 'object' && paymentDetails !== null) {
+          const techKeys = ['TOTAL_MRP', 'NET_PAYABLE', 'ITEMS', 'ID', 'TOTAL_AMOUNT', 'ROUND_OFF', 'AMOUNT_PAID', 'AMOUNT_PENDING', 'SPECIAL_DISCOUNT', 'VOUCHER_DISCOUNT', 'LOYALTY_REDEMPTION_AMOUNT', 'TOTAL_GST', 'TAXABLE_VALUE'];
+          initialDetails = Object.entries(paymentDetails)
+            .filter(([key, val]) => {
+              const k = key.toUpperCase();
+              return !techKeys.includes(k) && !(k.includes('COUPON') || k.includes('ADVANCE') || k.includes('CREDIT NOTE') || k.includes('RETURN')) && (typeof val === 'number' || typeof val === 'string');
+            })
+            .map(([key, val]) => ({ mode: key, amount: val }));
+        }
+      }
+
+      const receiptPayments = (inv.receipt_items || []).map((ri: any) => ({
+        id: ri.id,
+        receipt_date: ri.receipt?.receipt_date,
+        amount_received: parseFloat(ri.amount_paid as any) || 0,
+        payment_mode: ri.receipt?.payment_mode || 'Receipt',
+        receipt_number: ri.receipt?.receipt_number,
         is_receipt: true
+      })).filter(p => {
+        const k = (p.payment_mode || '').toString().toUpperCase();
+        return p.amount_received > 0 && !(k.includes('COUPON') || k.includes('ADVANCE') || k.includes('CREDIT NOTE') || k.includes('RETURN') || k.includes('APPROVAL'));
       });
-    });
 
-    salesReturns.forEach(ret => {
-      if (!receiptsMap[ret.invoice_id]) receiptsMap[ret.invoice_id] = [];
-      receiptsMap[ret.invoice_id].push({
+      const couponReceipts = (inv.coupon_applications || []).map((ca: any) => ({
+        id: ca.id,
+        receipt_date: ca.created_at,
+        amount_received: parseFloat(ca.amount_applied as any) || 0,
+        payment_mode: 'Credit Coupon',
+        receipt_number: ca.coupon?.coupon_no || 'Coupon',
+        is_wallet: true
+      }));
+
+      const advanceReceipts = (inv.advance_applications || []).map((aa: any) => ({
+        id: aa.id,
+        receipt_date: aa.created_at,
+        amount_received: parseFloat(aa.amount_applied as any) || 0,
+        payment_mode: 'Advance',
+        receipt_number: aa.advance?.receipt_number || 'Advance',
+        is_wallet: true
+      }));
+
+      const creditNoteReceipts = (inv.credit_note_applications || []).map((cna: any) => ({
+        id: cna.id,
+        receipt_date: cna.created_at,
+        amount_received: parseFloat(cna.amount_applied as any) || 0,
+        payment_mode: 'Credit Note',
+        receipt_number: cna.creditNote?.credit_note_number || 'Note',
+        is_wallet: true
+      }));
+
+      const returnReceipts = (inv.sales_returns || []).map((ret: any) => ({
         id: ret.id,
         receipt_date: ret.return_date,
-        amount_received: ret.total_return_amount,
+        amount_received: parseFloat(ret.total_return_amount as any) || 0,
         payment_mode: 'Sales Return',
         receipt_number: ret.return_number,
         is_return: true
-      });
-    });
+      }));
+
+      const totalExternalPaid = receiptPayments.reduce((s, r) => s + r.amount_received, 0) + 
+                               couponReceipts.reduce((s, r) => s + r.amount_received, 0) + 
+                               advanceReceipts.reduce((s, r) => s + r.amount_received, 0) + 
+                               creditNoteReceipts.reduce((s, r) => s + r.amount_received, 0);
+
+      const initialPaymentsNormalized = initialDetails.map((pd: any) => {
+        const mode = (pd.mode || '').toString().toUpperCase();
+        let amount = parseFloat(pd.amount) || 0;
+        
+        // If it's an approval mode, we DON'T count it as "money received" (Paid).
+        // It's just a flag that the balance is an approval balance.
+        if (mode.includes('APPROVAL')) {
+          return {
+            id: `initial-${inv.id}-${pd.mode}`,
+            receipt_date: inv.invoice_date,
+            amount_received: 0, // EXPLICITLY 0 for paid total
+            payment_mode: pd.mode,
+            receipt_number: 'Sale Payment',
+            is_initial: true,
+            is_approval: true
+          };
+        }
+
+        return {
+          id: `initial-${inv.id}-${pd.mode}`,
+          receipt_date: inv.invoice_date,
+          amount_received: amount,
+          payment_mode: pd.mode,
+          receipt_number: 'Sale Payment',
+          is_initial: true
+        };
+      }).filter(p => p.amount_received > 0 || (p as any).is_approval);
+
+      const finalRealPaid = 
+        initialPaymentsNormalized.reduce((s, p) => s + p.amount_received, 0) + 
+        totalExternalPaid;
+
+      const adjustedPending = Math.max(0, finalNet - finalRealPaid);
+
+      // Only include in report if there is a real pending balance (> 1 rupee)
+      if (adjustedPending > 1) {
+        normalizedInvoices.push({
+          ...inv,
+          net_payable: finalNet,
+          amount_paid: finalRealPaid,
+          amount_pending: adjustedPending,
+          payment_status: finalRealPaid > 0 ? 'partial' : 'pending'
+        });
+
+        receiptsMap[inv.id] = [
+          ...initialPaymentsNormalized,
+          ...receiptPayments,
+          ...couponReceipts,
+          ...advanceReceipts,
+          ...creditNoteReceipts,
+          ...returnReceipts
+        ];
+
+        // AUTO-CORRECTION: If DB is out of sync by more than 5 rupees, update it silently.
+        const dbPending = parseFloat(inv.amount_pending as any) || 0;
+        const dbNet = parseFloat(inv.net_payable as any) || 0;
+        if (Math.abs(dbPending - adjustedPending) > 5 || Math.abs(dbNet - finalNet) > 5) {
+          AppDataSource.getRepository(SalesInvoice).update(inv.id, {
+            amount_pending: adjustedPending,
+            amount_paid: finalRealPaid,
+            net_payable: finalNet,
+            payment_status: adjustedPending <= 1 ? 'paid' : (finalRealPaid > 0 ? 'partial' : 'pending')
+          }).catch(e => console.error(`Failed to auto-correct invoice ${inv.invoice_number}:`, e));
+        }
+      } else if (inv.payment_status !== 'paid' || (inv.amount_pending as any) > 1) {
+        // If it's reconstructed as PAID but DB says it's not, fix DB.
+        AppDataSource.getRepository(SalesInvoice).update(inv.id, {
+          amount_pending: 0,
+          payment_status: 'paid',
+          amount_paid: finalNet // Set paid = net to reflect closure
+        }).catch(e => console.error(`Failed to auto-close invoice ${inv.invoice_number}:`, e));
+      }
+    }
 
     return { invoices: normalizedInvoices, receipts: receiptsMap };
   }

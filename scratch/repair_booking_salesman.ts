@@ -3,68 +3,66 @@ import { SalesInvoice } from '../src/entities/SalesInvoice';
 import { SalesInvoiceItem } from '../src/entities/SalesInvoiceItem';
 import { EBookingItem } from '../src/entities/EBookingItem';
 import { EBooking } from '../src/entities/EBooking';
+import { IsNull } from 'typeorm';
 
 async function runRepair() {
   try {
     console.log("Initializing database connection...");
     await AppDataSource.initialize();
     
-    console.log("Searching for invoices created from E-Bookings with missing salesman data...");
+    console.log("Searching for ALL invoices with missing salesman data...");
 
-    // 1. Find all booking items that are invoiced
-    const bookingItems = await AppDataSource.getRepository(EBookingItem).find({
-      where: { status: 'invoiced' },
-      relations: ['booking']
+    const invoices = await AppDataSource.getRepository(SalesInvoice).find({
+      where: { salesman_id: IsNull() },
+      relations: ['items']
     });
 
-    console.log(`Found ${bookingItems.length} invoiced booking items.`);
-
-    const invoiceIds = [...new Set(bookingItems.map(bi => bi.invoice_id))].filter(Boolean);
-    console.log(`Analyzing ${invoiceIds.length} unique invoices...`);
+    console.log(`Found ${invoices.length} invoices with null salesman_id.`);
 
     let repairedInvoices = 0;
     let repairedItemsCount = 0;
 
-    for (const invoiceId of invoiceIds) {
-      const invoice = await AppDataSource.getRepository(SalesInvoice).findOne({
-        where: { id: invoiceId },
-        relations: ['items']
+    for (const invoice of invoices) {
+      // Try to find if this invoice is linked to any EBookingItem
+      const bookingItems = await AppDataSource.getRepository(EBookingItem).find({
+        where: { invoice_id: invoice.id },
+        relations: ['booking']
       });
 
-      if (!invoice) continue;
+      if (bookingItems.length === 0) {
+        // console.log(`Invoice ${invoice.invoice_number} is not linked to any booking.`);
+        continue;
+      }
 
-      // Find all booking items for this specific invoice
-      const relatedBookingItems = bookingItems.filter(bi => bi.invoice_id === invoiceId);
-      
-      // Determine a "primary" salesman for the header if it's missing
-      // Prefer header of booking, then first item with a salesman
-      const bookingHeaderSalesmanId = relatedBookingItems[0]?.booking?.salesman_id;
-      const firstItemSalesmanId = relatedBookingItems.find(bi => bi.salesman_id)?.salesman_id;
+      // Determine a "primary" salesman from the booking
+      const bookingHeaderSalesmanId = bookingItems[0]?.booking?.salesman_id;
+      const firstItemSalesmanId = bookingItems.find(bi => bi.salesman_id)?.salesman_id;
       const primarySalesmanId = bookingHeaderSalesmanId || firstItemSalesmanId;
+
+      if (!primarySalesmanId) {
+        // console.log(`Invoice ${invoice.invoice_number} linked booking has no salesman.`);
+        continue;
+      }
 
       let changedInvoice = false;
 
-      // 1. Repair Invoice Header if missing
-      if (!invoice.salesman_id && primarySalesmanId) {
-        invoice.salesman_id = primarySalesmanId;
-        await AppDataSource.getRepository(SalesInvoice).save(invoice);
-        repairedInvoices++;
-        changedInvoice = true;
-        console.log(`Repaired header for Invoice: ${invoice.invoice_number} with primary Salesman ID: ${primarySalesmanId}`);
-      }
+      // 1. Repair Invoice Header
+      invoice.salesman_id = primarySalesmanId;
+      await AppDataSource.getRepository(SalesInvoice).save(invoice);
+      repairedInvoices++;
+      changedInvoice = true;
+      console.log(`[FIXED] Header for Invoice: ${invoice.invoice_number} with Salesman ID: ${primarySalesmanId}`);
 
-      // 2. Repair Individual Invoice Items if missing
+      // 2. Repair Individual Invoice Items
       for (const invItem of invoice.items) {
         if (!invItem.salesman_id) {
-          // Find the specific booking item that matches this barcode
-          const matchedBI = relatedBookingItems.find(bi => bi.barcode_8digit === invItem.barcode_8digit);
+          const matchedBI = bookingItems.find(bi => bi.barcode_8digit === invItem.barcode_8digit);
           const itemSalesmanId = matchedBI?.salesman_id || primarySalesmanId;
 
           if (itemSalesmanId) {
             invItem.salesman_id = itemSalesmanId;
             await AppDataSource.getRepository(SalesInvoiceItem).save(invItem);
             repairedItemsCount++;
-            changedInvoice = true;
           }
         }
       }

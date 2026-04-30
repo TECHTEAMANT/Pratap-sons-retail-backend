@@ -650,7 +650,8 @@ export class SalesService {
         'receipt_items', 
         'coupon_applications', 
         'credit_note_applications', 
-        'advance_applications'
+        'advance_applications',
+        'sales_returns'
       ]
     });
 
@@ -661,12 +662,16 @@ export class SalesService {
     const trueItemDisc = (invoice.items || []).reduce((sum, i) => sum + (Number(i.discount || 0) * Number(i.quantity || 1)), 0);
     const effectiveBaseDiscount = Math.max(trueItemDisc, Number(invoice.voucher_discount || 0));
     
+    // Account for returns
+    const returnsAmt = (invoice.sales_returns || []).reduce((sum, r) => sum + Number(r.total_return_amount || 0), 0);
+
     const trueNetPayable = Math.max(0, 
       trueTotalMrp 
       - effectiveBaseDiscount 
       - Number(invoice.special_discount || 0) 
       - Number(invoice.loyalty_redemption_amount || 0)
       + Number(invoice.additional_charges_total || 0)
+      - returnsAmt
     );
 
     // 2. Calculate True Paid
@@ -678,9 +683,17 @@ export class SalesService {
     let directPaid = 0;
     const pd = typeof invoice.payment_details === 'string' ? JSON.parse(invoice.payment_details || '[]') : (invoice.payment_details || []);
     if (Array.isArray(pd)) {
-      directPaid = pd.reduce((sum: number, p: any) => sum + (Number(p.amount || 0)), 0);
+      directPaid = pd.reduce((sum: number, p: any) => {
+        const mode = (p.mode || '').toString().toUpperCase();
+        if (mode.includes('APPROVAL')) return sum;
+        return sum + (Number(p.amount || 0));
+      }, 0);
     } else if (pd && typeof pd === 'object') {
-      directPaid = Object.values(pd).reduce((sum: number, val: any) => sum + (Number(val) || 0), 0);
+      directPaid = Object.entries(pd).reduce((sum: number, [key, val]: [string, any]) => {
+        const mode = key.toUpperCase();
+        if (mode.includes('APPROVAL')) return sum;
+        return sum + (Number(val) || 0);
+      }, 0);
     }
 
     const trueAmountPaid = receiptPaid + directPaid + advancesPaid + couponsApplied + creditNotesApplied;
