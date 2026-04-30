@@ -64,6 +64,7 @@ export class BookingService {
         b.discount_type,
         b.created_at,
         b.updated_at,
+        b.salesman_id,
 
         f.name                 AS floor_name,
         c.name                 AS customer_name,
@@ -80,7 +81,8 @@ export class BookingService {
               'design_no',       inv.design_no,
               'product_group',   pg.name,
               'color',           col.name,
-              'size',            sz.name
+              'size',            sz.name,
+              'salesman_id',     bi.salesman_id
             )
           ) FILTER (WHERE bi.id IS NOT NULL),
           '[]'
@@ -102,7 +104,7 @@ export class BookingService {
       GROUP BY
         b.id, b.booking_number, b.customer_mobile, b.floor,
         b.booking_date, b.booking_expiry, b.status, b.notes,
-        b.discount_amount, b.discount_type, b.created_at, b.updated_at,
+        b.discount_amount, b.discount_type, b.created_at, b.updated_at, b.salesman_id,
         f.name, c.name, sm.name, du.name
       
       ORDER BY b.created_at DESC
@@ -129,6 +131,7 @@ export class BookingService {
         b.discount_type,
         b.created_at,
         b.updated_at,
+        b.salesman_id,
 
         -- Floor details
         f.name                 AS floor_name,
@@ -182,7 +185,7 @@ export class BookingService {
       GROUP BY
         b.id, b.booking_number, b.customer_mobile, b.floor,
         b.booking_date, b.booking_expiry, b.status, b.notes,
-        b.discount_amount, b.discount_type, b.created_at, b.updated_at,
+        b.discount_amount, b.discount_type, b.created_at, b.updated_at, b.salesman_id,
         f.name, c.name, sm.name, sm.salesman_code, du.name
     `, [id]);
 
@@ -204,6 +207,7 @@ export class BookingService {
       discount_type:         row.discount_type,
       created_at:            row.created_at,
       updated_at:            row.updated_at,
+      salesman_id:           row.salesman_id,
       salesman_name:         row.salesman_name,
       salesman_code:         row.salesman_code,
       discount_given_by_name: row.discount_given_by_name,

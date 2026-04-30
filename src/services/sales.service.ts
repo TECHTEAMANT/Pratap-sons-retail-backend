@@ -25,7 +25,8 @@ export class SalesService {
       .leftJoinAndSelect('si.customer', 'customer')
       .leftJoinAndSelect('si.salesman', 'salesman')
       .leftJoinAndSelect('si.creator', 'creator')
-      .leftJoinAndSelect('si.floor_details', 'floor');
+      .leftJoinAndSelect('si.floor_details', 'floor')
+      .leftJoinAndSelect('si.sales_returns', 'sales_returns');
 
     if (filters.search) {
       qb.andWhere('(si.invoice_number ILIKE :s OR si.customer_name ILIKE :s OR si.customer_mobile ILIKE :s)', { s: `%${filters.search}%` });
@@ -75,28 +76,35 @@ export class SalesService {
 
     const [data, total] = await qb.getManyAndCount();
 
-    // Dynamically recalculate payment_status using net_payable - amount_paid as the source of truth.
-    // This is more reliable than amount_pending which can be corrupted by return bugs.
+    // Dynamically recalculate payment_status using ground truth reconstruction.
+    // This is the source of truth for the list view and payment allocations.
     const correctedData = data.map(inv => {
-      const paid = Number(inv.amount_paid || 0);
+      // 1. Reconstruct TRUE Net Payable (MRP - Final Discount + Charges - Returns)
+      // Business Rule (from PDF): If Item Discounts exist (>0.1), use them. 
+      // Otherwise, sum the Header Discounts (Special, Loyalty, Voucher). They DO NOT stack.
+      const itemDisc = Number(inv.total_discount || 0);
+      const headerDiscounts = Number(inv.special_discount || 0) + 
+                             Number(inv.loyalty_redemption_amount || 0) + 
+                             Number(inv.voucher_discount || 0);
       
-      // Calculate TRUE Net (Ground Truth from MRP, all Discounts, and Charges)
-      // Billing Rule: Higher of Item Discounts OR Voucher Discount (they don't stack)
-      const effectiveBaseDiscount = Math.max(Number(inv.total_discount || 0), Number(inv.voucher_discount || 0));
+      const finalDiscount = (itemDisc > 0.1) ? itemDisc : headerDiscounts;
+      const returnsAmt = (inv.sales_returns || []).reduce((sum, r) => sum + Number(r.total_return_amount || 0), 0);
+      
       const trueNet = Math.max(0, 
         Number(inv.total_mrp || 0) 
-        - effectiveBaseDiscount 
-        - Number(inv.special_discount || 0) 
-        - Number(inv.loyalty_redemption_amount || 0)
+        - finalDiscount 
         + Number(inv.additional_charges_total || 0)
+        - returnsAmt
       );
 
+      // 2. TRUE Paid Amount (Using stored amount_paid as baseline)
+      const paid = Number(inv.amount_paid || 0);
       const truePending = Math.max(0, trueNet - paid);
       
       let correctedStatus: string;
-      if (truePending <= 0.05) {
+      if (truePending <= 1) {
         correctedStatus = 'paid';
-      } else if (paid > 0.05) {
+      } else if (paid > 1) {
         correctedStatus = 'partial';
       } else {
         correctedStatus = 'pending';
@@ -431,11 +439,6 @@ export class SalesService {
             }
           }
         }
-      } else {
-        // Fallback for old-style single coupon
-        if (data.coupon_no) {
-          await creditCouponService.apply(data.coupon_no, savedInvoice.id, savedInvoice.coupon_amount || 0, manager);
-        }
       }
 
       logger.info(`Invoice created: ${invoiceNumber}`, { items: data.items?.length || 0, total: data.net_payable });
@@ -619,10 +622,6 @@ export class SalesService {
             }
           }
         }
-      } else {
-        if (data.coupon_no && data.coupon_no !== oldInvoice.coupon_no) {
-          await creditCouponService.apply(data.coupon_no, oldInvoice.id, Number(data.coupon_amount || 0), manager);
-        }
       }
 
       await manager.save(SalesInvoice, { id, ...updateData });
@@ -659,7 +658,8 @@ export class SalesService {
         'receipt_items', 
         'coupon_applications', 
         'credit_note_applications', 
-        'advance_applications'
+        'advance_applications',
+        'sales_returns'
       ]
     });
 
@@ -670,12 +670,16 @@ export class SalesService {
     const trueItemDisc = (invoice.items || []).reduce((sum, i) => sum + (Number(i.discount || 0) * Number(i.quantity || 1)), 0);
     const effectiveBaseDiscount = Math.max(trueItemDisc, Number(invoice.voucher_discount || 0));
     
+    // Account for returns
+    const returnsAmt = (invoice.sales_returns || []).reduce((sum, r) => sum + Number(r.total_return_amount || 0), 0);
+
     const trueNetPayable = Math.max(0, 
       trueTotalMrp 
       - effectiveBaseDiscount 
       - Number(invoice.special_discount || 0) 
       - Number(invoice.loyalty_redemption_amount || 0)
       + Number(invoice.additional_charges_total || 0)
+      - returnsAmt
     );
 
     // 2. Calculate True Paid
@@ -687,9 +691,17 @@ export class SalesService {
     let directPaid = 0;
     const pd = typeof invoice.payment_details === 'string' ? JSON.parse(invoice.payment_details || '[]') : (invoice.payment_details || []);
     if (Array.isArray(pd)) {
-      directPaid = pd.reduce((sum: number, p: any) => sum + (Number(p.amount || 0)), 0);
+      directPaid = pd.reduce((sum: number, p: any) => {
+        const mode = (p.mode || '').toString().toUpperCase();
+        if (mode.includes('APPROVAL')) return sum;
+        return sum + (Number(p.amount || 0));
+      }, 0);
     } else if (pd && typeof pd === 'object') {
-      directPaid = Object.values(pd).reduce((sum: number, val: any) => sum + (Number(val) || 0), 0);
+      directPaid = Object.entries(pd).reduce((sum: number, [key, val]: [string, any]) => {
+        const mode = key.toUpperCase();
+        if (mode.includes('APPROVAL')) return sum;
+        return sum + (Number(val) || 0);
+      }, 0);
     }
 
     const trueAmountPaid = receiptPaid + directPaid + advancesPaid + couponsApplied + creditNotesApplied;

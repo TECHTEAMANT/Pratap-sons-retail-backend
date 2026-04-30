@@ -138,11 +138,12 @@ export class PaymentService {
     const invoiceRepo = AppDataSource.getRepository(SalesInvoice);
     const results = { repaired: 0, errors: 0, details: [] as string[] };
 
-    // Get all invoices with their receipts and wallet applications
+    // Get all invoices with their receipts, returns, and wallet applications
     const invoices = await invoiceRepo
       .createQueryBuilder('si')
       .leftJoinAndSelect('si.receipt_items', 'ri')
       .leftJoinAndSelect('ri.receipt', 'r')
+      .leftJoinAndSelect('si.sales_returns', 'sr')
       .leftJoinAndSelect('si.coupon_applications', 'ca')
       .leftJoinAndSelect('si.advance_applications', 'aa')
       .leftJoinAndSelect('si.credit_note_applications', 'cna')
@@ -150,56 +151,65 @@ export class PaymentService {
 
     for (const invoice of invoices) {
       try {
-        // 1. Sum actual physical PaymentReceipt items (Exclude wallet modes to avoid double-count)
+        // 1. Reconstruct TRUE Net Payable (MRP - Final Discount + Charges - Returns)
+        // Business Rule: If Item Discounts exist (>0.1), use them. Otherwise, sum header discounts.
+        const itemDisc = Number(invoice.total_discount || 0);
+        const headerDiscounts = Number(invoice.special_discount || 0) + 
+                               Number(invoice.loyalty_redemption_amount || 0) + 
+                               Number(invoice.voucher_discount || 0);
+        const finalDiscount = (itemDisc > 0.1) ? itemDisc : headerDiscounts;
+        
+        const returnsAmt = (invoice.sales_returns || []).reduce((sum, r) => sum + Number(r.total_return_amount || 0), 0);
+        
+        const trueNet = Math.max(0, 
+          Number(invoice.total_mrp || 0) 
+          - finalDiscount 
+          + Number(invoice.additional_charges_total || 0)
+          - returnsAmt
+        );
+
+        // 2. Sum actual physical PaymentReceipt items (Exclude APPROVAL and wallet modes)
         const receiptPaid = (invoice.receipt_items || []).reduce((s, ri) => {
           const mode = (ri.receipt?.payment_mode || '').toString().toUpperCase();
+          if (mode.includes('APPROVAL')) return s;
           if (mode.includes('COUPON') || mode.includes('ADVANCE') || mode.includes('CREDIT NOTE') || mode.includes('RETURN')) return s;
           return s + Number(ri.amount_paid || 0);
         }, 0);
 
-        // 2. Parse initial billing payment_details (excludes RCP and wallet modes)
+        // 3. Parse initial billing payment_details (excludes APPROVAL, RCP and wallet modes)
         const rawPayments = typeof invoice.payment_details === 'string'
           ? JSON.parse(invoice.payment_details || '[]')
           : (invoice.payment_details || []);
-        const billPayments: { mode: string; amount: number }[] = Array.isArray(rawPayments)
+        const allBillPayments: { mode: string; amount: number }[] = Array.isArray(rawPayments)
           ? rawPayments
           : Object.entries(rawPayments).filter(([k]) => k !== 'items').map(([k, v]) => ({ mode: k, amount: Number(v) }));
 
-        const billingPaid = billPayments.reduce((s, p) => {
+        const billingPaid = allBillPayments.reduce((s, p) => {
           const modeUpper = String(p.mode || '').trim().toUpperCase();
+          if (modeUpper.includes('APPROVAL')) return s;
           if (modeUpper.startsWith('RCP')) return s;
           if (modeUpper.includes('COUPON') || modeUpper.includes('ADVANCE') || modeUpper.includes('CREDIT NOTE') || modeUpper.includes('RETURN')) return s;
           return s + Number(p.amount || 0);
         }, 0);
 
-        // 3. Sum wallet applications
+        // 4. Sum wallet applications
         const couponPaid = (invoice.coupon_applications || []).reduce((s, ca) => s + Number(ca.amount_applied || 0), 0);
         const advancePaid = (invoice.advance_applications || []).reduce((s, aa) => s + Number(aa.amount_applied || 0), 0);
         const creditNotePaid = (invoice.credit_note_applications || []).reduce((s, cna) => s + Number(cna.amount_applied || 0), 0);
-
-        // Billing Rule: Higher of Item Discounts OR Voucher Discount
-        const effectiveBaseDiscount = Math.max(Number(invoice.total_discount || 0), Number(invoice.voucher_discount || 0));
-        const trueNet = Math.max(0, 
-          Number(invoice.total_mrp || 0) 
-          - effectiveBaseDiscount 
-          - Number(invoice.special_discount || 0) 
-          - Number(invoice.loyalty_redemption_amount || 0)
-          + Number(invoice.additional_charges_total || 0)
-        );
 
         const truePaid = Math.min(billingPaid + receiptPaid + couponPaid + advancePaid + creditNotePaid, trueNet);
         const truePending = Math.max(0, trueNet - truePaid);
 
         let correctedStatus: 'paid' | 'partial' | 'pending';
-        if (truePending < 0.05) correctedStatus = 'paid';
-        else if (truePaid > 0.05) correctedStatus = 'partial';
+        if (truePending < 1) correctedStatus = 'paid';
+        else if (truePaid > 1) correctedStatus = 'partial';
         else correctedStatus = 'pending';
 
         const storedPaid = Number(invoice.amount_paid || 0);
         const storedPending = Number(invoice.amount_pending || 0);
         const storedNet = Number(invoice.net_payable || 0);
 
-        if (Math.abs(storedPaid - truePaid) > 0.5 || Math.abs(storedPending - truePending) > 0.5 || Math.abs(storedNet - trueNet) > 0.5 || correctedStatus !== invoice.payment_status) {
+        if (Math.abs(storedPaid - truePaid) > 1 || Math.abs(storedPending - truePending) > 1 || Math.abs(storedNet - trueNet) > 1 || correctedStatus !== invoice.payment_status) {
           results.details.push(`${invoice.invoice_number}: paid ${storedPaid}→${truePaid}, pending ${storedPending}→${truePending}, net ${storedNet}→${trueNet}, status ${invoice.payment_status}→${correctedStatus}`);
           await invoiceRepo.update(invoice.id, {
             amount_paid: truePaid,

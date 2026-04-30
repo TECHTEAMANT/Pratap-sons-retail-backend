@@ -178,9 +178,17 @@ export class SalesReturnService {
           let directPaid = 0;
           const pd = typeof invoice.payment_details === 'string' ? JSON.parse(invoice.payment_details) : invoice.payment_details;
           if (Array.isArray(pd)) {
-            directPaid = pd.reduce((sum: number, p: any) => sum + (Number(p.amount || 0)), 0);
+            directPaid = pd.reduce((sum: number, p: any) => {
+              const mode = (p.mode || '').toString().toUpperCase();
+              if (mode.includes('APPROVAL')) return sum;
+              return sum + (Number(p.amount || 0));
+            }, 0);
           } else if (pd && typeof pd === 'object') {
-            directPaid = Object.values(pd).reduce((sum: number, val: any) => sum + (Number(val) || 0), 0);
+            directPaid = Object.entries(pd).reduce((sum: number, [key, val]: [string, any]) => {
+              const mode = key.toUpperCase();
+              if (mode.includes('APPROVAL')) return sum;
+              return sum + (Number(val) || 0);
+            }, 0);
           }
 
           const trueAmountPaid = receiptPaid + directPaid + advancesPaid + couponsApplied + creditNotesApplied;
@@ -463,9 +471,17 @@ export class SalesReturnService {
           let directPaid = 0;
           const pd = typeof invoice.payment_details === 'string' ? JSON.parse(invoice.payment_details) : invoice.payment_details;
           if (Array.isArray(pd)) {
-            directPaid = pd.reduce((sum: number, p: any) => sum + (Number(p.amount || 0)), 0);
+            directPaid = pd.reduce((sum: number, p: any) => {
+              const mode = (p.mode || '').toString().toUpperCase();
+              if (mode.includes('APPROVAL')) return sum;
+              return sum + (Number(p.amount || 0));
+            }, 0);
           } else if (pd && typeof pd === 'object') {
-            directPaid = Object.values(pd).reduce((sum: number, val: any) => sum + (Number(val) || 0), 0);
+            directPaid = Object.entries(pd).reduce((sum: number, [key, val]: [string, any]) => {
+              const mode = key.toUpperCase();
+              if (mode.includes('APPROVAL')) return sum;
+              return sum + (Number(val) || 0);
+            }, 0);
           }
 
           const trueAmountPaid = receiptPaid + directPaid + advancesPaid + couponsApplied + creditNotesApplied;
