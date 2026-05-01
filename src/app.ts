@@ -8,11 +8,12 @@ import routes from './routes';
 import logger from './utils/logger';
 
 const app = express();
+app.set('trust proxy', true);
 
 // ===== Security Middleware =====
 app.use(helmet());
 app.use(cors({
-  origin: config.cors.origin,
+  origin: config.cors.origin.split(','),
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization'],

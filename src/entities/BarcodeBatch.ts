@@ -17,6 +17,7 @@ export class BarcodeBatch {
   @Column({ type: 'text', nullable: true })
   barcode_structured: string;
 
+  @Index()
   @Column({ type: 'text' })
   design_no: string;
 
@@ -41,6 +42,7 @@ export class BarcodeBatch {
   @JoinColumn({ name: 'color', referencedColumnName: 'id' })
   color: Color;
 
+  @Index()
   @Column({ name: 'vendor', type: 'text', nullable: true })
   vendor_id: string;
 
@@ -81,6 +83,7 @@ export class BarcodeBatch {
   @Column({ type: 'text', nullable: true })
   order_number: string;
 
+  @Index()
   @Column({ name: 'floor', type: 'text', nullable: true })
   floor_id: string;
 
@@ -100,9 +103,11 @@ export class BarcodeBatch {
   @Column({ type: 'date', nullable: true })
   discount_end_date: Date;
 
+  @Index()
   @Column({ type: 'text', default: 'active' })
   status: string;
 
+  @Index()
   @Column({ type: 'uuid', nullable: true })
   po_id: string;
 
@@ -118,6 +123,7 @@ export class BarcodeBatch {
   @Column({ type: 'uuid', nullable: true })
   modified_by: string;
 
+  @Index()
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
 

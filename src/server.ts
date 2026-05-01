@@ -33,6 +33,9 @@ async function startServer() {
       logger.info(`   Health check: http://localhost:${config.port}/api/health`);
     });
 
+    // Increase timeout for heavy reports
+    server.timeout = 600000; // 10 minutes
+
     // Graceful shutdown
     const shutdown = async (signal: string) => {
       logger.info(`${signal} received. Shutting down gracefully...`);
