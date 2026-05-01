@@ -94,6 +94,9 @@ export class ReportService {
   }
 
   async salesReport(filters: SalesReportFilters) {
+    const startTime = Date.now();
+    logger.info(`[Perf] salesReport started: ${JSON.stringify(filters)}`);
+
     const start = filters.startDate.split('T')[0];
     const end = filters.endDate.split('T')[0];
     const page = filters.page || 1;
@@ -446,97 +449,213 @@ export class ReportService {
     };
   }
 
-  async inventoryReport(filters: { startDate?: string; endDate?: string; vendorId?: string; floorId?: string; sortField?: string; sortDirection?: 'ASC' | 'DESC'; exportMode?: boolean | string } = {}) {
-    const exportMode = filters.exportMode === true || filters.exportMode === 'true';
-    const qb = AppDataSource.getRepository(BarcodeBatch)
-      .createQueryBuilder('bb')
-      .leftJoin('bb.product_group', 'pg')
-      .leftJoin('bb.size', 'sz')
-      .leftJoin('bb.color', 'cl')
-      .leftJoin('bb.vendor', 'v')
-      .leftJoin(PurchaseOrder, 'po', 'po.id = bb.po_id')
-      .select([
-        'bb.barcode_alias_8digit as barcode',
-        'bb.design_no as design',
-        'bb.hsn_code as hsn_code',
-        'pg.name as "productGroup"',
-        'sz.name as size',
-        'cl.name as color',
-        'v.name as "vendorName"',
-        'COALESCE(bb.available_quantity, 0) as "availableQty"',
-        'COALESCE(bb.total_quantity - bb.available_quantity, 0) as "soldQty"',
-        'COALESCE(bb.cost_actual, 0) as cost',
-        'COALESCE(bb.mrp, 0) as mrp',
-        'po.invoice_number as "poInvoiceNumber"',
-        'po.order_date as "poDate"',
-        'CASE WHEN bb.gst_logic = \'AUTO_5_18\' THEN (CASE WHEN bb.cost_actual < 2500 THEN 5 ELSE 18 END) ELSE 5 END as "gstRate"',
-        'COALESCE(bb.available_quantity * bb.cost_actual, 0) as "inventoryValue"'
-      ]);
+  async inventoryReport(filters: {
+    startDate?: string;
+    endDate?: string;
+    vendorId?: string;
+    floorId?: string;
+    page?: number;
+    limit?: number; 
+    exportMode?: boolean | string;
+    design?: string;
+    barcode?: string;
+    productGroup?: string;
+    size?: string;
+    color?: string;
+    poInvoiceNumber?: string;
+    includePhotos?: boolean | string;
+    skipSummary?: boolean | string;
+    sortField?: string;
+    sortDirection?: 'ASC' | 'DESC' | string;
+  } = {}) {
+    try {
+      const exportMode = filters.exportMode === true || filters.exportMode === 'true';
+      const includePhotos = filters.includePhotos === true || filters.includePhotos === 'true' || (exportMode && filters.includePhotos === undefined);
+      const page = Number(filters.page) || 1;
+      const limit = Number(filters.limit) || 50;
 
-    if (exportMode) {
-      qb.addSelect('bb.photos', 'photos');
-    }
+      const startTime = Date.now();
+      logger.info(`[Perf] inventoryReport started: ${JSON.stringify(filters)}`);
 
-    qb.where('bb.status IN (:...statuses)', { statuses: ['active', 'Available', 'defective', 'Sold', 'Returned'] });
-    
-    // NOTE: For Inventory Analysis, we ignore the creation date filter by default 
-    // to show the current state of ALL inventory items, matching the main Inventory module.
-    /*
-    if (filters.startDate && filters.endDate) {
-      const start = filters.startDate.split('T')[0];
-      const end = filters.endDate.split('T')[0];
-      qb.andWhere('bb.created_at::date BETWEEN :start AND :end', { start, end });
-    }
-    */
-
-    if (filters.vendorId) {
-      qb.andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
-    }
-    if (filters.floorId) {
-      qb.andWhere('bb.floor = :floorId', { floorId: filters.floorId });
-    }
-
-    const direction = filters.sortDirection?.toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
-    if (filters.sortField === 'availableQty') {
-      qb.orderBy('bb.available_quantity', direction);
-    } else if (filters.sortField === 'soldQty') {
-      qb.orderBy('(bb.total_quantity - bb.available_quantity)', direction);
-    } else if (filters.sortField === 'mrp') {
-      qb.orderBy('bb.mrp', direction);
-    } else if (filters.sortField === 'cost') {
-      qb.orderBy('bb.cost_actual', direction);
-    } else if (filters.sortField === 'barcode') {
-      qb.orderBy('bb.barcode_alias_8digit', direction);
-    } else {
-      qb.orderBy('bb.design_no', direction);
-    }
-
-    const results = await qb.getRawMany();
-    return results.map(r => {
-      const cost = parseFloat(r.cost);
-      const mrp = parseFloat(r.mrp);
-      const availableQty = parseFloat(r.availableQty);
-      const soldQty = parseFloat(r.soldQty);
-      const gstRate = parseFloat(r.gstRate);
+      let summaryData = { totalAvailable: 0, totalSold: 0, totalCostValue: 0, estProfit: 0, totalItems: 0 };
       
-      const purchaseGstAmount = (cost * gstRate) / 100;
-      const landedCost = cost + purchaseGstAmount;
-      const actualProfitPerUnit = mrp - landedCost;
+      // --- PHASE 1: SUMMARY DATA ---
+      if (filters.skipSummary === 'true' || filters.skipSummary === true) {
+        logger.info(`[Perf] inventoryReport Phase 1 skipped (skipSummary=true)`);
+      } else {
+        const phase1Start = Date.now();
+        const summaryQB = AppDataSource.getRepository(BarcodeBatch).createQueryBuilder('bb');
 
-      return {
-        ...r,
-        availableQty,
-        soldQty,
-        cost,
-        mrp,
-        gstRate,
-        purchaseGstAmount,
-        landedCost,
-        inventoryValue: parseFloat(r.inventoryValue),
-        potentialProfit: availableQty * actualProfitPerUnit,
-        soldProfit: soldQty * actualProfitPerUnit
+        // Only join if filters that need them are present
+        if (filters.productGroup) summaryQB.leftJoin('bb.product_group', 'pg_sum');
+        if (filters.size) summaryQB.leftJoin('bb.size', 'sz_sum');
+        if (filters.color) summaryQB.leftJoin('bb.color', 'cl_sum');
+
+        summaryQB.select([
+            'COUNT(*) as "totalItems"',
+            'COALESCE(SUM(bb.available_quantity), 0) as "totalAvailable"',
+            'COALESCE(SUM(bb.total_quantity - bb.available_quantity), 0) as "totalSold"',
+            'COALESCE(SUM(bb.available_quantity * bb.cost_actual), 0) as "totalCostValue"',
+            'COALESCE(SUM((bb.total_quantity - bb.available_quantity) * (bb.mrp - (bb.cost_actual * 1.05))), 0) as "estProfit"'
+        ]);
+
+        summaryQB.where('bb.status IN (:...statuses)', { statuses: ['active', 'Available', 'defective', 'Sold', 'Returned'] });
+        
+        if (filters.vendorId) summaryQB.andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
+        if (filters.floorId) summaryQB.andWhere('bb.floor = :floorId', { floorId: filters.floorId });
+        if (filters.design) summaryQB.andWhere('bb.design_no ILIKE :design', { design: `%${filters.design}%` });
+        if (filters.barcode) summaryQB.andWhere('bb.barcode_alias_8digit ILIKE :barcode', { barcode: `%${filters.barcode}%` });
+        if (filters.productGroup) summaryQB.andWhere('pg_sum.name ILIKE :productGroup', { productGroup: `%${filters.productGroup}%` });
+        if (filters.size) summaryQB.andWhere('sz_sum.name ILIKE :size', { size: `%${filters.size}%` });
+        if (filters.color) summaryQB.andWhere('cl_sum.name ILIKE :color', { color: `%${filters.color}%` });
+
+        if (page === 1) {
+          const dbStart = Date.now();
+          const result = await summaryQB.getRawOne();
+          logger.info(`[Perf] inventoryReport DB Summary Query took: ${Date.now() - dbStart}ms`);
+          
+          if (result) {
+            summaryData = {
+              totalItems: parseInt(result.totalItems || result.totalitems || '0'),
+              totalAvailable: result.totalAvailable || result.totalavailable || 0,
+              totalSold: result.totalSold || result.totalsold || 0,
+              totalCostValue: result.totalCostValue || result.totalcostvalue || 0,
+              estProfit: result.estProfit || result.estprofit || 0
+            };
+          }
+        } else {
+          const dbStart = Date.now();
+          const countRes = await summaryQB.select('COUNT(*) as totalitems').getRawOne();
+          logger.info(`[Perf] inventoryReport DB Count Query took: ${Date.now() - dbStart}ms`);
+          summaryData.totalItems = parseInt(countRes?.totalitems || '0');
+        }
+        logger.info(`[Perf] inventoryReport Phase 1 Total took: ${Date.now() - phase1Start}ms`);
+      }
+
+      // --- PHASE 2: DETAILED PAGINATED LIST ---
+      const phase2Start = Date.now();
+      const qb = AppDataSource.getRepository(BarcodeBatch)
+        .createQueryBuilder('bb')
+        .leftJoin('bb.product_group', 'pg')
+        .leftJoin('bb.size', 'sz')
+        .leftJoin('bb.color', 'cl')
+        .leftJoin('bb.vendor', 'v')
+        .leftJoin(PurchaseOrder, 'po', 'po.id = bb.po_id')
+        .select([
+          'bb.barcode_alias_8digit as "barcode"',
+          'bb.design_no as "design"',
+          'bb.hsn_code as "hsn_code"',
+          'pg.name as "productGroup"',
+          'sz.name as "size"',
+          'cl.name as "color"',
+          'v.name as "vendorName"',
+          'COALESCE(bb.available_quantity, 0) as "availableQty"',
+          'COALESCE(bb.total_quantity - bb.available_quantity, 0) as "soldQty"',
+          'COALESCE(bb.cost_actual, 0) as "cost"',
+          'COALESCE(bb.mrp, 0) as "mrp"',
+          'COALESCE(po.invoice_number, CASE WHEN bb.po_id IS NULL THEN \'Opening Stock\' ELSE \'N/A\' END) as "poInvoiceNumber"',
+          'COALESCE(po.order_date, bb.created_at) as "poDate"',
+          'CASE WHEN bb.gst_logic = \'AUTO_5_18\' THEN (CASE WHEN bb.mrp <= 1000 THEN 5 ELSE 12 END) ELSE 12 END as "gstRate"',
+          'COALESCE(bb.available_quantity * bb.cost_actual, 0) as "inventoryValue"',
+          includePhotos ? 'ARRAY[bb.photos[1]] as "photos"' : 'NULL as "photos"'
+        ]);
+
+      qb.where('bb.status IN (:...statuses)', { statuses: ['active', 'Available', 'defective', 'Sold', 'Returned'] });
+      
+      if (filters.vendorId) qb.andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
+      if (filters.floorId) qb.andWhere('bb.floor = :floorId', { floorId: filters.floorId });
+      if (filters.design) qb.andWhere('bb.design_no ILIKE :design', { design: `%${filters.design}%` });
+      if (filters.barcode) qb.andWhere('bb.barcode_alias_8digit ILIKE :barcode', { barcode: `%${filters.barcode}%` });
+      if (filters.productGroup) qb.andWhere('pg.name ILIKE :productGroup', { productGroup: `%${filters.productGroup}%` });
+      if (filters.size) qb.andWhere('sz.name ILIKE :size', { size: `%${filters.size}%` });
+      if (filters.color) qb.andWhere('cl.name ILIKE :color', { color: `%${filters.color}%` });
+
+      // Handle Pagination
+      qb.limit(limit).offset((page - 1) * limit);
+
+      const direction = filters.sortDirection?.toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
+      if (filters.sortField === 'availableQty') {
+        qb.orderBy('bb.available_quantity', direction);
+      } else if (filters.sortField === 'soldQty') {
+        qb.orderBy('(bb.total_quantity - bb.available_quantity)', direction);
+      } else if (filters.sortField === 'mrp') {
+        qb.orderBy('bb.mrp', direction);
+      } else if (filters.sortField === 'cost') {
+        qb.orderBy('bb.cost_actual', direction);
+      } else if (filters.sortField === 'barcode') {
+        qb.orderBy('bb.barcode_alias_8digit', direction);
+      } else if (filters.sortField === 'invoice_date' || filters.sortField === 'poDate') {
+        qb.orderBy('po.order_date', direction);
+      } else {
+        qb.orderBy('bb.design_no', direction);
+      }
+
+      const dbListStart = Date.now();
+      const results = await qb.getRawMany();
+      logger.info(`[Perf] inventoryReport DB List Query took: ${Date.now() - dbListStart}ms`);
+
+      const mappingStart = Date.now();
+      const detailedList = results.map(r => {
+        const cost = Number(r.cost || 0);
+        const mrp = Number(r.mrp || 0);
+        const availableQty = Number(r.availableQty || 0);
+        const soldQty = Number(r.soldQty || 0);
+        const gstRate = Number(r.gstRate || 0);
+        
+        const purchaseGstAmount = (cost * gstRate) / 100;
+        const landedCost = cost + purchaseGstAmount;
+        const actualProfitPerUnit = mrp - landedCost;
+
+        return {
+          ...r,
+          availableQty,
+          soldQty,
+          cost,
+          mrp,
+          gstRate,
+          purchaseGstAmount,
+          landedCost,
+          inventoryValue: Number(r.inventoryValue || 0),
+          potentialProfit: availableQty * actualProfitPerUnit,
+          soldProfit: soldQty * actualProfitPerUnit
+        };
+      });
+      logger.info(`[Perf] inventoryReport Data Mapping took: ${Date.now() - mappingStart}ms`);
+      logger.info(`[Perf] inventoryReport Phase 2 Total took: ${Date.now() - phase2Start}ms`);
+
+      const totalCount = summaryData.totalItems;
+      const totalPages = Math.ceil(totalCount / limit);
+
+      const response = {
+        summary: {
+          totalAvailable: Math.round(Number(summaryData.totalAvailable || 0)),
+          totalSold: Math.round(Number(summaryData.totalSold || 0)),
+          totalCostValue: Number(Number(summaryData.totalCostValue || 0).toFixed(2)),
+          estProfit: Number(Number(summaryData.estProfit || 0).toFixed(2))
+        },
+        data: detailedList,
+        page,
+        limit,
+        totalPages,
+        totalItems: totalCount
       };
-    });
+
+      logger.info(`[Perf] inventoryReport Request Finished in: ${Date.now() - startTime}ms`);
+      return response;
+    } catch (error: any) {
+      logger.error(`[Error] inventoryReport failed: ${error.message}`, { stack: error.stack, filters });
+      throw error;
+    }
+  }
+
+  async getInventoryPhoto(barcode: string) {
+    const batch = await AppDataSource.getRepository(BarcodeBatch)
+      .createQueryBuilder('bb')
+      .select(['bb.photos'])
+      .where('bb.barcode_alias_8digit = :barcode', { barcode })
+      .getOne();
+    
+    return batch?.photos?.[0] || null;
   }
 
   async salesmanReport(filters: any) {

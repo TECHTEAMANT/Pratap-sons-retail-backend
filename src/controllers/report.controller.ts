@@ -24,6 +24,12 @@ export class ReportController {
       sendSuccess(res, await reportService.inventoryReport(filters)); 
     } catch (e: any) { sendError(res, e.message); } 
   }
+  async getInventoryPhoto(req: AuthenticatedRequest, res: Response) { 
+    try { 
+      const { barcode } = req.params;
+      sendSuccess(res, await reportService.getInventoryPhoto(barcode)); 
+    } catch (e: any) { sendError(res, e.message); } 
+  }
   async gstReport(req: AuthenticatedRequest, res: Response) { 
     if (req.user?.role === 'Vendor') return sendError(res, 'Access denied', 403);
     try { const { startDate, endDate } = req.query as any; sendSuccess(res, await reportService.gstReport(startDate, endDate)); } catch (e: any) { sendError(res, e.message); } 

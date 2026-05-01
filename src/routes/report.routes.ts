@@ -15,6 +15,7 @@ router.use(requirePermission('can_view_reports'));
 
 router.get('/sales', (req, res) => reportController.salesReport(req, res));
 router.get('/inventory', (req, res) => reportController.inventoryReport(req, res));
+router.get('/inventory/photo/:barcode', (req, res) => reportController.getInventoryPhoto(req, res));
 router.get('/gst', (req, res) => reportController.gstReport(req, res));
 router.get('/salesman', (req, res) => reportController.salesmanReport(req, res));
 router.get('/customers', (req, res) => reportController.customerReport(req, res));
