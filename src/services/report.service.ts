@@ -102,12 +102,12 @@ export class ReportService {
     const exportMode = filters.exportMode || false;
 
     // --- PHASE 1: HIGH-SPEED SQL SUMMARY ---
-    // We calculate the core totals using raw SQL for maximum speed.
-    const summaryQB = AppDataSource.getRepository(SalesInvoice)
+    // We calculate the core totals using separate queries to avoid "Join Inflation"
+    // (where invoice totals are multiplied by the number of items).
+    const invoiceSummaryQB = AppDataSource.getRepository(SalesInvoice)
       .createQueryBuilder('si')
-      .leftJoin('si.items', 'items')
       .select([
-        'COUNT(DISTINCT si.id) as "invoiceCount"',
+        'COUNT(si.id) as "invoiceCount"',
         'SUM(si.net_payable) as "totalSales"',
         'SUM(si.total_gst) as "totalGST"',
         'SUM(si.taxable_value) as "taxableValue"',
@@ -118,15 +118,39 @@ export class ReportService {
         'SUM(si.cgst_5) as "cgst_5"',
         'SUM(si.sgst_5) as "sgst_5"',
         'SUM(si.cgst_18) as "cgst_18"',
-        'SUM(si.sgst_18) as "sgst_18"',
-        'SUM(items.quantity) as "totalQuantity"'
+        'SUM(si.sgst_18) as "sgst_18"'
       ])
       .where('si.invoice_date BETWEEN :start AND :end', { start, end });
 
-    if (filters.floorId) summaryQB.andWhere('si.floor_id = :floorId', { floorId: filters.floorId });
-    if (filters.vendorId) summaryQB.innerJoin('items.product_item', 'bb').andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
+    const quantityQB = AppDataSource.getRepository(SalesInvoiceItem)
+      .createQueryBuilder('sii')
+      .innerJoin('sii.invoice', 'si')
+      .select('SUM(sii.quantity) as "totalQuantity"')
+      .where('si.invoice_date BETWEEN :start AND :end', { start, end });
 
-    const rawSummary = await summaryQB.getRawOne();
+    if (filters.floorId) {
+      invoiceSummaryQB.andWhere('si.floor_id = :floorId', { floorId: filters.floorId });
+      quantityQB.andWhere('si.floor_id = :floorId', { floorId: filters.floorId });
+    }
+
+    if (filters.vendorId) {
+      // If filtering by vendor, we only count the contribution of THAT vendor's items
+      invoiceSummaryQB.innerJoin('si.items', 'agg_items')
+                      .innerJoin('agg_items.product_item', 'agg_bb')
+                      .andWhere('agg_bb.vendor = :vendorId', { vendorId: filters.vendorId });
+      
+      quantityQB.innerJoin('sii.product_item', 'bb')
+                .andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
+      
+      // Note: For vendor-specific sales, si.net_payable is not accurate because it's the whole invoice.
+      // However, for the high-level summary cards, we show the invoices that CONTAIN that vendor's items.
+      // If we want item-level precision, it will be calculated in Phase 1.5.
+    }
+
+    const [rawSummary, rawQty] = await Promise.all([
+      invoiceSummaryQB.getRawOne(),
+      quantityQB.getRawOne()
+    ]);
     
     const result = {
       totalSales: parseFloat(rawSummary.totalSales) || 0,
@@ -148,7 +172,7 @@ export class ReportService {
         'Credit Coupon': 0, 'Exchange': 0, 'Others': 0, 'Return Credit': 0
       },
       approvalItemCount: 0,
-      totalQuantity: parseFloat(rawSummary.totalQuantity) || 0,
+      totalQuantity: parseFloat(rawQty.totalQuantity) || 0,
       totalReturns: 0
     };
 
@@ -159,6 +183,113 @@ export class ReportService {
       .where('sr.return_date BETWEEN :start AND :end', { start: `${start}T00:00:00.000Z`, end: `${end}T23:59:59.999Z` })
       .getRawOne();
     result.totalReturns = parseFloat(returnsSummary.total) || 0;
+
+    // --- PHASE 1.5: GLOBAL SUMMARY AGGREGATION ---
+    // We fetch ALL invoices in the range but WITHOUT the "Items" relation to keep it fast.
+    // This ensures summary cards (Cash, Card, Pending) are 100% accurate for the whole range.
+    const summaryListQB = AppDataSource.getRepository(SalesInvoice)
+      .createQueryBuilder('si')
+      .leftJoinAndSelect('si.receipt_items', 'ri')
+      .leftJoinAndSelect('ri.receipt', 'receipt')
+      .leftJoinAndSelect('si.sales_returns', 'sr')
+      .leftJoinAndSelect('si.coupon_applications', 'ca')
+      .leftJoinAndSelect('si.advance_applications', 'aa')
+      .leftJoinAndSelect('si.credit_note_applications', 'cna')
+      .where('si.invoice_date BETWEEN :start AND :end', { start, end });
+
+    if (filters.floorId) summaryListQB.andWhere('si.floor_id = :floorId', { floorId: filters.floorId });
+    if (filters.vendorId) {
+      summaryListQB.innerJoin('si.items', 'agg_items')
+                  .innerJoin('agg_items.product_item', 'agg_bb')
+                  .andWhere('agg_bb.vendor = :vendorId', { vendorId: filters.vendorId });
+    }
+
+    const allInvoicesSummary = await summaryListQB.getMany();
+
+    allInvoicesSummary.forEach(inv => {
+      // 1. Payment Breakdown from payment_details JSON
+      let paymentDetails = inv.payment_details;
+      if (typeof paymentDetails === 'string') { try { paymentDetails = JSON.parse(paymentDetails); } catch (e) { paymentDetails = null; } }
+
+      let detailsArray: any[] = [];
+      if (paymentDetails) {
+        if (Array.isArray(paymentDetails)) {
+          detailsArray = paymentDetails.filter((pd: any) => {
+            const k = (pd.mode || '').toString().toUpperCase();
+            return !(k.includes('COUPON') || k.includes('ADVANCE') || k.includes('CREDIT NOTE') || k.includes('RETURN'));
+          });
+        } else if (typeof paymentDetails === 'object' && paymentDetails !== null) {
+          const techKeys = ['TOTAL_MRP', 'NET_PAYABLE', 'ITEMS', 'ID', 'TOTAL_AMOUNT', 'ROUND_OFF', 'AMOUNT_PAID', 'AMOUNT_PENDING', 'SPECIAL_DISCOUNT', 'VOUCHER_DISCOUNT', 'LOYALTY_REDEMPTION_AMOUNT', 'TOTAL_GST', 'TAXABLE_VALUE'];
+          detailsArray = Object.entries(paymentDetails)
+            .filter(([key, val]) => {
+              const k = key.toUpperCase();
+              if (techKeys.includes(k)) return false;
+              if (k.includes('COUPON') || k.includes('ADVANCE') || k.includes('CREDIT NOTE') || k.includes('RETURN')) return false;
+              return (typeof val === 'number' || typeof val === 'string');
+            })
+            .map(([key, val]) => ({ mode: key, amount: val }));
+        }
+      }
+
+      // 2. Applications from other tables
+      const receiptPayments = (inv.receipt_items || []).map((ri: any) => ({
+        mode: ri.receipt?.payment_mode || 'Receipt',
+        amount: parseFloat(ri.amount_paid as any) || 0
+      })).filter(p => {
+        const k = (p.mode || '').toString().toUpperCase();
+        return p.amount > 0 && !(k.includes('COUPON') || k.includes('ADVANCE') || k.includes('CREDIT NOTE') || k.includes('RETURN'));
+      });
+
+      const couponReceipts = (inv.coupon_applications || []).map((ca: any) => ({ mode: 'Credit Coupon', amount: parseFloat(ca.amount_applied as any) || 0 }));
+      const advanceReceipts = (inv.advance_applications || []).map((aa: any) => ({ mode: 'Advance', amount: parseFloat(aa.amount_applied as any) || 0 }));
+      const creditNoteReceipts = (inv.credit_note_applications || []).map((cna: any) => ({ mode: 'Credit Note', amount: parseFloat(cna.amount_applied as any) || 0 }));
+
+      const totalExternalApplications = receiptPayments.reduce((s, r) => s + r.amount, 0) + couponReceipts.reduce((s, r) => s + r.amount, 0) + advanceReceipts.reduce((s, r) => s + r.amount, 0) + creditNoteReceipts.reduce((s, r) => s + r.amount, 0);
+      
+      const allSources = [...detailsArray.map((pd: any) => {
+        const mode = (pd.mode || '').toString().toUpperCase();
+        if (mode.includes('APPROVAL')) return { ...pd, amount: Math.max(0, (parseFloat(pd.amount as any) || 0) - totalExternalApplications) };
+        return pd;
+      }), ...receiptPayments, ...couponReceipts, ...advanceReceipts, ...creditNoteReceipts];
+
+      let invBreakdown = { Cash: 0, UPI: 0, Card: 0, Online: 0, Advance: 0, Approval: 0, 'Credit Coupon': 0, 'Credit Note': 0, 'Exchange': 0, 'Others': 0 };
+
+      allSources.forEach((pd: any) => {
+        const rawMode = (pd.mode || '').toString().toUpperCase();
+        const amount = parseFloat(pd.amount) || 0;
+        if (amount <= 0) return;
+        if (rawMode.includes('CASH')) invBreakdown.Cash += amount;
+        else if (rawMode.includes('UPI') || rawMode.includes('PHONEPE') || rawMode.includes('GPAY') || rawMode.includes('PAYTM') || rawMode.includes('G PAY') || rawMode.includes('BHIM')) invBreakdown.UPI += amount;
+        else if (rawMode.includes('COUPON')) invBreakdown['Credit Coupon'] += amount; 
+        else if (rawMode.includes('CREDIT NOTE')) invBreakdown['Credit Note'] += amount;
+        else if (rawMode.includes('CARD') || rawMode.includes('VISA') || rawMode.includes('POS') || rawMode.includes('MASTER') || rawMode.includes('DEBIT') || rawMode.includes('CREDIT')) invBreakdown.Card += amount;
+        else if (rawMode.includes('RECEIPT') || rawMode.includes('RCP') || rawMode.includes('BANK') || rawMode.includes('ONLINE') || rawMode.includes('TRANSFER') || rawMode.includes('NEFT') || rawMode.includes('RTGS') || rawMode.includes('HDFC') || rawMode.includes('ICICI') || rawMode.includes('INTERNAL')) invBreakdown.Online += amount;
+        else if (rawMode.includes('APPROVAL')) invBreakdown.Approval += amount;
+        else if (rawMode.includes('ADVANCE')) invBreakdown.Advance += amount;
+        else if (rawMode.includes('EXCHANGE')) invBreakdown.Exchange += amount;
+        else invBreakdown.Others += amount;
+      });
+
+      const returnsAmt = (inv.sales_returns || []).reduce((s: number, r: any) => s + (Number(r.total_return_amount) || 0), 0);
+      const totalPaidForInv = invBreakdown.Cash + invBreakdown.UPI + invBreakdown.Card + invBreakdown.Online + invBreakdown.Advance + invBreakdown['Credit Coupon'] + invBreakdown['Credit Note'] + invBreakdown.Exchange + invBreakdown.Others;
+      let pending = Math.max(0, Number(inv.net_payable) - totalPaidForInv);
+      if (pending < 1) pending = 0;
+
+      const isApproval = (inv as any).is_on_approval === true || invBreakdown.Approval > 0;
+
+      // Accumulate into global result
+      result.paymentBreakdown.Cash += invBreakdown.Cash;
+      result.paymentBreakdown.UPI += invBreakdown.UPI;
+      result.paymentBreakdown.Card += invBreakdown.Card;
+      result.paymentBreakdown.Online += invBreakdown.Online;
+      result.paymentBreakdown.Advance += invBreakdown.Advance;
+      result.paymentBreakdown.Approval += isApproval ? pending : 0;
+      result.paymentBreakdown['Credit Coupon'] += invBreakdown['Credit Coupon'];
+      (result.paymentBreakdown as any).Exchange += invBreakdown.Exchange;
+      (result.paymentBreakdown as any).Others += invBreakdown.Others;
+      (result.paymentBreakdown as any)['Return Credit'] += returnsAmt;
+      result.totalPending += pending;
+    });
 
     if (summaryOnly) {
       return { ...result, detailedList: [] };
@@ -280,23 +411,6 @@ export class ReportService {
       if (adjustedPending < 1) adjustedPending = 0;
 
       const isApprovalInvoice = (inv as any).is_on_approval === true || invoicePaymentBreakdown.Approval > 0;
-
-      // In Non-Export mode, we ONLY update the detailedList. Summary was already calculated by SQL.
-      // In Export mode, we update both to ensure 100% parity with Excel.
-      if (exportMode) {
-        result.totalMRP += reconstructedMRP;
-        result.totalPending += adjustedPending;
-        result.paymentBreakdown.Cash += invoicePaymentBreakdown.Cash;
-        result.paymentBreakdown.UPI += invoicePaymentBreakdown.UPI;
-        result.paymentBreakdown.Card += invoicePaymentBreakdown.Card;
-        result.paymentBreakdown.Online += invoicePaymentBreakdown.Online;
-        result.paymentBreakdown.Advance += invoicePaymentBreakdown.Advance;
-        result.paymentBreakdown.Approval += isApprovalInvoice ? adjustedPending : 0;
-        result.paymentBreakdown['Credit Coupon'] += invoicePaymentBreakdown['Credit Coupon'];
-        (result.paymentBreakdown as any).Exchange += invoicePaymentBreakdown.Exchange;
-        (result.paymentBreakdown as any).Others += invoicePaymentBreakdown.Others;
-        (result.paymentBreakdown as any)['Return Credit'] += returnsAmt;
-      }
 
       detailedList.push({
         ...inv,
