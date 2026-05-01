@@ -8,6 +8,7 @@ import routes from './routes';
 import logger from './utils/logger';
 
 const app = express();
+app.set('trust proxy', 1);
 
 // ===== Security Middleware =====
 app.use(helmet());
