@@ -87,9 +87,15 @@ export class SalesService {
       const loyaltyDisc = Number(inv.loyalty_redemption_amount || 0);
       const voucherDisc = Number(inv.voucher_discount || 0);
       
-      // Correct Logic: Line item discounts already include distributed special discounts.
-      // We use the sum of line discounts (itemDisc) as the ground truth.
-      const finalDiscount = itemDisc;
+      // Correct Logic: Intelligent discount reconstruction.
+      // 1. Line item discounts (itemDisc) are the 'ground truth' for what was spread to items.
+      // 2. Header discounts (Voucher, Loyalty, Special) might be separate OR already in itemDisc.
+      // 3. Heuristic: If itemDisc is significantly larger than the header sum, they are already distributed.
+      //    Otherwise (Initial Days logic), they are separate and must be summed.
+      const headerDiscounts = voucherDisc + loyaltyDisc + specialDisc;
+      const finalDiscount = (itemDisc >= headerDiscounts && headerDiscounts > 0) 
+        ? itemDisc 
+        : (itemDisc + headerDiscounts);
       
       const returnsAmt = (inv.sales_returns || []).reduce((sum, r) => sum + Number(r.total_return_amount || 0), 0);
       
