@@ -16,6 +16,7 @@ router.get('/:id', requirePermissionOrVendor('can_manage_inventory'), (req, res)
 router.use(requirePermission('can_manage_inventory'));
 
 router.post('/', (req, res) => inventoryController.create(req, res));
+router.put('/', (req, res) => inventoryController.updateByFilter(req, res));
 router.put('/:id', (req, res) => inventoryController.update(req, res));
 router.put('/:id/adjust-quantity', (req, res) => inventoryController.adjustQuantity(req, res));
 router.put('/:id/floor', (req, res) => inventoryController.moveToFloor(req, res));

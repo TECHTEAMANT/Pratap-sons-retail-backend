@@ -83,19 +83,23 @@ export class SalesService {
       // Business Rule (from PDF): If Item Discounts exist (>0.1), use them. 
       // Otherwise, sum the Header Discounts (Special, Loyalty, Voucher). They DO NOT stack.
       const itemDisc = Number(inv.total_discount || 0);
-      const headerDiscounts = Number(inv.special_discount || 0) + 
-                             Number(inv.loyalty_redemption_amount || 0) + 
-                             Number(inv.voucher_discount || 0);
+      const specialDisc = Number(inv.special_discount || 0);
+      const loyaltyDisc = Number(inv.loyalty_redemption_amount || 0);
+      const voucherDisc = Number(inv.voucher_discount || 0);
       
-      const finalDiscount = (itemDisc > 0.1) ? itemDisc : headerDiscounts;
+      // Correct Logic: Line item discounts already include distributed special discounts.
+      // We use the sum of line discounts (itemDisc) as the ground truth.
+      const finalDiscount = itemDisc;
+      
       const returnsAmt = (inv.sales_returns || []).reduce((sum, r) => sum + Number(r.total_return_amount || 0), 0);
       
-      const trueNet = Math.max(0, 
+      // Sync with PDF rounding logic
+      const trueNet = Math.round(Math.max(0, 
         Number(inv.total_mrp || 0) 
         - finalDiscount 
         + Number(inv.additional_charges_total || 0)
         - returnsAmt
-      );
+      ));
 
       // 2. TRUE Paid Amount (Using stored amount_paid as baseline)
       const paid = Number(inv.amount_paid || 0);

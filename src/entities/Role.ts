@@ -36,6 +36,9 @@ export class Role {
   @Column({ type: 'boolean', default: false })
   can_manage_users: boolean;
 
+  @Column({ type: 'boolean', default: true })
+  can_view_dashboard: boolean;
+
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
 
