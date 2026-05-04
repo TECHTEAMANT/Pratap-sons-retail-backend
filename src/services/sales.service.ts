@@ -88,18 +88,23 @@ export class SalesService {
       const voucherDisc = Number(inv.voucher_discount || 0);
       
       // Correct Logic: Intelligent discount reconstruction.
-      // 1. Line item discounts (itemDisc) are the 'ground truth' for what was spread to items.
-      // 2. Header discounts (Voucher, Loyalty, Special) might be separate OR already in itemDisc.
-      // 3. Heuristic: If itemDisc is significantly larger than the header sum, they are already distributed.
-      //    Otherwise (Initial Days logic), they are separate and must be summed.
-      const headerDiscounts = voucherDisc + loyaltyDisc + specialDisc;
-      const finalDiscount = (itemDisc >= headerDiscounts && headerDiscounts > 0) 
-        ? itemDisc 
-        : (itemDisc + headerDiscounts);
+      // 1. Calculate the 'Ground Truth' sum of all line-item discounts
+      const itemSum = (inv.items || []).reduce((sum, it) => sum + Number(it.discount || 0), 0);
+      
+      // 2. Sum up header-level discount fields
+      const headerSum = Number(inv.special_discount || 0) + 
+                        Number(inv.loyalty_redemption_amount || 0) + 
+                        Number(inv.voucher_discount || 0);
+      
+      // 3. Determine Final Discount: Use Math.round to avoid tiny floating point errors 
+      // during comparison (e.g., 999.99 vs 1000.00).
+      const finalDiscount = (Math.round(itemSum) >= Math.round(headerSum) && headerSum > 0) 
+        ? itemSum 
+        : (itemSum + headerSum);
       
       const returnsAmt = (inv.sales_returns || []).reduce((sum, r) => sum + Number(r.total_return_amount || 0), 0);
       
-      // Sync with PDF rounding logic
+      // Calculate TRUE Net Payable with strict rounding
       const trueNet = Math.round(Math.max(0, 
         Number(inv.total_mrp || 0) 
         - finalDiscount 
@@ -675,24 +680,29 @@ export class SalesService {
 
     if (!invoice) return null;
 
-    // 1. Calculate True Net
+    // 1. Calculate True Original Net (Before returns)
     const trueTotalMrp = (invoice.items || []).reduce((sum, i) => sum + (Number(i.mrp || 0) * Number(i.quantity || 1)), 0);
-    const trueItemDisc = (invoice.items || []).reduce((sum, i) => sum + (Number(i.discount || 0) * Number(i.quantity || 1)), 0);
-    const effectiveBaseDiscount = Math.max(trueItemDisc, Number(invoice.voucher_discount || 0));
+    const itemSum = (invoice.items || []).reduce((sum, i) => sum + (Number(i.discount || 0) * Number(i.quantity || 1)), 0);
     
-    // Account for returns
-    const returnsAmt = (invoice.sales_returns || []).reduce((sum, r) => sum + Number(r.total_return_amount || 0), 0);
+    const headerSum = Number(invoice.special_discount || 0) + 
+                      Number(invoice.loyalty_redemption_amount || 0) + 
+                      Number(invoice.voucher_discount || 0);
 
-    const trueNetPayable = Math.max(0, 
+    const finalDiscount = (Math.round(itemSum) >= Math.round(headerSum) && headerSum > 0) 
+      ? itemSum 
+      : (itemSum + headerSum);
+    
+    const originalNet = Math.round(Math.max(0, 
       trueTotalMrp 
-      - effectiveBaseDiscount 
-      - Number(invoice.special_discount || 0) 
-      - Number(invoice.loyalty_redemption_amount || 0)
+      - finalDiscount 
       + Number(invoice.additional_charges_total || 0)
-      - returnsAmt
-    );
+    ));
 
-    // 2. Calculate True Paid
+    // 2. Account for returns
+    const returnsAmt = (invoice.sales_returns || []).reduce((sum, r) => sum + Number(r.total_return_amount || 0), 0);
+    const trueNetPayable = Math.max(0, originalNet - returnsAmt);
+
+    // 3. Calculate True Paid
     const receiptPaid = (invoice.receipt_items || []).reduce((sum, ri) => sum + Number(ri.amount_paid || 0), 0);
     const advancesPaid = (invoice.advance_applications || []).reduce((sum, aa) => sum + Number(aa.amount_applied || 0), 0);
     const couponsApplied = (invoice.coupon_applications || []).reduce((sum, ca) => sum + Number(ca.amount_applied || 0), 0);
@@ -719,7 +729,8 @@ export class SalesService {
 
     return {
       total_mrp: trueTotalMrp,
-      total_discount: trueItemDisc,
+      total_discount: finalDiscount,
+      original_net_payable: originalNet,
       net_payable: trueNetPayable,
       amount_paid: trueAmountPaid,
       amount_pending: trueAmountPending,
