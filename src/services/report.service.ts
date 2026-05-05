@@ -112,6 +112,7 @@ export class ReportService {
       .select([
         'COUNT(si.id) as "invoiceCount"',
         'SUM(si.net_payable) as "totalSales"',
+        'SUM(si.total_mrp) as "totalMRP"',
         'SUM(si.total_gst) as "totalGST"',
         'SUM(si.taxable_value) as "taxableValue"',
         'SUM(si.total_discount) as "totalDiscount"',
@@ -157,7 +158,7 @@ export class ReportService {
     
     const result = {
       totalSales: parseFloat(rawSummary.totalSales) || 0,
-      totalMRP: 0, // Calculated from items below if needed
+      totalMRP: parseFloat(rawSummary.totalMRP) || 0,
       totalDiscount: parseFloat(rawSummary.totalDiscount) || 0,
       totalGST: parseFloat(rawSummary.totalGST) || 0,
       taxableValue: parseFloat(rawSummary.taxableValue) || 0,

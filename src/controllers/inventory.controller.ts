@@ -107,6 +107,13 @@ export class InventoryController {
       item ? sendSuccess(res, item, 'Updated') : sendNotFound(res, 'Barcode batch');
     } catch (e: any) { sendError(res, e.message, 400); }
   }
+  async updateByFilter(req: AuthenticatedRequest, res: Response) {
+    if (req.user?.role === 'Vendor') return sendError(res, 'Read-only access for vendors', 403);
+    try {
+      const result = await inventoryService.updateByFilter(req.query, req.body, req.user!.id);
+      sendSuccess(res, result, 'Bulk update completed');
+    } catch (e: any) { sendError(res, e.message, 400); }
+  }
   async adjustQuantity(req: AuthenticatedRequest, res: Response) {
     if (req.user?.role === 'Vendor') return sendError(res, 'Read-only access for vendors', 403);
     try {

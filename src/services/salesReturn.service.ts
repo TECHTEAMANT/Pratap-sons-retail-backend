@@ -157,17 +157,22 @@ export class SalesReturnService {
         if (invoice) {
           // 4. RECALCULATE GROUND TRUTH for the invoice before applying return
           const trueTotalMrp = (invoice.items || []).reduce((sum, i) => sum + (Number(i.mrp || 0) * Number(i.quantity || 1)), 0);
-          const trueItemDisc = (invoice.items || []).reduce((sum, i) => sum + (Number(i.discount || 0) * Number(i.quantity || 1)), 0);
-          const effectiveBaseDiscount = Math.max(trueItemDisc, Number(invoice.voucher_discount || 0));
+          const itemSum = (invoice.items || []).reduce((sum, i) => sum + (Number(i.discount || 0) * Number(i.quantity || 1)), 0);
           
-          const trueNetPayable = Math.max(0, 
+          const headerSum = Number(invoice.special_discount || 0) + 
+                            Number(invoice.loyalty_redemption_amount || 0) + 
+                            Number(invoice.voucher_discount || 0);
+
+          const finalDiscount = (Math.round(itemSum) >= Math.round(headerSum) && headerSum > 0) 
+            ? itemSum 
+            : (itemSum + headerSum);
+          
+          const trueNetPayable = Math.round(Math.max(0, 
             trueTotalMrp 
-            - effectiveBaseDiscount 
-            - Number(invoice.special_discount || 0) 
-            - Number(invoice.loyalty_redemption_amount || 0)
+            - finalDiscount 
             - Number(invoice.coupon_amount || 0)
             + Number(invoice.additional_charges_total || 0)
-          );
+          ));
 
           // Payment Ground Truth: Sum EVERYTHING that reduced the balance
           const receiptPaid = (invoice.receipt_items || []).reduce((sum, ri) => sum + Number(ri.amount_paid || 0), 0);
@@ -450,17 +455,22 @@ export class SalesReturnService {
         if (invoice) {
           // 4. RECALCULATE GROUND TRUTH for the invoice before applying return update
           const trueTotalMrp = (invoice.items || []).reduce((sum, i) => sum + (Number(i.mrp || 0) * Number(i.quantity || 1)), 0);
-          const trueItemDisc = (invoice.items || []).reduce((sum, i) => sum + (Number(i.discount || 0) * Number(i.quantity || 1)), 0);
-          const effectiveBaseDiscount = Math.max(trueItemDisc, Number(invoice.voucher_discount || 0));
+          const itemSum = (invoice.items || []).reduce((sum, i) => sum + (Number(i.discount || 0) * Number(i.quantity || 1)), 0);
           
-          const trueNetPayable = Math.max(0, 
+          const headerSum = Number(invoice.special_discount || 0) + 
+                            Number(invoice.loyalty_redemption_amount || 0) + 
+                            Number(invoice.voucher_discount || 0);
+
+          const finalDiscount = (Math.round(itemSum) >= Math.round(headerSum) && headerSum > 0) 
+            ? itemSum 
+            : (itemSum + headerSum);
+          
+          const trueNetPayable = Math.round(Math.max(0, 
             trueTotalMrp 
-            - effectiveBaseDiscount 
-            - Number(invoice.special_discount || 0) 
-            - Number(invoice.loyalty_redemption_amount || 0)
+            - finalDiscount 
             - Number(invoice.coupon_amount || 0)
             + Number(invoice.additional_charges_total || 0)
-          );
+          ));
 
           // Payment Ground Truth: Sum EVERYTHING that reduced the balance
           const receiptPaid = (invoice.receipt_items || []).reduce((sum, ri) => sum + Number(ri.amount_paid || 0), 0);

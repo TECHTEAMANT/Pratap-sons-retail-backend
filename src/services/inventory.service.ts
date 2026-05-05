@@ -498,6 +498,36 @@ export class InventoryService {
 
     return this.batchRepo.save(batch);
   }
+
+  /**
+   * Bulk update items matching a filter.
+   * Useful for applying discounts to a set of barcodes/designs.
+   */
+  async updateByFilter(filters: any, data: any, userId: string) {
+    const qb = this.batchRepo.createQueryBuilder()
+      .update(BarcodeBatch)
+      .set({
+        ...data,
+        modified_by: userId,
+        updated_at: new Date()
+      });
+
+    // Simple mapping of filters to WHERE clauses
+    if (filters.barcode_alias_8digit) {
+      const barcodes = filters.barcode_alias_8digit.split(',').map((b: string) => b.trim()).filter(Boolean);
+      if (barcodes.length === 1) {
+        qb.where('barcode_alias_8digit = :bc', { bc: barcodes[0] });
+      } else {
+        qb.where('barcode_alias_8digit IN (:...bcs)', { bcs: barcodes });
+      }
+    } else if (filters.search) {
+      // Handle the shim's 'search' or '.or()' mapping
+      qb.where('barcode_alias_8digit = :s OR design_no = :s', { s: filters.search });
+    }
+
+    const result = await qb.execute();
+    return { updated: result.affected || 0 };
+  }
 }
 
 export const inventoryService = new InventoryService();

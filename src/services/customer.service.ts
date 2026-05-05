@@ -22,28 +22,92 @@ export class CustomerService {
     };
 
     try {
-      // 1. Repair all Invoices first (to fix astronomical MRPs/Totals)
+      // 1. Repair all Invoices first (to fix status, pending amount and ground-truth totals)
       const invoicesToFix = await AppDataSource.getRepository(SalesInvoice).find({
-        relations: ['items']
+        relations: ['items', 'receipt_items', 'coupon_applications', 'credit_note_applications', 'advance_applications', 'sales_returns']
       });
 
       for (const inv of invoicesToFix) {
         try {
-          const total_mrp = inv.items.reduce((sum, item) => sum + Number(item.mrp), 0);
-          const taxable_value = inv.items.reduce((sum, item) => sum + Number(item.taxable_value), 0);
-          const total_gst = inv.items.reduce((sum, item) => sum + Number(item.cgst_amount || 0) + Number(item.sgst_amount || 0) + Number(item.igst_amount || 0), 0);
-          const total_discount = inv.items.reduce((sum, item) => sum + Number(item.discount), 0);
-          const net_payable = inv.items.reduce((sum, item) => sum + Number(item.total_value), 0);
+          // A. Calculate Ground Truth Totals
+          const trueTotalMrp = (inv.items || []).reduce((sum, i) => sum + (Number(i.mrp || 0) * Number(i.quantity || 1)), 0);
+          const itemSum = (inv.items || []).reduce((sum, i) => sum + (Number(i.discount || 0) * Number(i.quantity || 1)), 0);
           
-          // Only update if there's a significant mismatch or to ensure numeric type
-          inv.total_mrp = parseFloat(total_mrp.toFixed(2));
-          inv.taxable_value = parseFloat(taxable_value.toFixed(2));
-          inv.total_gst = parseFloat(total_gst.toFixed(2));
-          inv.total_discount = parseFloat(total_discount.toFixed(2));
-          inv.net_payable = parseFloat(net_payable.toFixed(2));
+          const headerSum = Number(inv.special_discount || 0) + 
+                            Number(inv.loyalty_redemption_amount || 0) + 
+                            Number(inv.voucher_discount || 0);
+
+          const finalDiscount = (Math.round(itemSum) >= Math.round(headerSum) && headerSum > 0) 
+            ? itemSum 
+            : (itemSum + headerSum);
           
-          await AppDataSource.getRepository(SalesInvoice).save(inv);
-          results.invoicesRepaired++;
+          const returnsAmt = (inv.sales_returns || []).reduce((sum, r) => sum + Number(r.total_return_amount || 0), 0);
+          
+          const trueNet = Math.round(Math.max(0, 
+            trueTotalMrp 
+            - finalDiscount 
+            + Number(inv.additional_charges_total || 0)
+            - returnsAmt
+          ));
+
+          // B. Calculate True Paid
+          const receiptPaid = (inv.receipt_items || []).reduce((sum, ri) => sum + Number(ri.amount_paid || 0), 0);
+          const advancesPaid = (inv.advance_applications || []).reduce((sum, aa) => sum + Number(aa.amount_applied || 0), 0);
+          const couponsApplied = (inv.coupon_applications || []).reduce((sum, ca) => sum + Number(ca.amount_applied || 0), 0);
+          const creditNotesApplied = (inv.credit_note_applications || []).reduce((sum, cna) => sum + Number(cna.amount_applied || 0), 0);
+          
+          let directPaid = 0;
+          const pd = typeof inv.payment_details === 'string' ? JSON.parse(inv.payment_details || '[]') : (inv.payment_details || []);
+          if (Array.isArray(pd)) {
+            directPaid = pd.reduce((sum: number, p: any) => {
+              const mode = (p.mode || '').toString().toUpperCase();
+              if (mode.includes('APPROVAL')) return sum;
+              return sum + (Number(p.amount || 0));
+            }, 0);
+          } else if (pd && typeof pd === 'object') {
+            directPaid = Object.entries(pd).reduce((sum: number, [key, val]: [string, any]) => {
+              const mode = key.toUpperCase();
+              if (mode.includes('APPROVAL')) return sum;
+              return sum + (Number(val) || 0);
+            }, 0);
+          }
+
+          const trueAmountPaid = receiptPaid + directPaid + advancesPaid + couponsApplied + creditNotesApplied;
+          const truePending = Math.max(0, trueNet - trueAmountPaid);
+
+          // C. Determine Correct Status
+          let correctedStatus: string;
+          if (truePending <= 1) {
+            correctedStatus = 'paid';
+          } else if (trueAmountPaid > 1) {
+            correctedStatus = 'partial';
+          } else {
+            correctedStatus = 'pending';
+          }
+
+          // D. Only update if there's a discrepancy
+          const storedNet = Number(inv.net_payable || 0);
+          const storedPaid = Number(inv.amount_paid || 0);
+          const storedPending = Number(inv.amount_pending || 0);
+          const storedStatus = inv.payment_status;
+
+          const hasDiscrepancy = 
+            Math.abs(storedNet - trueNet) > 1 ||
+            Math.abs(storedPaid - trueAmountPaid) > 1 ||
+            Math.abs(storedPending - truePending) > 1 ||
+            storedStatus !== correctedStatus;
+
+          if (hasDiscrepancy) {
+            await AppDataSource.getRepository(SalesInvoice).update(inv.id, {
+              net_payable: trueNet,
+              amount_paid: trueAmountPaid,
+              amount_pending: truePending,
+              payment_status: correctedStatus as any,
+              total_mrp: trueTotalMrp,
+              total_discount: finalDiscount
+            });
+            results.invoicesRepaired++;
+          }
         } catch (e) {
           console.error(`Error repairing invoice ${inv.id}:`, e);
           results.errors++;
