@@ -43,7 +43,14 @@ export class TallyService {
     
     // Support both record_type and sync_type
     const type = filters.record_type || filters.sync_type;
-    if (type) qb.andWhere('ts.record_type = :rt', { rt: type });
+    if (type) {
+      if (typeof type === 'string' && type.includes(',')) {
+        const types = type.split(',').map(t => t.trim());
+        qb.andWhere('ts.record_type IN (:...rts)', { rts: types });
+      } else {
+        qb.andWhere('ts.record_type = :rt', { rt: type });
+      }
+    }
     
     // Support both sync_status and status
     const status = filters.sync_status || filters.status;
@@ -94,6 +101,14 @@ export class TallyService {
   }
 
   async deleteByType(recordType: string) {
+    if (recordType.includes(',')) {
+      const types = recordType.split(',').map(t => t.trim());
+      return this.repo.createQueryBuilder()
+        .delete()
+        .from(TallySync)
+        .where('record_type IN (:...rts)', { rts: types })
+        .execute();
+    }
     return this.repo.delete({ record_type: recordType });
   }
 }

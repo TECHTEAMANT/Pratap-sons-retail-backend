@@ -75,6 +75,7 @@ export class SalesReturnService {
       // Create return items & restore inventory
       let returnAmountApproval = 0;
       let returnAmountRegular = 0;
+      const createdItems: SalesReturnItem[] = [];
 
       for (const item of data.items) {
         const retItem = manager.create(SalesReturnItem, {
@@ -93,7 +94,8 @@ export class SalesReturnService {
           salesman_id: item.salesman_id || null,
           on_approval: !!item.on_approval,
         });
-        await manager.save(SalesReturnItem, retItem);
+        const savedItem = await manager.save(SalesReturnItem, retItem);
+        createdItems.push(savedItem);
 
         const itemAmt = Number(item.return_amount) || 0;
         if (item.on_approval) {
@@ -112,6 +114,7 @@ export class SalesReturnService {
           await manager.save(batch);
         }
       }
+      savedReturn.items = createdItems;
 
       // Create credit note
       // ... (existing CN logic remains same)
@@ -163,9 +166,7 @@ export class SalesReturnService {
                             Number(invoice.loyalty_redemption_amount || 0) + 
                             Number(invoice.voucher_discount || 0);
 
-          const finalDiscount = (Math.round(itemSum) >= Math.round(headerSum) && headerSum > 0) 
-            ? itemSum 
-            : (itemSum + headerSum);
+          const finalDiscount = Math.max(Math.round(itemSum), Math.round(headerSum));
           
           const trueNetPayable = Math.round(Math.max(0, 
             trueTotalMrp 
@@ -392,9 +393,10 @@ export class SalesReturnService {
       oldReturn.credit_coupon_no = null as any; 
       const savedReturn = await manager.save(oldReturn);
 
+      const createdItems: SalesReturnItem[] = [];
       for (const item of data.items) {
         const retItem = manager.create(SalesReturnItem, {
-          salesReturn: oldReturn,
+          salesReturn: savedReturn,
           barcode_8digit: item.barcode_8digit,
           design_no: item.design_no,
           hsn_code: item.hsn_code || null,
@@ -409,7 +411,8 @@ export class SalesReturnService {
           salesman_id: item.salesman_id || null,
           on_approval: !!item.on_approval,
         });
-        await manager.save(SalesReturnItem, retItem);
+        const savedItem = await manager.save(SalesReturnItem, retItem);
+        createdItems.push(savedItem);
 
         const batch = await manager.findOne(BarcodeBatch, { where: { barcode_alias_8digit: item.barcode_8digit } });
         if (batch) {
@@ -417,6 +420,7 @@ export class SalesReturnService {
           await manager.save(batch);
         }
       }
+      savedReturn.items = createdItems;
 
       const prefix = `CN${getFiscalYearPrefix()}`;
       const records = await manager.query(`SELECT credit_note_number FROM credit_notes WHERE credit_note_number LIKE $1 ORDER BY credit_note_number DESC LIMIT 1`, [`${prefix}%`]);
@@ -461,9 +465,7 @@ export class SalesReturnService {
                             Number(invoice.loyalty_redemption_amount || 0) + 
                             Number(invoice.voucher_discount || 0);
 
-          const finalDiscount = (Math.round(itemSum) >= Math.round(headerSum) && headerSum > 0) 
-            ? itemSum 
-            : (itemSum + headerSum);
+          const finalDiscount = Math.max(Math.round(itemSum), Math.round(headerSum));
           
           const trueNetPayable = Math.round(Math.max(0, 
             trueTotalMrp 

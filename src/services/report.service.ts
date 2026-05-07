@@ -665,7 +665,7 @@ export class ReportService {
     return this.salesmanPerformance(startDate, endDate);
   }
 
-  async customerReport(limit: number = 200) {
+  async customerReport(limit: number = 5000) {
     const qb = AppDataSource.getRepository(Customer)
       .createQueryBuilder('c')
       .select([

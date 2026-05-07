@@ -89,7 +89,7 @@ export class SalesService {
       
       // Correct Logic: Intelligent discount reconstruction.
       // 1. Calculate the 'Ground Truth' sum of all line-item discounts
-      const itemSum = (inv.items || []).reduce((sum, it) => sum + Number(it.discount || 0), 0);
+      const itemSum = (inv.items || []).reduce((sum, it) => sum + (Number(it.discount || 0) * Number(it.quantity || 1)), 0);
       
       // 2. Sum up header-level discount fields
       const headerSum = Number(inv.special_discount || 0) + 
@@ -98,9 +98,7 @@ export class SalesService {
       
       // 3. Determine Final Discount: Use Math.round to avoid tiny floating point errors 
       // during comparison (e.g., 999.99 vs 1000.00).
-      const finalDiscount = (Math.round(itemSum) >= Math.round(headerSum) && headerSum > 0) 
-        ? itemSum 
-        : (itemSum + headerSum);
+      const finalDiscount = Math.max(Math.round(itemSum), Math.round(headerSum));
       
       const returnsAmt = (inv.sales_returns || []).reduce((sum, r) => sum + Number(r.total_return_amount || 0), 0);
       
@@ -688,9 +686,7 @@ export class SalesService {
                       Number(invoice.loyalty_redemption_amount || 0) + 
                       Number(invoice.voucher_discount || 0);
 
-    const finalDiscount = (Math.round(itemSum) >= Math.round(headerSum) && headerSum > 0) 
-      ? itemSum 
-      : (itemSum + headerSum);
+    const finalDiscount = Math.max(Math.round(itemSum), Math.round(headerSum));
     
     const originalNet = Math.round(Math.max(0, 
       trueTotalMrp 
@@ -714,12 +710,21 @@ export class SalesService {
       directPaid = pd.reduce((sum: number, p: any) => {
         const mode = (p.mode || '').toString().toUpperCase();
         if (mode.includes('APPROVAL')) return sum;
+        // Exclude modes that are tracked via separate application tables
+        if (mode.includes('ADVANCE') || 
+            mode.includes('COUPON') || 
+            mode.includes('COUPAN') || 
+            mode.includes('CREDIT NOTE')) return sum;
         return sum + (Number(p.amount || 0));
       }, 0);
     } else if (pd && typeof pd === 'object') {
       directPaid = Object.entries(pd).reduce((sum: number, [key, val]: [string, any]) => {
         const mode = key.toUpperCase();
         if (mode.includes('APPROVAL')) return sum;
+        if (mode.includes('ADVANCE') || 
+            mode.includes('COUPON') || 
+            mode.includes('COUPAN') || 
+            mode.includes('CREDIT NOTE')) return sum;
         return sum + (Number(val) || 0);
       }, 0);
     }
