@@ -40,7 +40,10 @@ export class ReportController {
   }
   async customerReport(req: AuthenticatedRequest, res: Response) { 
     if (req.user?.role === 'Vendor') return sendError(res, 'Access denied', 403);
-    try { sendSuccess(res, await reportService.customerReport()); } catch (e: any) { sendError(res, e.message); } 
+    try { 
+      const limit = req.query.limit ? parseInt(req.query.limit as string) : 1000;
+      sendSuccess(res, await reportService.customerReport(limit)); 
+    } catch (e: any) { sendError(res, e.message); } 
   }
   async purchaseReport(req: AuthenticatedRequest, res: Response) { 
     if (req.user?.role === 'Vendor') return sendError(res, 'Access denied', 403);

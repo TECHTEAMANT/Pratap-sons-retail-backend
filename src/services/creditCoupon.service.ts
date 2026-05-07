@@ -139,17 +139,36 @@ export class CreditCouponService {
     });
 
     qb.orderBy('cc.created_at', 'DESC');
-    return qb.getMany();
+    const coupons = await qb.getMany();
+
+    // Enrich with remaining balance
+    return Promise.all(coupons.map(async (coupon) => {
+      const [{ used }] = await AppDataSource.query(
+        `SELECT COALESCE(SUM(amount_applied)::numeric, 0) as used FROM credit_coupon_applications WHERE coupon_id = $1`,
+        [coupon.id]
+      );
+      const remaining = Math.max(0, Number(coupon.amount) - Number(used || 0));
+      return { ...coupon, amount: remaining, original_amount: coupon.amount };
+    }));
   }
 
   /**
    * List coupons for a customer
    */
   async getCustomerCoupons(mobile: string) {
-    return this.repo.find({ 
+    const coupons = await this.repo.find({ 
       where: { customer_mobile: mobile },
       order: { created_at: 'DESC' }
     });
+
+    return Promise.all(coupons.map(async (coupon) => {
+      const [{ used }] = await AppDataSource.query(
+        `SELECT COALESCE(SUM(amount_applied)::numeric, 0) as used FROM credit_coupon_applications WHERE coupon_id = $1`,
+        [coupon.id]
+      );
+      const remaining = Math.max(0, Number(coupon.amount) - Number(used || 0));
+      return { ...coupon, amount: remaining, original_amount: coupon.amount };
+    }));
   }
 }
 

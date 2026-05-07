@@ -35,7 +35,16 @@ export class CreditCouponController {
       const coupon = await creditCouponService.getByCouponNo(req.params.coupon_no);
       if (!coupon) return sendNotFound(res, 'Coupon');
       if (coupon.status !== 'active') return sendError(res, 'Coupon is not active', 400);
-      sendSuccess(res, coupon);
+
+      const [{ used }] = await AppDataSource.query(
+        `SELECT COALESCE(SUM(amount_applied)::numeric, 0) as used FROM credit_coupon_applications WHERE coupon_id = $1`,
+        [coupon.id]
+      );
+      const remaining = Math.max(0, Number(coupon.amount) - Number(used || 0));
+      
+      if (remaining <= 0) return sendError(res, 'Coupon balance is zero', 400);
+
+      sendSuccess(res, { ...coupon, amount: remaining, original_amount: coupon.amount });
     } catch (e: any) {
       sendError(res, e.message);
     }
