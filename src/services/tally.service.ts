@@ -62,8 +62,12 @@ export class TallyService {
     const poId = filters.purchase_order_id || filters.po_id;
     if (poId) qb.andWhere('ts.po_id = :poid', { poid: poId });
     
-    if (filters.start_date) qb.andWhere('ts.invoice_date >= :start', { start: filters.start_date });
-    if (filters.end_date) qb.andWhere('ts.invoice_date <= :end', { end: filters.end_date });
+    // Support both custom start/end and standard gte/lte from shim
+    const startDate = filters.start_date || filters.gte_invoice_date;
+    const endDate = filters.end_date || filters.lte_invoice_date;
+
+    if (startDate) qb.andWhere('ts.invoice_date >= :start', { start: startDate });
+    if (endDate) qb.andWhere('ts.invoice_date <= :end', { end: endDate });
     
     // Handle dynamic sorting
     if (filters.sort) {

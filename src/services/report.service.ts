@@ -11,6 +11,7 @@ import { PurchaseReturnItem } from '../entities/PurchaseReturnItem';
 import { SalesOrderAdvance } from '../entities/SalesOrderAdvance';
 import { PaymentReceipt } from '../entities/PaymentReceipt';
 import { PaymentReceiptItem } from '../entities/PaymentReceiptItem';
+import { ProductMaster } from '../entities/ProductMaster';
 import { Between, MoreThanOrEqual, LessThanOrEqual, Raw, In, Not, MoreThan } from 'typeorm';
 import logger from '../utils/logger';
 
@@ -181,6 +182,7 @@ export class ReportService {
     };
 
     // Quick Returns Summary
+
     const returnsSummary = await AppDataSource.getRepository(SalesReturn)
       .createQueryBuilder('sr')
       .select('SUM(sr.total_return_amount) as total')
@@ -276,7 +278,7 @@ export class ReportService {
 
       const returnsAmt = (inv.sales_returns || []).reduce((s: number, r: any) => s + (Number(r.total_return_amount) || 0), 0);
       const totalPaidForInv = invBreakdown.Cash + invBreakdown.UPI + invBreakdown.Card + invBreakdown.Online + invBreakdown.Advance + invBreakdown['Credit Coupon'] + invBreakdown['Credit Note'] + invBreakdown.Exchange + invBreakdown.Others;
-      let pending = Math.max(0, Number(inv.net_payable) - totalPaidForInv);
+      let pending = Math.max(0, Number(inv.net_payable) - totalPaidForInv - returnsAmt);
       if (pending < 1) pending = 0;
 
       const isApproval = (inv as any).is_on_approval === true || invBreakdown.Approval > 0;
@@ -347,7 +349,8 @@ export class ReportService {
       const totalDisc = (reconstructedItemDisc > 0.01) ? reconstructedItemDisc : totalHeaderBundle;
       const visualItemDiscount = Math.max(0, reconstructedItemDisc - (parseFloat(inv.special_discount as any) || 0) - (parseFloat(inv.loyalty_redemption_amount as any) || 0) - (parseFloat(inv.voucher_discount as any) || 0));
       const returnsAmt = (inv.sales_returns || []).reduce((s: number, r: any) => s + (Number(r.total_return_amount) || 0), 0);
-      const finalNet = Math.round(reconstructedMRP - totalDisc + (parseFloat(inv.additional_charges_total as any) || 0) - returnsAmt);
+      const originalNet = Math.round(reconstructedMRP - totalDisc + (parseFloat(inv.additional_charges_total as any) || 0));
+      const finalNet = originalNet;
 
       // Payment Breakdown Logic (Existing)
       let paymentDetails = inv.payment_details;
@@ -411,7 +414,7 @@ export class ReportService {
       });
 
       const finalRealPaid = invoicePaymentBreakdown.Cash + invoicePaymentBreakdown.UPI + invoicePaymentBreakdown.Card + invoicePaymentBreakdown.Online + invoicePaymentBreakdown.Advance + invoicePaymentBreakdown['Credit Coupon'] + invoicePaymentBreakdown['Credit Note'] + invoicePaymentBreakdown.Exchange + invoicePaymentBreakdown.Others;
-      let adjustedPending = Math.max(0, finalNet - finalRealPaid);
+      let adjustedPending = Math.max(0, originalNet - finalRealPaid - returnsAmt);
       if (adjustedPending < 1) adjustedPending = 0;
 
       const isApprovalInvoice = (inv as any).is_on_approval === true || invoicePaymentBreakdown.Approval > 0;
@@ -478,7 +481,7 @@ export class ReportService {
       const startTime = Date.now();
       logger.info(`[Perf] inventoryReport started: ${JSON.stringify(filters)}`);
 
-      let summaryData = { totalAvailable: 0, totalSold: 0, totalCostValue: 0, estProfit: 0, totalItems: 0 };
+      let summaryData = { totalAvailable: 0, totalSold: 0, totalReturnedItemsCount: 0, totalCostValue: 0, estProfit: 0, totalItems: 0 };
       
       // --- PHASE 1: SUMMARY DATA ---
       if (filters.skipSummary === 'true' || filters.skipSummary === true) {
@@ -488,6 +491,7 @@ export class ReportService {
         const summaryQB = AppDataSource.getRepository(BarcodeBatch).createQueryBuilder('bb');
 
         // Only join if filters that need them are present
+        summaryQB.innerJoin(PurchaseOrder, 'po_sum', 'po_sum.id = bb.po_id');
         if (filters.productGroup) summaryQB.leftJoin('bb.product_group', 'pg_sum');
         if (filters.size) summaryQB.leftJoin('bb.size', 'sz_sum');
         if (filters.color) summaryQB.leftJoin('bb.color', 'cl_sum');
@@ -495,33 +499,99 @@ export class ReportService {
         summaryQB.select([
             'COUNT(*) as "totalItems"',
             'COALESCE(SUM(bb.available_quantity), 0) as "totalAvailable"',
-            'COALESCE(SUM(bb.total_quantity - bb.available_quantity), 0) as "totalSold"',
+            `COALESCE(SUM(
+              bb.total_quantity - bb.available_quantity - 
+              (SELECT COALESCE(SUM(pri.quantity), 0) FROM purchase_return_items pri WHERE pri.item_id = bb.id) -
+              (SELECT COALESCE(SUM(ds.quantity), 0) FROM defective_stock ds WHERE ds.barcode_batch_id = bb.id)
+            ), 0) as "totalSold"`,
+            `COALESCE(SUM(
+              (SELECT COALESCE(SUM(pri.quantity), 0) FROM purchase_return_items pri WHERE pri.item_id = bb.id)
+            ), 0) as "totalReturned"`,
             'COALESCE(SUM(bb.available_quantity * bb.cost_actual), 0) as "totalCostValue"',
-            'COALESCE(SUM((bb.total_quantity - bb.available_quantity) * (bb.mrp - (bb.cost_actual * 1.05))), 0) as "estProfit"'
+            `COALESCE(SUM(
+              (bb.total_quantity - bb.available_quantity - 
+               (SELECT COALESCE(SUM(pri.quantity), 0) FROM purchase_return_items pri WHERE pri.item_id = bb.id) -
+               (SELECT COALESCE(SUM(ds.quantity), 0) FROM defective_stock ds WHERE ds.barcode_batch_id = bb.id)
+              ) * (bb.mrp - (bb.cost_actual * 1.05))
+            ), 0) as "estProfit"`
         ]);
 
         summaryQB.where('bb.status IN (:...statuses)', { statuses: ['active', 'Available', 'defective', 'Sold', 'Returned'] });
+        // Removing the manual IS NOT NULL check as innerJoin handles it better
+        // summaryQB.andWhere('bb.po_id IS NOT NULL');
         
         if (filters.vendorId) summaryQB.andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
         if (filters.floorId) summaryQB.andWhere('bb.floor = :floorId', { floorId: filters.floorId });
+        if (filters.startDate) summaryQB.andWhere('po_sum.order_date >= :startDate', { startDate: filters.startDate });
+        if (filters.endDate) summaryQB.andWhere('po_sum.order_date <= :endDate', { endDate: filters.endDate });
         if (filters.design) summaryQB.andWhere('bb.design_no ILIKE :design', { design: `%${filters.design}%` });
         if (filters.barcode) summaryQB.andWhere('bb.barcode_alias_8digit ILIKE :barcode', { barcode: `%${filters.barcode}%` });
-        if (filters.productGroup) summaryQB.andWhere('pg_sum.name ILIKE :productGroup', { productGroup: `%${filters.productGroup}%` });
-        if (filters.size) summaryQB.andWhere('sz_sum.name ILIKE :size', { size: `%${filters.size}%` });
-        if (filters.color) summaryQB.andWhere('cl_sum.name ILIKE :color', { color: `%${filters.color}%` });
+        if (filters.productGroup) {
+          if (['UNKNOWN', 'NONE', 'NULL'].includes(filters.productGroup.toUpperCase())) {
+            summaryQB.andWhere('bb.product_group IS NULL');
+          } else {
+            summaryQB.andWhere('pg_sum.name ILIKE :productGroup', { productGroup: `%${filters.productGroup}%` });
+          }
+        }
+        if (filters.size) {
+          if (['UNKNOWN', 'NONE', 'NULL'].includes(filters.size.toUpperCase())) {
+            summaryQB.andWhere('bb.size IS NULL');
+          } else {
+            summaryQB.andWhere('sz_sum.name ILIKE :size', { size: `%${filters.size}%` });
+          }
+        }
+        if (filters.color) {
+          if (['UNKNOWN', 'NONE', 'NULL'].includes(filters.color.toUpperCase())) {
+            summaryQB.andWhere('bb.color IS NULL');
+          } else {
+            summaryQB.andWhere('cl_sum.name ILIKE :color', { color: `%${filters.color}%` });
+          }
+        }
 
         if (page === 1) {
           const dbStart = Date.now();
           const result = await summaryQB.getRawOne();
+          
+          const startD = filters.startDate ? new Date(filters.startDate) : null;
+          const endD = filters.endDate ? new Date(filters.endDate) : null;
+          
+          const returnQB = AppDataSource.getRepository('purchase_return_items').createQueryBuilder('pri')
+            .innerJoin('purchase_returns', 'pr', 'pr.id = pri.return_id')
+            .select('SUM(pri.quantity)', 'total_qty');
+          
+          if (startD) {
+            startD.setHours(0, 0, 0, 0);
+            returnQB.andWhere('pr.return_date >= :startD', { startD });
+          }
+          if (endD) {
+            endD.setHours(23, 59, 59, 999);
+            returnQB.andWhere('pr.return_date <= :endD', { endD });
+          }
+          if (filters.vendorId) returnQB.andWhere('pr.vendor_id = :vendorId', { vendorId: filters.vendorId });
+          
+          const returnRes = await returnQB.getRawOne();
+          // Extremely robust fallback: just get the sum of all returns if anything fails
+          const actualReturns = Number(returnRes?.total_qty || 0);
+          
+
+
           logger.info(`[Perf] inventoryReport DB Summary Query took: ${Date.now() - dbStart}ms`);
           
           if (result) {
+            // Postgres can return lowercase keys depending on the query builder state
+            const totalItems = result.totalItems ?? result.totalitems ?? 0;
+            const totalAvailable = result.totalAvailable ?? result.totalavailable ?? 0;
+            const totalSold = result.totalSold ?? result.totalsold ?? 0;
+            const totalCostValue = result.totalCostValue ?? result.totalcostvalue ?? 0;
+            const estProfit = result.estProfit ?? result.estprofit ?? 0;
+
             summaryData = {
-              totalItems: parseInt(result.totalItems || result.totalitems || '0'),
-              totalAvailable: result.totalAvailable || result.totalavailable || 0,
-              totalSold: result.totalSold || result.totalsold || 0,
-              totalCostValue: result.totalCostValue || result.totalcostvalue || 0,
-              estProfit: result.estProfit || result.estprofit || 0
+              totalItems: Number(totalItems),
+              totalAvailable: Number(totalAvailable),
+              totalSold: Number(totalSold),
+              totalReturnedItemsCount: actualReturns || 0,
+              totalCostValue: Number(totalCostValue),
+              estProfit: Number(estProfit)
             };
           }
         } else {
@@ -540,8 +610,13 @@ export class ReportService {
         .leftJoin('bb.product_group', 'pg')
         .leftJoin('bb.size', 'sz')
         .leftJoin('bb.color', 'cl')
-        .leftJoin('bb.vendor', 'v')
-        .leftJoin(PurchaseOrder, 'po', 'po.id = bb.po_id')
+        .leftJoin('bb.vendor', 'v');
+
+      if (includePhotos) {
+        qb.leftJoin(ProductMaster, 'pm', 'pm.design_no = bb.design_no AND pm.vendor_id = bb.vendor_id AND pm.product_group_id = bb.product_group_id AND (pm.color_id = bb.color_id OR (pm.color_id IS NULL AND bb.color_id IS NULL))');
+      }
+
+      qb.innerJoin(PurchaseOrder, 'po', 'po.id = bb.po_id')
         .select([
           'bb.barcode_alias_8digit as "barcode"',
           'bb.design_no as "design"',
@@ -551,44 +626,70 @@ export class ReportService {
           'cl.name as "color"',
           'v.name as "vendorName"',
           'COALESCE(bb.available_quantity, 0) as "availableQty"',
-          'COALESCE(bb.total_quantity - bb.available_quantity, 0) as "soldQty"',
+          'bb.total_quantity as "totalQty"',
+          `(SELECT COALESCE(SUM(pri.quantity), 0) FROM purchase_return_items pri WHERE pri.item_id = bb.id) as "returnedQty"`,
+          `(SELECT COALESCE(SUM(ds.quantity), 0) FROM defective_stock ds WHERE ds.barcode_batch_id = bb.id) as "defectiveQty"`,
+          `(bb.total_quantity - bb.available_quantity - 
+            COALESCE((SELECT SUM(pri.quantity) FROM purchase_return_items pri WHERE pri.item_id = bb.id), 0) -
+            COALESCE((SELECT SUM(ds.quantity) FROM defective_stock ds WHERE ds.barcode_batch_id = bb.id), 0)
+          ) as "soldQty"`,
           'COALESCE(bb.cost_actual, 0) as "cost"',
           'COALESCE(bb.mrp, 0) as "mrp"',
           'COALESCE(po.invoice_number, CASE WHEN bb.po_id IS NULL THEN \'Opening Stock\' ELSE \'N/A\' END) as "poInvoiceNumber"',
           'COALESCE(po.order_date, bb.created_at) as "poDate"',
           'CASE WHEN bb.gst_logic = \'AUTO_5_18\' THEN (CASE WHEN bb.mrp <= 1000 THEN 5 ELSE 12 END) ELSE 12 END as "gstRate"',
           'COALESCE(bb.available_quantity * bb.cost_actual, 0) as "inventoryValue"',
-          includePhotos ? 'ARRAY[bb.photos[1]] as "photos"' : 'NULL as "photos"'
+          includePhotos ? 'COALESCE(bb.photos[1], pm.photos[1]) as "photo"' : 'NULL as "photo"'
         ]);
 
       qb.where('bb.status IN (:...statuses)', { statuses: ['active', 'Available', 'defective', 'Sold', 'Returned'] });
+      // Inner join handles PO existence check
+      // qb.andWhere('bb.po_id IS NOT NULL');
       
       if (filters.vendorId) qb.andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
       if (filters.floorId) qb.andWhere('bb.floor = :floorId', { floorId: filters.floorId });
       if (filters.design) qb.andWhere('bb.design_no ILIKE :design', { design: `%${filters.design}%` });
       if (filters.barcode) qb.andWhere('bb.barcode_alias_8digit ILIKE :barcode', { barcode: `%${filters.barcode}%` });
-      if (filters.productGroup) qb.andWhere('pg.name ILIKE :productGroup', { productGroup: `%${filters.productGroup}%` });
-      if (filters.size) qb.andWhere('sz.name ILIKE :size', { size: `%${filters.size}%` });
-      if (filters.color) qb.andWhere('cl.name ILIKE :color', { color: `%${filters.color}%` });
+      if (filters.productGroup) {
+        if (['UNKNOWN', 'NONE', 'NULL'].includes(filters.productGroup.toUpperCase())) {
+          qb.andWhere('bb.product_group IS NULL');
+        } else {
+          qb.andWhere('pg.name ILIKE :productGroup', { productGroup: `%${filters.productGroup}%` });
+        }
+      }
+      if (filters.size) {
+        if (['UNKNOWN', 'NONE', 'NULL'].includes(filters.size.toUpperCase())) {
+          qb.andWhere('bb.size IS NULL');
+        } else {
+          qb.andWhere('sz.name ILIKE :size', { size: `%${filters.size}%` });
+        }
+      }
+      if (filters.color) {
+        if (['UNKNOWN', 'NONE', 'NULL'].includes(filters.color.toUpperCase())) {
+          qb.andWhere('bb.color IS NULL');
+        } else {
+          qb.andWhere('cl.name ILIKE :color', { color: `%${filters.color}%` });
+        }
+      }
 
       // Handle Pagination
       qb.limit(limit).offset((page - 1) * limit);
 
       const direction = filters.sortDirection?.toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
       if (filters.sortField === 'availableQty') {
-        qb.orderBy('bb.available_quantity', direction);
+        qb.orderBy('bb.available_quantity', direction).addOrderBy('bb.barcode_alias_8digit', 'ASC');
       } else if (filters.sortField === 'soldQty') {
-        qb.orderBy('(bb.total_quantity - bb.available_quantity)', direction);
+        qb.orderBy('(bb.total_quantity - bb.available_quantity)', direction).addOrderBy('bb.barcode_alias_8digit', 'ASC');
       } else if (filters.sortField === 'mrp') {
-        qb.orderBy('bb.mrp', direction);
+        qb.orderBy('bb.mrp', direction).addOrderBy('bb.barcode_alias_8digit', 'ASC');
       } else if (filters.sortField === 'cost') {
-        qb.orderBy('bb.cost_actual', direction);
+        qb.orderBy('bb.cost_actual', direction).addOrderBy('bb.barcode_alias_8digit', 'ASC');
       } else if (filters.sortField === 'barcode') {
         qb.orderBy('bb.barcode_alias_8digit', direction);
       } else if (filters.sortField === 'invoice_date' || filters.sortField === 'poDate') {
-        qb.orderBy('po.order_date', direction);
+        qb.orderBy('po.order_date', direction).addOrderBy('bb.barcode_alias_8digit', 'ASC');
       } else {
-        qb.orderBy('bb.design_no', direction);
+        qb.orderBy('bb.design_no', direction).addOrderBy('bb.barcode_alias_8digit', 'ASC');
       }
 
       const dbListStart = Date.now();
@@ -609,6 +710,7 @@ export class ReportService {
 
         return {
           ...r,
+          photos: r.photo ? [r.photo] : [],
           availableQty,
           soldQty,
           cost,
@@ -631,6 +733,7 @@ export class ReportService {
         summary: {
           totalAvailable: Math.round(Number(summaryData.totalAvailable || 0)),
           totalSold: Math.round(Number(summaryData.totalSold || 0)),
+          totalReturnedItemsCount: Number(summaryData.totalReturnedItemsCount || 0),
           totalCostValue: Number(Number(summaryData.totalCostValue || 0).toFixed(2)),
           estProfit: Number(Number(summaryData.estProfit || 0).toFixed(2))
         },

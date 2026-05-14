@@ -266,7 +266,7 @@ export class SalesReturnService {
 
           invoice.amount_pending = Math.max(0, Number(invoice.amount_pending) - amountToReducePending);
           invoice.amount_paid = Math.max(0, Number(invoice.amount_paid) - refundAmount); 
-          invoice.net_payable = Math.max(0, Number(invoice.net_payable) - returnAmount);
+          // invoice.net_payable = Math.max(0, Number(invoice.net_payable) - returnAmount); // STOP zeroing out the original sale
 
           if (Number(invoice.net_payable) <= 0.05) {
             invoice.payment_status = 'returned';
@@ -549,7 +549,7 @@ export class SalesReturnService {
 
           invoice.amount_pending = Math.max(0, Number(invoice.amount_pending) - amountToReducePending);
           invoice.amount_paid = Math.max(0, Number(invoice.amount_paid) - refundAmount);
-          invoice.net_payable = Math.max(0, Number(invoice.net_payable) - returnAmount);
+          // invoice.net_payable = Math.max(0, Number(invoice.net_payable) - returnAmount); // STOP zeroing out the original sale
 
           if (Number(invoice.amount_pending) <= 0.01) {
             invoice.payment_status = 'paid';
