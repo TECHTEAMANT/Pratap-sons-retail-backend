@@ -4,11 +4,11 @@ import { PurchaseOrder } from "../src/entities/PurchaseOrder";
 
 const ProdSource = new DataSource({
     type: "postgres",
-    host: "98.70.48.200",
+    host: "localhost", // Running directly on the server
     port: 5432,
-    username: "postgres_dev", 
-    password: "ant-admin@123_dev",
-    database: "invento_erp_dev",
+    username: "postgres", 
+    password: "Root@123",
+    database: "invento_erp",
     entities: [BarcodeBatch, PurchaseOrder],
     synchronize: false
 });
