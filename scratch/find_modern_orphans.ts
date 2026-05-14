@@ -17,11 +17,11 @@ async function findModernOrphans() {
 
         // Find items that:
         // 1. Have NO PO link
-        // 2. Were created after Jan 1st 2026 (Modern items)
+        // OR 2. Have a PO link but NO Order Date (The "N/A" items in your Excel)
         const modernOrphans = await repo.createQueryBuilder('bb')
             .leftJoin(PurchaseOrder, 'po', 'po.id = bb.po_id')
-            .select(['bb.barcode_alias_8digit', 'bb.design_no', 'bb.total_quantity', 'bb.created_at'])
-            .where('bb.po_id IS NULL')
+            .select(['bb.barcode_alias_8digit', 'bb.design_no', 'bb.total_quantity', 'bb.created_at', 'po.order_date'])
+            .where('(bb.po_id IS NULL OR po.order_date IS NULL)')
             .andWhere('bb.created_at >= :start', { start: startDate })
             .andWhere('bb.status != :status', { status: 'deleted' })
             .getRawMany();
