@@ -491,13 +491,14 @@ export class ReportService {
         const summaryQB = AppDataSource.getRepository(BarcodeBatch).createQueryBuilder('bb');
 
         // Only join if filters that need them are present
-        summaryQB.innerJoin(PurchaseOrder, 'po_sum', 'po_sum.id = bb.po_id');
+        // Use LEFT JOIN to include items without POs (Opening Stock)
+        summaryQB.leftJoin(PurchaseOrder, 'po_sum', 'po_sum.id = bb.po_id');
         if (filters.productGroup) summaryQB.leftJoin('bb.product_group', 'pg_sum');
         if (filters.size) summaryQB.leftJoin('bb.size', 'sz_sum');
         if (filters.color) summaryQB.leftJoin('bb.color', 'cl_sum');
 
         summaryQB.select([
-            'COUNT(*) as "totalItems"',
+            'COUNT(*) as "totalItems"', // This is the count of BarcodeBatches
             'COALESCE(SUM(bb.available_quantity), 0) as "totalAvailable"',
             `COALESCE(SUM(
               bb.total_quantity - bb.available_quantity - 
@@ -517,13 +518,22 @@ export class ReportService {
         ]);
 
         summaryQB.where('bb.status IN (:...statuses)', { statuses: ['active', 'Available', 'defective', 'Sold', 'Returned'] });
-        // Removing the manual IS NOT NULL check as innerJoin handles it better
-        // summaryQB.andWhere('bb.po_id IS NOT NULL');
         
         if (filters.vendorId) summaryQB.andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
         if (filters.floorId) summaryQB.andWhere('bb.floor = :floorId', { floorId: filters.floorId });
-        if (filters.startDate) summaryQB.andWhere('po_sum.order_date >= :startDate', { startDate: filters.startDate });
-        if (filters.endDate) summaryQB.andWhere('po_sum.order_date <= :endDate', { endDate: filters.endDate });
+        
+        // Unified Date Logic: Use PO date if available, otherwise fallback to creation date.
+        // Include full end day by adding 1 day to end date.
+        if (filters.startDate) {
+          const start = filters.startDate.split('T')[0];
+          summaryQB.andWhere('COALESCE(po_sum.order_date, bb.created_at) >= :start', { start });
+        }
+        if (filters.endDate) {
+          const end = filters.endDate.split('T')[0];
+          const endPlusOne = new Date(new Date(end).getTime() + 86400000).toISOString().split('T')[0];
+          summaryQB.andWhere('COALESCE(po_sum.order_date, bb.created_at) < :endPlusOne', { endPlusOne });
+        }
+
         if (filters.design) summaryQB.andWhere('bb.design_no ILIKE :design', { design: `%${filters.design}%` });
         if (filters.barcode) summaryQB.andWhere('bb.barcode_alias_8digit ILIKE :barcode', { barcode: `%${filters.barcode}%` });
         if (filters.productGroup) {
@@ -616,7 +626,7 @@ export class ReportService {
         qb.leftJoin(ProductMaster, 'pm', 'pm.design_no = bb.design_no AND pm.vendor_id = bb.vendor_id AND pm.product_group_id = bb.product_group_id AND (pm.color_id = bb.color_id OR (pm.color_id IS NULL AND bb.color_id IS NULL))');
       }
 
-      qb.innerJoin(PurchaseOrder, 'po', 'po.id = bb.po_id')
+      qb.leftJoin(PurchaseOrder, 'po', 'po.id = bb.po_id')
         .select([
           'bb.barcode_alias_8digit as "barcode"',
           'bb.design_no as "design"',
@@ -648,6 +658,18 @@ export class ReportService {
       
       if (filters.vendorId) qb.andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
       if (filters.floorId) qb.andWhere('bb.floor = :floorId', { floorId: filters.floorId });
+      
+      // Unified Date Logic for Phase 2 (List)
+      if (filters.startDate) {
+        const start = filters.startDate.split('T')[0];
+        qb.andWhere('COALESCE(po.order_date, bb.created_at) >= :start', { start });
+      }
+      if (filters.endDate) {
+        const end = filters.endDate.split('T')[0];
+        const endPlusOne = new Date(new Date(end).getTime() + 86400000).toISOString().split('T')[0];
+        qb.andWhere('COALESCE(po.order_date, bb.created_at) < :endPlusOne', { endPlusOne });
+      }
+
       if (filters.design) qb.andWhere('bb.design_no ILIKE :design', { design: `%${filters.design}%` });
       if (filters.barcode) qb.andWhere('bb.barcode_alias_8digit ILIKE :barcode', { barcode: `%${filters.barcode}%` });
       if (filters.productGroup) {
@@ -1682,6 +1704,11 @@ export class ReportService {
 
       qb.leftJoin(`${bbAlias}.vendor`, 'v');
       
+      // For BarcodeBatch (Purchases), we use the same unified date logic as other reports
+      const unifiedDate = repo === BarcodeBatch 
+        ? `COALESCE((SELECT po.order_date FROM purchase_orders po WHERE po.id = ${bbAlias}.po_id), ${bbAlias}.created_at)`
+        : dateField;
+
       if (vendorId) {
         qb.leftJoin(`${bbAlias}.size`, 'sz')
           .leftJoin(`${bbAlias}.color`, 'cl')
@@ -1689,9 +1716,9 @@ export class ReportService {
       }
 
       if (isRange) {
-        qb.andWhere(`${dateField} >= :start AND ${dateField} <= :end`, { start, end });
+        qb.andWhere(`${unifiedDate} >= :start AND ${unifiedDate} <= :end`, { start, end });
       } else {
-        qb.andWhere(`${dateField} < :start`, { start });
+        qb.andWhere(`${unifiedDate} < :start`, { start });
       }
 
       const qtyExpr = repo === BarcodeBatch ? `${bbAlias}.total_quantity` : 'base.quantity';
