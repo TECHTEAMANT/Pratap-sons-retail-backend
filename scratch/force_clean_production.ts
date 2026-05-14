@@ -11,33 +11,30 @@ async function forceCleanProduction() {
 
         const repo = AppDataSource.getRepository(BarcodeBatch);
 
-        // 1. Identify items with NO Purchase Order
-        const orphans = await repo.createQueryBuilder('bb')
-            .leftJoin(PurchaseOrder, 'po', 'po.id = bb.po_id')
-            .where('bb.po_id IS NULL')
-            .andWhere('bb.status != :status', { status: 'deleted' })
-            .getMany();
+        // 1. Clean up items with NO Purchase Order
+        const orphanResult = await repo.createQueryBuilder('bb')
+            .update(BarcodeBatch)
+            .set({ status: 'deleted' })
+            .where('po_id IS NULL')
+            .andWhere('status != :status', { status: 'deleted' })
+            .execute();
 
-        // 2. Identify items linked to INVALID Purchase Orders (Cancelled, Draft, etc.)
-        const badPOItems = await repo.createQueryBuilder('bb')
-            .innerJoin(PurchaseOrder, 'po', 'po.id = bb.po_id')
-            .where('po.status NOT IN (:...goodStatuses)', { goodStatuses: ['active', 'received', 'completed', 'Approved'] })
-            .andWhere('bb.status != :status', { status: 'deleted' })
-            .getMany();
+        // 2. Clean up items linked to INVALID Purchase Orders
+        const subQuery = AppDataSource.getRepository(PurchaseOrder)
+            .createQueryBuilder('po')
+            .select('po.id')
+            .where('po.status NOT IN (:...goodStatuses)', { goodStatuses: ['active', 'received', 'completed', 'Approved'] });
 
-        const allBadItems = [...orphans, ...badPOItems];
-        console.log(`Found ${allBadItems.length} total items to remove.`);
+        const badPOResult = await repo.createQueryBuilder('bb')
+            .update(BarcodeBatch)
+            .set({ status: 'deleted' })
+            .where(`po_id IN (${subQuery.getQuery()})`)
+            .setParameters(subQuery.getParameters())
+            .andWhere('status != :status', { status: 'deleted' })
+            .execute();
 
-        if (allBadItems.length > 0) {
-            const ids = allBadItems.map(item => item.id);
-            
-            // Removing them from inventory (marking as deleted)
-            await repo.update(ids, { status: 'deleted' });
-
-            console.log(`SUCCESS: ${ids.length} items have been removed from your production inventory.`);
-        } else {
-            console.log("No invalid items found to remove.");
-        }
+        const totalRemoved = (orphanResult.affected || 0) + (badPOResult.affected || 0);
+        console.log(`SUCCESS: ${totalRemoved} items have been removed from your production inventory.`);
 
         console.log("\n--- CLEANUP COMPLETE ---");
         process.exit(0);
