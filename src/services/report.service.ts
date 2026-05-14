@@ -498,7 +498,7 @@ export class ReportService {
         if (filters.color) summaryQB.leftJoin('bb.color', 'cl_sum');
 
         summaryQB.select([
-            'COUNT(*) as "totalItems"', // This is the count of BarcodeBatches
+            'COALESCE(SUM(bb.total_quantity), 0) as "totalItems"', // This is the total sum of units
             'COALESCE(SUM(bb.available_quantity), 0) as "totalAvailable"',
             `COALESCE(SUM(
               bb.total_quantity - bb.available_quantity - 
