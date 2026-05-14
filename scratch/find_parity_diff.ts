@@ -9,25 +9,19 @@ async function findParityDiff() {
         }
         console.log("Database Connected. Finding the exact mismatch...");
 
-        const startDate = "2026-03-01";
-        const endDate = "2026-03-27";
-        const endPlusOne = "2026-03-28";
-
-        // 1. Get ALL barcodes that the INVENTORY report sees
+        // 1. Get ALL barcodes that the INVENTORY report sees (ALL TIME)
         const inventoryItems = await AppDataSource.getRepository(BarcodeBatch)
             .createQueryBuilder('bb')
             .leftJoin(PurchaseOrder, 'po', 'po.id = bb.po_id')
             .select(['bb.barcode_alias_8digit', 'bb.total_quantity'])
             .where('bb.status IN (:...statuses)', { statuses: ['active', 'Available', 'defective', 'Sold', 'Returned'] })
-            .andWhere('COALESCE(po.order_date, bb.created_at) >= :start AND COALESCE(po.order_date, bb.created_at) < :end', { start: startDate, end: endPlusOne })
             .getRawMany();
 
-        // 2. Get ALL barcodes that the PURCHASE report sees
+        // 2. Get ALL barcodes that the PURCHASE report sees (ALL TIME)
         const purchaseItems = await AppDataSource.getRepository(BarcodeBatch)
             .createQueryBuilder('bb')
-            .innerJoin(PurchaseOrder, 'po', 'po.id = bb.po_id') // Purchase report uses INNER JOIN or requires PO
+            .innerJoin(PurchaseOrder, 'po', 'po.id = bb.po_id')
             .select(['bb.barcode_alias_8digit', 'bb.total_quantity'])
-            .where('COALESCE(po.order_date, bb.created_at) >= :start AND COALESCE(po.order_date, bb.created_at) < :end', { start: startDate, end: endPlusOne })
             .getRawMany();
 
         const invMap = new Set(inventoryItems.map(i => i.bb_barcode_alias_8digit));
