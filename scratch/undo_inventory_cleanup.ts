@@ -17,7 +17,6 @@ async function undoCleanup() {
             .update(BarcodeBatch)
             .set({ status: 'active' })
             .where('status = :status', { status: 'deleted' })
-            .andWhere('total_quantity > 0')
             .execute();
 
         console.log(`SUCCESS: ${result.affected} items have been RESTORED to your inventory.`);

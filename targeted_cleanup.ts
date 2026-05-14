@@ -16,7 +16,7 @@ async function targetedCleanup() {
 
         const repo = AppDataSource.getRepository(BarcodeBatch);
 
-        // Finding items created in this month that have NO Purchase Order
+        // 1. Finding items with NO Purchase Order
         const orphans = await repo.createQueryBuilder('bb')
             .leftJoin(PurchaseOrder, 'po', 'po.id = bb.po_id')
             .select(['bb.id', 'bb.barcode_alias_8digit', 'bb.total_quantity'])
@@ -25,18 +25,29 @@ async function targetedCleanup() {
             .andWhere('bb.status != :status', { status: 'deleted' })
             .getRawMany();
 
-        const totalQty = orphans.reduce((acc, o) => acc + (parseFloat(o.bb_total_quantity) || 0), 0);
+        // 2. Finding items with CANCELLED/INVALID Purchase Orders in this range
+        const badPOItems = await repo.createQueryBuilder('bb')
+            .innerJoin(PurchaseOrder, 'po', 'po.id = bb.po_id')
+            .select(['bb.id', 'bb.barcode_alias_8digit', 'bb.total_quantity'])
+            .where('po.status NOT IN (:...goodStatuses)', { goodStatuses: ['active', 'received', 'completed', 'Approved'] })
+            .andWhere('bb.created_at >= :start AND bb.created_at < :end', { start: startDate, end: endDate })
+            .andWhere('bb.status != :status', { status: 'deleted' })
+            .getRawMany();
+
+        const allToDelele = [...orphans, ...badPOItems];
+        const totalQty = allToDelele.reduce((acc, o) => acc + (parseFloat(o.bb_total_quantity) || 0), 0);
 
         console.log(`\n--- TARGETED AUDIT ---`);
-        console.log(`Found ${orphans.length} batches in this date range with no Purchase Record.`);
+        console.log(`Date Range: ${startDate} to ${endDate}`);
+        console.log(`Orphans found: ${orphans.length}`);
+        console.log(`Items with Cancelled/Draft POs: ${badPOItems.length}`);
         console.log(`Total units to remove: ${totalQty}`);
         console.log(`----------------------\n`);
 
-        if (orphans.length > 0) {
-            const ids = orphans.map(o => o.bb_id);
-            // Mark only these items as deleted
+        if (allToDelele.length > 0) {
+            const ids = allToDelele.map(o => o.bb_id);
             await repo.update(ids, { status: 'deleted' });
-            console.log(`SUCCESS: ${totalQty} units have been removed. Your reports should now match.`);
+            console.log(`SUCCESS: ${totalQty} units have been removed.`);
         } else {
             console.log("No orphaned items found in this specific date range.");
         }
