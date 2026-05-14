@@ -19,7 +19,7 @@ async function undoCleanup() {
             .where('status = :status', { status: 'deleted' })
             .execute();
 
-        console.log(`SUCCESS: ${result.affected} items have been RESTORED to your inventory.`);
+        console.log(`SUCCESS: ${result.affected} items have been RESTORED.`);
         
         console.log("\n--- RESTORE COMPLETE ---");
         console.log("Please restart your server. Everything is back to normal.");

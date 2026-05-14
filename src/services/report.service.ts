@@ -524,14 +524,12 @@ export class ReportService {
         
         // Unified Date Logic: Use PO date if available, otherwise fallback to creation date.
         // Include full end day by adding 1 day to end date.
-        if (filters.startDate) {
+        if (filters.startDate && filters.endDate) {
           const start = filters.startDate.split('T')[0];
-          summaryQB.andWhere('COALESCE(po_sum.order_date, bb.created_at) >= :start', { start });
-        }
-        if (filters.endDate) {
           const end = filters.endDate.split('T')[0];
           const endPlusOne = new Date(new Date(end).getTime() + 86400000).toISOString().split('T')[0];
-          summaryQB.andWhere('COALESCE(po_sum.order_date, bb.created_at) < :endPlusOne', { endPlusOne });
+          
+          summaryQB.andWhere('COALESCE(po_sum.order_date, bb.created_at) >= :start AND COALESCE(po_sum.order_date, bb.created_at) < :endPlusOne', { start, endPlusOne });
         }
 
         if (filters.design) summaryQB.andWhere('bb.design_no ILIKE :design', { design: `%${filters.design}%` });
