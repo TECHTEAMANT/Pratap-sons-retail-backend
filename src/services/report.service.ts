@@ -903,13 +903,35 @@ export class ReportService {
       }
     };
   }
-  async purchaseAnalysisReport(filters: { startDate: string, endDate: string, vendorId?: string, exportMode?: boolean | string }) {
-    const { startDate, endDate } = filters;
+   async purchaseAnalysisReport(filters: { startDate: string, endDate: string, vendorId?: string, floorId?: string, exportMode?: boolean | string }) {
+    const { startDate, endDate, floorId } = filters;
     const start = startDate.split('T')[0];
     const end = endDate.split('T')[0];
     const endPlusOne = new Date(new Date(end).getTime() + 86400000).toISOString().split('T')[0];
     const exportMode = filters.exportMode === true || filters.exportMode === 'true';
 
+    // 1. Calculate Summary Cards using SQL (Mathematical Parity with Inventory Report)
+    const summaryQB = AppDataSource.getRepository(BarcodeBatch).createQueryBuilder('bb')
+      .leftJoin(PurchaseOrder, 'po', 'po.id = bb.po_id')
+      .select([
+        'COUNT(DISTINCT po.id) as "poCount"',
+        'COALESCE(SUM(bb.total_quantity), 0) as "totalQuantity"',
+        'COALESCE(SUM(bb.total_quantity * bb.cost_actual), 0) as "totalCost"',
+        'COALESCE(SUM(bb.total_quantity * bb.mrp), 0) as "totalMRP"'
+      ])
+      .where('COALESCE(po.order_date, bb.created_at) >= :start AND COALESCE(po.order_date, bb.created_at) < :endPlusOne', { start, endPlusOne })
+      .andWhere('bb.status IN (:...statuses)', { statuses: ['active', 'Available', 'defective', 'Sold', 'Returned'] });
+
+    if (filters.vendorId && filters.vendorId !== 'null' && filters.vendorId !== '') {
+      summaryQB.andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
+    }
+    if (floorId) {
+      summaryQB.andWhere('bb.floor = :floorId', { floorId });
+    }
+
+    const summaryRaw = await summaryQB.getRawOne();
+
+    // 2. Fetch Detailed Records
     const selectFields = [
       'bb.barcode_alias_8digit as barcode',
       'bb.design_no as design_no',
@@ -927,69 +949,63 @@ export class ReportService {
       selectFields.push('bb.photos as photos');
     }
 
-    const qb = AppDataSource.getRepository(BarcodeBatch)
+    const detailQB = AppDataSource.getRepository(BarcodeBatch)
       .createQueryBuilder('bb')
       .leftJoin('bb.vendor', 'v')
       .leftJoin(PurchaseOrder, 'po', 'po.id = bb.po_id')
       .select(selectFields)
-      .where('COALESCE(po.order_date, bb.created_at) >= :start AND COALESCE(po.order_date, bb.created_at) < :endPlusOne', { start, endPlusOne });
+      .where('COALESCE(po.order_date, bb.created_at) >= :start AND COALESCE(po.order_date, bb.created_at) < :endPlusOne', { start, endPlusOne })
+      .andWhere('bb.status IN (:...statuses)', { statuses: ['active', 'Available', 'defective', 'Sold', 'Returned'] });
 
-    if (filters.vendorId && filters.vendorId !== 'null' && filters.vendorId !== 'undefined' && filters.vendorId !== '') {
-      qb.andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
+    if (filters.vendorId && filters.vendorId !== 'null' && filters.vendorId !== '') {
+      detailQB.andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
+    }
+    if (floorId) {
+      detailQB.andWhere('bb.floor = :floorId', { floorId });
     }
 
-    const items = await qb.getRawMany();
+    const items = await detailQB.getRawMany();
 
-    let totalCost = 0;
-    let totalMRP = 0;
-    let totalQuantity = 0;
-    let totalCostGross = 0;
-
-    const details = [];
-    for (const item of items) {
+    const details = items.map(item => {
       const quantity = parseFloat(item.quantity) || 0;
       const cost = parseFloat(item.cost) || 0;
       const mrp = parseFloat(item.mrp) || 0;
       const totalItemCost = cost * quantity;
       const totalItemMRP = mrp * quantity;
-      const totalItemCostGross = totalItemCost * 1.12;
-
-      totalCost += totalItemCost;
-      totalMRP += totalItemMRP;
-      totalQuantity += quantity;
-      totalCostGross += totalItemCostGross;
 
       if (exportMode) {
         let photos = item.photos;
         if (typeof photos === 'string' && photos.startsWith('{')) {
-          photos = photos.substring(1, photos.length - 1).split(',').map(s => s.trim().replace(/^"(.*)"$/, '$1'));
+          photos = photos.substring(1, photos.length - 1).split(',').map((s: string) => s.trim().replace(/^"(.*)"$/, '$1'));
         }
         if (!Array.isArray(photos)) photos = [];
         item.photos = photos;
       }
 
-      details.push({
+      return {
         ...item,
         quantity,
         cost,
         mrp,
         totalCost: Math.round(totalItemCost * 100) / 100,
-        totalCostGross: Math.round(totalItemCostGross * 100) / 100,
         totalMRP: Math.round(totalItemMRP * 100) / 100,
-        discount: Math.round((totalItemMRP - totalItemCost) * 100) / 100,
-        margin: Math.round((mrp > 0 ? ((mrp - cost) / mrp) * 100 : 0) * 100) / 100
-      });
-    }
+        margin: mrp > 0 ? ((mrp - cost) / mrp) * 100 : 0
+      };
+    });
+
+    const totalQuantity = parseFloat(summaryRaw.totalQuantity) || 0;
+    const totalCost = parseFloat(summaryRaw.totalCost) || 0;
+    const totalMRP = parseFloat(summaryRaw.totalMRP) || 0;
 
     return {
       summary: {
         totalCost: Math.round(totalCost * 100) / 100,
-        totalCostGross: Math.round(totalCostGross * 100) / 100,
         totalMRP: Math.round(totalMRP * 100) / 100,
         totalDiscount: Math.round((totalMRP - totalCost) * 100) / 100,
         avgMargin: totalMRP > 0 ? ((totalMRP - totalCost) / totalMRP) * 100 : 0,
         totalItems: totalQuantity,
-        itemsSold: totalQuantity
+        poCount: parseInt(summaryRaw.poCount) || 0,
+        itemsSold: totalQuantity // Compat for card naming
       },
       details
     };
