@@ -16,8 +16,9 @@ async function vendorOrphanAudit() {
 
         const repo = AppDataSource.getRepository(BarcodeBatch);
 
-        // This query finds items that appear in Inventory but have NO Purchase Order link
-        // grouped by Vendor so you can see exactly where the mistakes are.
+        // This query finds items that appear in Inventory but have:
+        // 1. NO Purchase Order link (po_id IS NULL)
+        // OR 2. A Purchase Order link but NO Invoice Number (invoice_number IS NULL)
         const orphansByVendor = await repo.createQueryBuilder('bb')
             .leftJoin(Vendor, 'v', 'v.id = bb.vendor_id')
             .leftJoin(PurchaseOrder, 'po', 'po.id = bb.po_id')
@@ -26,7 +27,7 @@ async function vendorOrphanAudit() {
                 'COUNT(*) as orphan_batches',
                 'SUM(bb.total_quantity) as orphan_units'
             ])
-            .where('bb.po_id IS NULL')
+            .where('(bb.po_id IS NULL OR po.invoice_number IS NULL OR po.invoice_number = \'\')')
             .andWhere('bb.created_at >= :start AND bb.created_at < :end', { start: startDate, end: endDate })
             .andWhere('bb.status != :status', { status: 'deleted' })
             .groupBy('v.name')
