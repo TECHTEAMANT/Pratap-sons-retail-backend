@@ -489,13 +489,19 @@ export class ReportService {
       } else {
         const phase1Start = Date.now();
         const summaryQB = AppDataSource.getRepository(BarcodeBatch).createQueryBuilder('bb');
-
-        // Only join if filters that need them are present
-        // Use LEFT JOIN to include items without POs (Opening Stock)
         summaryQB.leftJoin(PurchaseOrder, 'po_sum', 'po_sum.id = bb.po_id');
-        if (filters.productGroup) summaryQB.leftJoin('bb.product_group', 'pg_sum');
-        if (filters.size) summaryQB.leftJoin('bb.size', 'sz_sum');
-        if (filters.color) summaryQB.leftJoin('bb.color', 'cl_sum');
+        summaryQB.leftJoin('bb.productGroup', 'pg_sum');
+        summaryQB.leftJoin('bb.size_relation', 'sz_sum');
+        summaryQB.leftJoin('bb.color_relation', 'cl_sum');
+
+        // Unified Date Logic: Use PO date if available, otherwise fallback to creation date.
+        // This MUST be applied to the summary cards too.
+        if (filters.startDate && filters.endDate) {
+          const start = filters.startDate.split('T')[0];
+          const end = filters.endDate.split('T')[0];
+          const endPlusOne = new Date(new Date(end).getTime() + 86400000).toISOString().split('T')[0];
+          summaryQB.andWhere('COALESCE(po_sum.order_date, bb.created_at) >= :start AND COALESCE(po_sum.order_date, bb.created_at) < :endPlusOne', { start, endPlusOne });
+        }
 
         summaryQB.select([
             'COALESCE(SUM(bb.total_quantity), 0) as "totalItems"', // This is the total sum of units
@@ -517,7 +523,7 @@ export class ReportService {
             ), 0) as "estProfit"`
         ]);
 
-        summaryQB.where('bb.status IN (:...statuses)', { statuses: ['active', 'Available', 'defective', 'Sold', 'Returned'] });
+        summaryQB.andWhere('bb.status IN (:...statuses)', { statuses: ['active', 'Available', 'defective', 'Sold', 'Returned'] });
         
         if (filters.vendorId) summaryQB.andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
         if (filters.floorId) summaryQB.andWhere('bb.floor = :floorId', { floorId: filters.floorId });
