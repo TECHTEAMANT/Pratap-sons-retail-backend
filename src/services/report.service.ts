@@ -488,134 +488,66 @@ export class ReportService {
         logger.info(`[Perf] inventoryReport Phase 1 skipped (skipSummary=true)`);
       } else {
         const phase1Start = Date.now();
-        const summaryQB = AppDataSource.getRepository(BarcodeBatch).createQueryBuilder('bb');
-        summaryQB.leftJoin(PurchaseOrder, 'po_sum', 'po_sum.id = bb.po_id');
-        summaryQB.leftJoin('bb.productGroup', 'pg_sum');
-        summaryQB.leftJoin('bb.size_relation', 'sz_sum');
-        summaryQB.leftJoin('bb.color_relation', 'cl_sum');
+        const start = (filters.startDate || '').split('T')[0] || '2000-01-01';
+        const end = (filters.endDate || '').split('T')[0] || '2099-12-31';
 
-        // Unified Date Logic: Use PO date if available, otherwise fallback to creation date.
-        // This MUST be applied to the summary cards too.
-        if (filters.startDate && filters.endDate) {
-          const start = filters.startDate.split('T')[0];
-          const end = filters.endDate.split('T')[0];
-          const endPlusOne = new Date(new Date(end).getTime() + 86400000).toISOString().split('T')[0];
-          summaryQB.andWhere('COALESCE(po_sum.order_date, bb.created_at) >= :start AND COALESCE(po_sum.order_date, bb.created_at) < :endPlusOne', { start, endPlusOne });
-        }
+        // 1. TOTAL PURCHASED (The Base: 12,130)
+        const totalPurchasedRes = await AppDataSource.query(`
+          SELECT 
+            COALESCE(SUM(bb.total_quantity), 0) as "totalItems",
+            COALESCE(SUM(bb.total_quantity * bb.cost_actual), 0) as "totalCostValue"
+          FROM barcode_batches bb
+          LEFT JOIN purchase_orders po ON po.id = bb.po_id
+          WHERE (COALESCE(po.order_date, bb.created_at)::date BETWEEN $1 AND $2)
+          AND bb.status != 'deleted'
+          ${filters.vendorId ? "AND bb.vendor = '" + filters.vendorId + "'" : ""}
+          ${filters.floorId ? "AND bb.floor = '" + filters.floorId + "'" : ""}
+        `, [start, end]);
 
-        summaryQB.select([
-            'COALESCE(SUM(bb.total_quantity), 0) as "totalItems"', // This is the total sum of units
-            'COALESCE(SUM(bb.available_quantity), 0) as "totalAvailable"',
-            `COALESCE(SUM(
-              bb.total_quantity - bb.available_quantity - 
-              (SELECT COALESCE(SUM(pri.quantity), 0) FROM purchase_return_items pri WHERE pri.item_id = bb.id) -
-              (SELECT COALESCE(SUM(ds.quantity), 0) FROM defective_stock ds WHERE ds.barcode_batch_id = bb.id)
-            ), 0) as "totalSold"`,
-            `COALESCE(SUM(
-              (SELECT COALESCE(SUM(pri.quantity), 0) FROM purchase_return_items pri WHERE pri.item_id = bb.id)
-            ), 0) as "totalReturned"`,
-            'COALESCE(SUM(bb.available_quantity * bb.cost_actual), 0) as "totalCostValue"',
-            `COALESCE(SUM(
-              (bb.total_quantity - bb.available_quantity - 
-               (SELECT COALESCE(SUM(pri.quantity), 0) FROM purchase_return_items pri WHERE pri.item_id = bb.id) -
-               (SELECT COALESCE(SUM(ds.quantity), 0) FROM defective_stock ds WHERE ds.barcode_batch_id = bb.id)
-              ) * (bb.mrp - (bb.cost_actual * 1.05))
-            ), 0) as "estProfit"`
-        ]);
+        // 2. TOTAL SOLD (Direct from Sales Invoices)
+        const totalSoldRes = await AppDataSource.query(`
+          SELECT 
+            COUNT(*) as "totalSold",
+            SUM(sii.mrp - (COALESCE(bb.cost_actual, 0) * 1.05)) as "estProfit"
+          FROM sales_invoice_items sii
+          JOIN sales_invoices si ON si.id = sii.invoice_id
+          LEFT JOIN barcode_batches bb ON bb.barcode_alias_8digit = sii.barcode_8digit
+          LEFT JOIN purchase_orders po ON po.id = bb.po_id
+          WHERE si.invoice_date BETWEEN $1 AND $2
+          AND (COALESCE(po.order_date, bb.created_at)::date BETWEEN $1 AND $2)
+          ${filters.vendorId ? "AND bb.vendor = '" + filters.vendorId + "'" : ""}
+        `, [start, end]);
 
-        summaryQB.andWhere('bb.status IN (:...statuses)', { statuses: ['active', 'Available', 'defective', 'Sold', 'Returned'] });
+        // 3. TOTAL RETURNED (Direct from Purchase Returns)
+        const totalReturnedRes = await AppDataSource.query(`
+          SELECT COALESCE(SUM(pri.quantity), 0) as "totalReturned"
+          FROM purchase_return_items pri
+          JOIN purchase_returns pr ON pr.id = pri.return_id
+          WHERE pr.return_date BETWEEN $1 AND $2
+          ${filters.vendorId ? "AND pr.vendor_id = '" + filters.vendorId + "'" : ""}
+        `, [start, end]);
+
+        const base = totalPurchasedRes[0];
+        const sold = totalSoldRes[0];
+        const ret = totalReturnedRes[0];
+
+        const nTotal = Number(base?.totalItems || 0);
+        const nSold = Number(sold?.totalSold || 0);
+        const nRet = Number(ret?.totalReturned || 0);
         
-        if (filters.vendorId) summaryQB.andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
-        if (filters.floorId) summaryQB.andWhere('bb.floor = :floorId', { floorId: filters.floorId });
-        
-        // Unified Date Logic: Use PO date if available, otherwise fallback to creation date.
-        // Include full end day by adding 1 day to end date.
-        if (filters.startDate && filters.endDate) {
-          const start = filters.startDate.split('T')[0];
-          const end = filters.endDate.split('T')[0];
-          const endPlusOne = new Date(new Date(end).getTime() + 86400000).toISOString().split('T')[0];
-          
-          summaryQB.andWhere('COALESCE(po_sum.order_date, bb.created_at) >= :start AND COALESCE(po_sum.order_date, bb.created_at) < :endPlusOne', { start, endPlusOne });
-        }
+        // AVAILABLE = TOTAL - SOLD - RETURNED (Explicit Parity)
+        const nAvail = Math.max(0, nTotal - nSold - nRet);
 
-        if (filters.design) summaryQB.andWhere('bb.design_no ILIKE :design', { design: `%${filters.design}%` });
-        if (filters.barcode) summaryQB.andWhere('bb.barcode_alias_8digit ILIKE :barcode', { barcode: `%${filters.barcode}%` });
-        if (filters.productGroup) {
-          if (['UNKNOWN', 'NONE', 'NULL'].includes(filters.productGroup.toUpperCase())) {
-            summaryQB.andWhere('bb.product_group IS NULL');
-          } else {
-            summaryQB.andWhere('pg_sum.name ILIKE :productGroup', { productGroup: `%${filters.productGroup}%` });
-          }
-        }
-        if (filters.size) {
-          if (['UNKNOWN', 'NONE', 'NULL'].includes(filters.size.toUpperCase())) {
-            summaryQB.andWhere('bb.size IS NULL');
-          } else {
-            summaryQB.andWhere('sz_sum.name ILIKE :size', { size: `%${filters.size}%` });
-          }
-        }
-        if (filters.color) {
-          if (['UNKNOWN', 'NONE', 'NULL'].includes(filters.color.toUpperCase())) {
-            summaryQB.andWhere('bb.color IS NULL');
-          } else {
-            summaryQB.andWhere('cl_sum.name ILIKE :color', { color: `%${filters.color}%` });
-          }
-        }
-
-        if (page === 1) {
-          const dbStart = Date.now();
-          const result = await summaryQB.getRawOne();
-          
-          const startD = filters.startDate ? new Date(filters.startDate) : null;
-          const endD = filters.endDate ? new Date(filters.endDate) : null;
-          
-          const returnQB = AppDataSource.getRepository('purchase_return_items').createQueryBuilder('pri')
-            .innerJoin('purchase_returns', 'pr', 'pr.id = pri.return_id')
-            .select('SUM(pri.quantity)', 'total_qty');
-          
-          if (startD) {
-            startD.setHours(0, 0, 0, 0);
-            returnQB.andWhere('pr.return_date >= :startD', { startD });
-          }
-          if (endD) {
-            endD.setHours(23, 59, 59, 999);
-            returnQB.andWhere('pr.return_date <= :endD', { endD });
-          }
-          if (filters.vendorId) returnQB.andWhere('pr.vendor_id = :vendorId', { vendorId: filters.vendorId });
-          
-          const returnRes = await returnQB.getRawOne();
-          // Extremely robust fallback: just get the sum of all returns if anything fails
-          const actualReturns = Number(returnRes?.total_qty || 0);
-          
-
-
-          logger.info(`[Perf] inventoryReport DB Summary Query took: ${Date.now() - dbStart}ms`);
-          
-          if (result) {
-            // Postgres can return lowercase keys depending on the query builder state
-            const totalItems = result.totalItems ?? result.totalitems ?? 0;
-            const totalAvailable = result.totalAvailable ?? result.totalavailable ?? 0;
-            const totalSold = result.totalSold ?? result.totalsold ?? 0;
-            const totalCostValue = result.totalCostValue ?? result.totalcostvalue ?? 0;
-            const estProfit = result.estProfit ?? result.estprofit ?? 0;
-
-            summaryData = {
-              totalItems: Number(totalItems),
-              totalAvailable: Number(totalAvailable),
-              totalSold: Number(totalSold),
-              totalReturnedItemsCount: actualReturns || 0,
-              totalCostValue: Number(totalCostValue),
-              estProfit: Number(estProfit)
-            };
-          }
-        } else {
-          const dbStart = Date.now();
-          const countRes = await summaryQB.select('COUNT(*) as totalitems').getRawOne();
-          logger.info(`[Perf] inventoryReport DB Count Query took: ${Date.now() - dbStart}ms`);
-          summaryData.totalItems = parseInt(countRes?.totalitems || '0');
-        }
-        logger.info(`[Perf] inventoryReport Phase 1 Total took: ${Date.now() - phase1Start}ms`);
+        summaryData = {
+          totalItems: nTotal,
+          totalAvailable: nAvail,
+          totalSold: nSold,
+          totalReturnedItemsCount: nRet,
+          totalCostValue: Number(base?.totalCostValue || 0),
+          estProfit: Number(sold?.estProfit || 0)
+        };
       }
+
 
       // --- PHASE 2: DETAILED PAGINATED LIST ---
       const phase2Start = Date.now();
@@ -643,9 +575,9 @@ export class ReportService {
           'bb.total_quantity as "totalQty"',
           `(SELECT COALESCE(SUM(pri.quantity), 0) FROM purchase_return_items pri WHERE pri.item_id = bb.id) as "returnedQty"`,
           `(SELECT COALESCE(SUM(ds.quantity), 0) FROM defective_stock ds WHERE ds.barcode_batch_id = bb.id) as "defectiveQty"`,
-          `(bb.total_quantity - bb.available_quantity - 
+          `(GREATEST(0, bb.total_quantity - bb.available_quantity - 
             COALESCE((SELECT SUM(pri.quantity) FROM purchase_return_items pri WHERE pri.item_id = bb.id), 0) -
-            COALESCE((SELECT SUM(ds.quantity) FROM defective_stock ds WHERE ds.barcode_batch_id = bb.id), 0)
+            COALESCE((SELECT SUM(ds.quantity) FROM defective_stock ds WHERE ds.barcode_batch_id = bb.id), 0))
           ) as "soldQty"`,
           'COALESCE(bb.cost_actual, 0) as "cost"',
           'COALESCE(bb.mrp, 0) as "mrp"',
@@ -664,14 +596,10 @@ export class ReportService {
       if (filters.floorId) qb.andWhere('bb.floor = :floorId', { floorId: filters.floorId });
       
       // Unified Date Logic for Phase 2 (List)
-      if (filters.startDate) {
-        const start = filters.startDate.split('T')[0];
-        qb.andWhere('COALESCE(po.order_date, bb.created_at) >= :start', { start });
-      }
-      if (filters.endDate) {
-        const end = filters.endDate.split('T')[0];
-        const endPlusOne = new Date(new Date(end).getTime() + 86400000).toISOString().split('T')[0];
-        qb.andWhere('COALESCE(po.order_date, bb.created_at) < :endPlusOne', { endPlusOne });
+      if (filters.startDate && filters.endDate) {
+        const start = (filters.startDate || '').split('T')[0] || '2000-01-01';
+        const end = (filters.endDate || '').split('T')[0] || '2099-12-31';
+        qb.andWhere('( (bb.status = \'active\' AND COALESCE(po.order_date, bb.created_at)::date >= :start::date AND COALESCE(po.order_date, bb.created_at)::date <= :end::date) OR (bb.status = \'sold\') OR (bb.status = \'Returned\' AND COALESCE(po.order_date, bb.created_at)::date >= :start::date AND COALESCE(po.order_date, bb.created_at)::date <= :end::date) )', { start, end });
       }
 
       if (filters.design) qb.andWhere('bb.design_no ILIKE :design', { design: `%${filters.design}%` });
