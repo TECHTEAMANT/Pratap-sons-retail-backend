@@ -594,25 +594,25 @@ export class ReportService {
       qb.innerJoin(PurchaseOrder, 'po', 'po.id = bb.po_id AND po.vendor = bb.vendor')
         .andWhere('po.status = :poStatus', { poStatus: 'Completed' })
         .select([
+          'bb.id as "id"',
+          'bb.barcode_alias_8digit as "itemCode"',
           'bb.barcode_alias_8digit as "barcode"',
           'bb.design_no as "design"',
-          'bb.hsn_code as "hsn_code"',
-          'pg.name as "productGroup"',
-          'sz.name as "size"',
-          'cl.name as "color"',
+          'bb.color as "color"',
+          'bb.size as "size"',
+          'bb.hsn_code as "hsn"',
           'v.name as "vendorName"',
-          'COALESCE(bb.available_quantity, 0) as "availableQty"',
-          'bb.total_quantity as "totalQty"',
+          'pg.name as "productGroup"',
+          '(SELECT pi.quantity FROM purchase_items pi WHERE pi.po_id = bb.po_id AND pi.design_no = bb.design_no AND pi.size = bb.size AND (pi.color = bb.color OR (pi.color IS NULL AND bb.color IS NULL)) LIMIT 1) as "totalQty"',
+          '((SELECT pi.quantity FROM purchase_items pi WHERE pi.po_id = bb.po_id AND pi.design_no = bb.design_no AND pi.size = bb.size AND (pi.color = bb.color OR (pi.color IS NULL AND bb.color IS NULL)) LIMIT 1) - (SELECT COALESCE(SUM(sii.quantity), 0) FROM sales_invoice_items sii WHERE sii.barcode_8digit = bb.barcode_alias_8digit) - (SELECT COALESCE(SUM(pri.quantity), 0) FROM purchase_return_items pri WHERE pri.barcode_id = bb.barcode_alias_8digit)) as "availableQty"',
           `(SELECT COALESCE(SUM(sii.quantity), 0) FROM sales_invoice_items sii JOIN sales_invoices si ON si.id = sii.invoice_id WHERE sii.barcode_8digit = bb.barcode_alias_8digit AND si.invoice_date BETWEEN '${filters.startDate?.split('T')[0] || '2000-01-01'}' AND '${filters.endDate?.split('T')[0] || '2099-12-31'}') as "soldQty"`,
           `(SELECT COALESCE(SUM(pri.quantity), 0) FROM purchase_return_items pri JOIN purchase_returns pr ON pr.id = pri.return_id WHERE pri.barcode_id = bb.barcode_alias_8digit AND pr.return_date BETWEEN '${filters.startDate?.split('T')[0] || '2000-01-01'}' AND '${filters.endDate?.split('T')[0] || '2099-12-31'}') as "returnedQty"`,
-          `(SELECT COALESCE(SUM(ds.quantity), 0) FROM defective_stock ds WHERE CAST(ds.barcode_batch_id AS text) = CAST(bb.id AS text)) as "defectiveQty"`,
           `(SELECT string_agg(DISTINCT si.invoice_number, ', ') FROM sales_invoice_items sii JOIN sales_invoices si ON si.id = sii.invoice_id WHERE sii.barcode_8digit = bb.barcode_alias_8digit AND si.invoice_date BETWEEN '${filters.startDate?.split('T')[0] || '2000-01-01'}' AND '${filters.endDate?.split('T')[0] || '2099-12-31'}') as "salesInvoices"`,
           'COALESCE(bb.cost_actual, 0) as "cost"',
           'COALESCE(bb.mrp, 0) as "mrp"',
           'COALESCE(po.invoice_number, CASE WHEN bb.po_id IS NULL THEN \'Opening Stock\' ELSE \'N/A\' END) as "poInvoiceNumber"',
           'COALESCE(po.order_date, bb.created_at) as "poDate"',
           'CASE WHEN bb.gst_logic = \'AUTO_5_18\' THEN (CASE WHEN bb.mrp <= 1000 THEN 5 ELSE 12 END) ELSE 12 END as "gstRate"',
-          'COALESCE(bb.available_quantity * bb.cost_actual, 0) as "inventoryValue"',
           includePhotos ? 'COALESCE(bb.photos[1], pm.photos[1]) as "photo"' : 'NULL as "photo"'
         ]);
 
