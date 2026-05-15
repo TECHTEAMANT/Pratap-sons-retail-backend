@@ -491,14 +491,14 @@ export class ReportService {
         const start = (filters.startDate || '').split('T')[0] || '2000-01-01';
         const end = (filters.endDate || '').split('T')[0] || '2099-12-31';
 
-        // 1. TOTAL PURCHASED (The Base: 12,130)
+        // 1. TOTAL PURCHASED (Ground Truth from Purchase Orders)
         const totalPurchasedRes = await AppDataSource.query(`
           SELECT 
             COALESCE(SUM(bb.total_quantity), 0) as "totalItems",
             COALESCE(SUM(bb.total_quantity * bb.cost_actual), 0) as "totalCostValue"
           FROM barcode_batches bb
-          LEFT JOIN purchase_orders po ON po.id = bb.po_id
-          WHERE (COALESCE(po.order_date, bb.created_at)::date BETWEEN $1 AND $2)
+          JOIN purchase_orders po ON po.id = bb.po_id
+          WHERE (po.order_date BETWEEN $1 AND $2)
           AND bb.status != 'deleted'
           ${filters.vendorId ? "AND bb.vendor = '" + filters.vendorId + "'" : ""}
           ${filters.floorId ? "AND bb.floor = '" + filters.floorId + "'" : ""}
@@ -506,37 +506,62 @@ export class ReportService {
 
         // 2. TOTAL SOLD (Direct from Sales Invoices)
         const totalSoldRes = await AppDataSource.query(`
-          SELECT 
-            COUNT(*) as "totalSold",
-            SUM(sii.mrp - (COALESCE(bb.cost_actual, 0) * 1.05)) as "estProfit"
+          SELECT COUNT(*) as "totalSold"
           FROM sales_invoice_items sii
-          JOIN sales_invoices si ON si.id = sii.invoice_id
-          LEFT JOIN barcode_batches bb ON bb.barcode_alias_8digit = sii.barcode_8digit
-          LEFT JOIN purchase_orders po ON po.id = bb.po_id
-          WHERE si.invoice_date BETWEEN $1 AND $2
-          AND (COALESCE(po.order_date, bb.created_at)::date BETWEEN $1 AND $2)
+          JOIN barcode_batches bb ON bb.barcode_alias_8digit = sii.barcode_8digit
+          JOIN purchase_orders po ON po.id = bb.po_id
+          WHERE (po.order_date BETWEEN $1 AND $2)
+          AND bb.status != 'deleted'
           ${filters.vendorId ? "AND bb.vendor = '" + filters.vendorId + "'" : ""}
         `, [start, end]);
 
-        // 3. TOTAL RETURNED (Direct from Purchase Returns)
+        // 3. TOTAL PURCHASE RETURNED (Direct from Purchase Returns)
         const totalReturnedRes = await AppDataSource.query(`
           SELECT COALESCE(SUM(pri.quantity), 0) as "totalReturned"
           FROM purchase_return_items pri
-          JOIN purchase_returns pr ON pr.id = pri.return_id
-          WHERE pr.return_date BETWEEN $1 AND $2
-          ${filters.vendorId ? "AND pr.vendor_id = '" + filters.vendorId + "'" : ""}
+          JOIN barcode_batches bb ON bb.id = pri.item_id
+          JOIN purchase_orders po ON po.id = bb.po_id
+          WHERE (po.order_date BETWEEN $1 AND $2)
+          AND bb.status != 'deleted'
+          ${filters.vendorId ? "AND bb.vendor = '" + filters.vendorId + "'" : ""}
+        `, [start, end]);
+
+        // 4. TOTAL SALES RETURNED (Items that came back to stock)
+        const totalSalesReturnedRes = await AppDataSource.query(`
+          SELECT COUNT(*) as "totalSalesReturned"
+          FROM sales_return_items sri
+          JOIN barcode_batches bb ON bb.barcode_alias_8digit = sri.barcode_8digit
+          JOIN purchase_orders po ON po.id = bb.po_id
+          WHERE (po.order_date BETWEEN $1 AND $2)
+          AND bb.status != 'deleted'
+          ${filters.vendorId ? "AND bb.vendor = '" + filters.vendorId + "'" : ""}
+        `, [start, end]);
+
+        // 5. PROFIT CALCULATION (Based on Sales Invoices in the window)
+        const profitRes = await AppDataSource.query(`
+          SELECT SUM(sii.mrp - (COALESCE(bb.cost_actual, 0) * 1.05)) as "estProfit"
+          FROM sales_invoice_items sii
+          JOIN sales_invoices si ON si.id = sii.invoice_id
+          JOIN barcode_batches bb ON bb.barcode_alias_8digit = sii.barcode_8digit
+          JOIN purchase_orders po ON po.id = bb.po_id
+          WHERE (po.order_date BETWEEN $1 AND $2)
+          AND si.invoice_date BETWEEN $1 AND $2
+          ${filters.vendorId ? "AND bb.vendor = '" + filters.vendorId + "'" : ""}
         `, [start, end]);
 
         const base = totalPurchasedRes[0];
         const sold = totalSoldRes[0];
         const ret = totalReturnedRes[0];
+        const sRet = totalSalesReturnedRes[0];
+        const prof = profitRes[0];
 
         const nTotal = Number(base?.totalItems || 0);
         const nSold = Number(sold?.totalSold || 0);
         const nRet = Number(ret?.totalReturned || 0);
+        const nSRet = Number(sRet?.totalSalesReturned || 0);
         
-        // AVAILABLE = TOTAL - SOLD - RETURNED (Explicit Parity)
-        const nAvail = Math.max(0, nTotal - nSold - nRet);
+        // AVAILABLE = PURCHASED - SOLD - RETURNED + SALES_RETURNED
+        const nAvail = Math.max(0, nTotal - nSold - nRet + nSRet);
 
         summaryData = {
           totalItems: nTotal,
@@ -544,7 +569,7 @@ export class ReportService {
           totalSold: nSold,
           totalReturnedItemsCount: nRet,
           totalCostValue: Number(base?.totalCostValue || 0),
-          estProfit: Number(sold?.estProfit || 0)
+          estProfit: Number(prof?.estProfit || 0)
         };
       }
 
@@ -562,7 +587,7 @@ export class ReportService {
         qb.leftJoin(ProductMaster, 'pm', 'pm.design_no = bb.design_no AND pm.vendor_id = bb.vendor_id AND pm.product_group_id = bb.product_group_id AND (pm.color_id = bb.color_id OR (pm.color_id IS NULL AND bb.color_id IS NULL))');
       }
 
-      qb.leftJoin(PurchaseOrder, 'po', 'po.id = bb.po_id')
+      qb.innerJoin(PurchaseOrder, 'po', 'po.id = bb.po_id')
         .select([
           'bb.barcode_alias_8digit as "barcode"',
           'bb.design_no as "design"',
@@ -595,11 +620,11 @@ export class ReportService {
       if (filters.vendorId) qb.andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
       if (filters.floorId) qb.andWhere('bb.floor = :floorId', { floorId: filters.floorId });
       
-      // Unified Date Logic for Phase 2 (List): ONLY items that arrived in this range
+      // Unified Date Logic for Phase 2 (List): ONLY items that arrived in this range (Matching Purchase Analysis)
       if (filters.startDate && filters.endDate) {
         const start = (filters.startDate || '').split('T')[0] || '2000-01-01';
         const end = (filters.endDate || '').split('T')[0] || '2099-12-31';
-        qb.andWhere('COALESCE(po.order_date, bb.created_at)::date BETWEEN :start AND :end', { start, end });
+        qb.andWhere('po.order_date BETWEEN :start AND :end', { start, end });
       }
 
       if (filters.design) qb.andWhere('bb.design_no ILIKE :design', { design: `%${filters.design}%` });
