@@ -595,11 +595,11 @@ export class ReportService {
       if (filters.vendorId) qb.andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
       if (filters.floorId) qb.andWhere('bb.floor = :floorId', { floorId: filters.floorId });
       
-      // Unified Date Logic for Phase 2 (List)
+      // Unified Date Logic for Phase 2 (List): ONLY items that arrived in this range
       if (filters.startDate && filters.endDate) {
         const start = (filters.startDate || '').split('T')[0] || '2000-01-01';
         const end = (filters.endDate || '').split('T')[0] || '2099-12-31';
-        qb.andWhere('( (bb.status = \'active\' AND COALESCE(po.order_date, bb.created_at)::date >= :start::date AND COALESCE(po.order_date, bb.created_at)::date <= :end::date) OR (bb.status = \'sold\') OR (bb.status = \'Returned\' AND COALESCE(po.order_date, bb.created_at)::date >= :start::date AND COALESCE(po.order_date, bb.created_at)::date <= :end::date) )', { start, end });
+        qb.andWhere('COALESCE(po.order_date, bb.created_at)::date BETWEEN :start AND :end', { start, end });
       }
 
       if (filters.design) qb.andWhere('bb.design_no ILIKE :design', { design: `%${filters.design}%` });
