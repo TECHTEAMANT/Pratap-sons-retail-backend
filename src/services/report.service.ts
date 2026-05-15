@@ -513,6 +513,7 @@ export class ReportService {
           WHERE (po.order_date BETWEEN $1 AND $2)
           AND bb.status != 'deleted'
           ${filters.vendorId ? "AND bb.vendor = '" + filters.vendorId + "'" : ""}
+          ${filters.floorId ? "AND bb.floor = '" + filters.floorId + "'" : ""}
         `, [start, end]);
 
         // 3. TOTAL PURCHASE RETURNED (Direct from Purchase Returns)
@@ -524,6 +525,7 @@ export class ReportService {
           WHERE (po.order_date BETWEEN $1 AND $2)
           AND bb.status != 'deleted'
           ${filters.vendorId ? "AND bb.vendor = '" + filters.vendorId + "'" : ""}
+          ${filters.floorId ? "AND bb.floor = '" + filters.floorId + "'" : ""}
         `, [start, end]);
 
         // 4. TOTAL SALES RETURNED (Items that came back to stock)
@@ -535,6 +537,7 @@ export class ReportService {
           WHERE (po.order_date BETWEEN $1 AND $2)
           AND bb.status != 'deleted'
           ${filters.vendorId ? "AND bb.vendor = '" + filters.vendorId + "'" : ""}
+          ${filters.floorId ? "AND bb.floor = '" + filters.floorId + "'" : ""}
         `, [start, end]);
 
         // 5. PROFIT CALCULATION (Based on Sales Invoices in the window)
@@ -547,6 +550,7 @@ export class ReportService {
           WHERE (po.order_date BETWEEN $1 AND $2)
           AND si.invoice_date BETWEEN $1 AND $2
           ${filters.vendorId ? "AND bb.vendor = '" + filters.vendorId + "'" : ""}
+          ${filters.floorId ? "AND bb.floor = '" + filters.floorId + "'" : ""}
         `, [start, end]);
 
         const base = totalPurchasedRes[0];
