@@ -736,7 +736,7 @@ export class ReportService {
 
       // Pull actual returns from PurchaseReturns table for these POs
       const returnsRes = await AppDataSource.query(`
-        SELECT COUNT(DISTINCT ri.barcode_id) as count
+        SELECT COALESCE(SUM(ri.quantity), 0) as count
         FROM purchase_return_items ri
         INNER JOIN purchase_returns r ON r.id = ri.return_id
         INNER JOIN purchase_orders po ON po.id = r.original_po_id
@@ -749,7 +749,7 @@ export class ReportService {
 
       // Pull actual sales for these barcodes
       const salesRes = await AppDataSource.query(`
-        SELECT COUNT(DISTINCT si.barcode_8digit) as count
+        SELECT COALESCE(SUM(si.quantity), 0) as count
         FROM sales_invoice_items si
         INNER JOIN barcode_batches bb ON bb.barcode_alias_8digit = si.barcode_8digit
         INNER JOIN purchase_orders po ON po.id = bb.po_id
