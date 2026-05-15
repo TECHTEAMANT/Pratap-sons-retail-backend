@@ -603,18 +603,57 @@ export class ReportService {
           'bb.hsn_code as "hsn"',
           'v.name as "vendorName"',
           'pg.name as "productGroup"',
-          '(SELECT pi.quantity FROM purchase_items pi WHERE pi.po_id = bb.po_id AND pi.design_no = bb.design_no AND pi.size = bb.size AND (pi.color = bb.color OR (pi.color IS NULL AND bb.color IS NULL)) LIMIT 1) as "totalQty"',
-          '((SELECT pi.quantity FROM purchase_items pi WHERE pi.po_id = bb.po_id AND pi.design_no = bb.design_no AND pi.size = bb.size AND (pi.color = bb.color OR (pi.color IS NULL AND bb.color IS NULL)) LIMIT 1) - (SELECT COALESCE(SUM(sii.quantity), 0) FROM sales_invoice_items sii WHERE sii.barcode_8digit = bb.barcode_alias_8digit) - (SELECT COALESCE(SUM(pri.quantity), 0) FROM purchase_return_items pri WHERE pri.barcode_id = bb.barcode_alias_8digit)) as "availableQty"',
-          `(SELECT COALESCE(SUM(sii.quantity), 0) FROM sales_invoice_items sii JOIN sales_invoices si ON si.id = sii.invoice_id WHERE sii.barcode_8digit = bb.barcode_alias_8digit AND si.invoice_date BETWEEN '${filters.startDate?.split('T')[0] || '2000-01-01'}' AND '${filters.endDate?.split('T')[0] || '2099-12-31'}') as "soldQty"`,
-          `(SELECT COALESCE(SUM(pri.quantity), 0) FROM purchase_return_items pri JOIN purchase_returns pr ON pr.id = pri.return_id WHERE pri.barcode_id = bb.barcode_alias_8digit AND pr.return_date BETWEEN '${filters.startDate?.split('T')[0] || '2000-01-01'}' AND '${filters.endDate?.split('T')[0] || '2099-12-31'}') as "returnedQty"`,
-          `(SELECT string_agg(DISTINCT si.invoice_number, ', ') FROM sales_invoice_items sii JOIN sales_invoices si ON si.id = sii.invoice_id WHERE sii.barcode_8digit = bb.barcode_alias_8digit AND si.invoice_date BETWEEN '${filters.startDate?.split('T')[0] || '2000-01-01'}' AND '${filters.endDate?.split('T')[0] || '2099-12-31'}') as "salesInvoices"`,
+          'COALESCE(pi_agg.total_qty, 0) as "totalQty"',
+          'COALESCE(pi_agg.total_qty, 0) - COALESCE(si_agg.sold_qty, 0) - COALESCE(ret_agg.ret_qty, 0) as "availableQty"',
+          'COALESCE(si_period.sold_qty, 0) as "soldQty"',
+          'COALESCE(ret_period.ret_qty, 0) as "returnedQty"',
+          'COALESCE(si_period.invoices, \'\') as "salesInvoices"',
           'COALESCE(bb.cost_actual, 0) as "cost"',
           'COALESCE(bb.mrp, 0) as "mrp"',
           'COALESCE(po.invoice_number, CASE WHEN bb.po_id IS NULL THEN \'Opening Stock\' ELSE \'N/A\' END) as "poInvoiceNumber"',
           'COALESCE(po.order_date, bb.created_at) as "poDate"',
           'CASE WHEN bb.gst_logic = \'AUTO_5_18\' THEN (CASE WHEN bb.mrp <= 1000 THEN 5 ELSE 12 END) ELSE 12 END as "gstRate"',
           includePhotos ? 'COALESCE(bb.photos[1], pm.photos[1]) as "photo"' : 'NULL as "photo"'
-        ]);
+      ]);
+
+      // Join Purchase Items Aggregated
+      qb.leftJoin(sub => {
+          return sub.select('po_id, design_no, size, color, SUM(quantity) as total_qty')
+            .from('purchase_items', 'pi')
+            .groupBy('po_id, design_no, size, color');
+      }, 'pi_agg', 'pi_agg.po_id = bb.po_id AND pi_agg.design_no = bb.design_no AND pi_agg.size = bb.size AND (pi_agg.color = bb.color OR (pi_agg.color IS NULL AND bb.color IS NULL))');
+
+      // Join Sales Aggregated (Lifetime for availability)
+      qb.leftJoin(sub => {
+          return sub.select('barcode_8digit, SUM(quantity) as sold_qty')
+            .from('sales_invoice_items', 'si')
+            .groupBy('barcode_8digit');
+      }, 'si_agg', 'si_agg.barcode_8digit = bb.barcode_alias_8digit');
+
+      // Join Returns Aggregated (Lifetime for availability)
+      qb.leftJoin(sub => {
+          return sub.select('barcode_id, SUM(quantity) as ret_qty')
+            .from('purchase_return_items', 'pri')
+            .groupBy('barcode_id');
+      }, 'ret_agg', 'ret_agg.barcode_id = bb.barcode_alias_8digit');
+
+      // Join Sales Period-Specific (For report columns)
+      qb.leftJoin(sub => {
+          return sub.select('sii.barcode_8digit, SUM(sii.quantity) as sold_qty, string_agg(DISTINCT si.invoice_number, \', \') as invoices')
+            .from('sales_invoice_items', 'sii')
+            .innerJoin('sales_invoices', 'si', 'si.id = sii.invoice_id')
+            .where(`si.invoice_date BETWEEN '${filters.startDate?.split('T')[0] || '2000-01-01'}' AND '${filters.endDate?.split('T')[0] || '2099-12-31'}'`)
+            .groupBy('sii.barcode_8digit');
+      }, 'si_period', 'si_period.barcode_8digit = bb.barcode_alias_8digit');
+
+      // Join Returns Period-Specific (For report columns)
+      qb.leftJoin(sub => {
+          return sub.select('pri.barcode_id, SUM(pri.quantity) as ret_qty')
+            .from('purchase_return_items', 'pri')
+            .innerJoin('purchase_returns', 'pr', 'pr.id = pri.return_id')
+            .where(`pr.return_date BETWEEN '${filters.startDate?.split('T')[0] || '2000-01-01'}' AND '${filters.endDate?.split('T')[0] || '2099-12-31'}'`)
+            .groupBy('pri.barcode_id');
+      }, 'ret_period', 'ret_period.barcode_id = bb.barcode_alias_8digit');
 
       qb.where('bb.status IN (:...statuses)', { statuses: ['active', 'Available', 'defective', 'Sold', 'Returned'] });
       // Inner join handles PO existence check
