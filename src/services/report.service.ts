@@ -603,12 +603,10 @@ export class ReportService {
           'v.name as "vendorName"',
           'COALESCE(bb.available_quantity, 0) as "availableQty"',
           'bb.total_quantity as "totalQty"',
-          `(SELECT COALESCE(SUM(pri.quantity), 0) FROM purchase_return_items pri WHERE pri.barcode_id = bb.barcode_alias_8digit) as "returnedQty"`,
+          `(SELECT COALESCE(SUM(sii.quantity), 0) FROM sales_invoice_items sii JOIN sales_invoices si ON si.id = sii.invoice_id WHERE sii.barcode_8digit = bb.barcode_alias_8digit AND si.invoice_date BETWEEN '${filters.startDate?.split('T')[0] || '2000-01-01'}' AND '${filters.endDate?.split('T')[0] || '2099-12-31'}') as "soldQty"`,
+          `(SELECT COALESCE(SUM(pri.quantity), 0) FROM purchase_return_items pri JOIN purchase_returns pr ON pr.id = pri.return_id WHERE pri.barcode_id = bb.barcode_alias_8digit AND pr.return_date BETWEEN '${filters.startDate?.split('T')[0] || '2000-01-01'}' AND '${filters.endDate?.split('T')[0] || '2099-12-31'}') as "returnedQty"`,
           `(SELECT COALESCE(SUM(ds.quantity), 0) FROM defective_stock ds WHERE CAST(ds.barcode_batch_id AS text) = CAST(bb.id AS text)) as "defectiveQty"`,
-          `(GREATEST(0, bb.total_quantity - bb.available_quantity - 
-            COALESCE((SELECT SUM(pri.quantity) FROM purchase_return_items pri WHERE pri.barcode_id = bb.barcode_alias_8digit), 0) -
-            COALESCE((SELECT SUM(ds.quantity) FROM defective_stock ds WHERE CAST(ds.barcode_batch_id AS text) = CAST(bb.id AS text)), 0))
-          ) as "soldQty"`,
+          `(SELECT string_agg(DISTINCT si.invoice_number, ', ') FROM sales_invoice_items sii JOIN sales_invoices si ON si.id = sii.invoice_id WHERE sii.barcode_8digit = bb.barcode_alias_8digit AND si.invoice_date BETWEEN '${filters.startDate?.split('T')[0] || '2000-01-01'}' AND '${filters.endDate?.split('T')[0] || '2099-12-31'}') as "salesInvoices"`,
           'COALESCE(bb.cost_actual, 0) as "cost"',
           'COALESCE(bb.mrp, 0) as "mrp"',
           'COALESCE(po.invoice_number, CASE WHEN bb.po_id IS NULL THEN \'Opening Stock\' ELSE \'N/A\' END) as "poInvoiceNumber"',
@@ -631,7 +629,15 @@ export class ReportService {
       if (filters.startDate && filters.endDate) {
         const start = (filters.startDate || '').split('T')[0] || '2000-01-01';
         const end = (filters.endDate || '').split('T')[0] || '2099-12-31';
-        qb.andWhere('po.order_date BETWEEN :start AND :end', { start, end });
+        qb.andWhere(`(
+          po.order_date BETWEEN :start AND :end 
+          OR EXISTS (
+            SELECT 1 FROM sales_invoice_items sii 
+            JOIN sales_invoices si ON si.id = sii.invoice_id 
+            WHERE sii.barcode_8digit = bb.barcode_alias_8digit 
+            AND si.invoice_date BETWEEN :start AND :end
+          )
+        )`, { start, end });
       }
 
       if (filters.design) qb.andWhere('bb.design_no ILIKE :design', { design: `%${filters.design}%` });
@@ -706,7 +712,8 @@ export class ReportService {
           landedCost,
           inventoryValue: Number(r.inventoryValue || 0),
           potentialProfit: availableQty * actualProfitPerUnit,
-          soldProfit: soldQty * actualProfitPerUnit
+          soldProfit: soldQty * actualProfitPerUnit,
+          salesInvoices: r.salesInvoices || ''
         };
       });
       // --- PHASE 3: CALCULATE TOTAL SUMMARY (Un-paginated for entire dataset) ---
@@ -742,6 +749,7 @@ export class ReportService {
         INNER JOIN purchase_orders po ON po.id = r.original_po_id
         INNER JOIN barcode_batches bb ON bb.barcode_alias_8digit = ri.barcode_id
         WHERE po.status = 'Completed'
+        AND r.return_date BETWEEN '${filters.startDate?.split('T')[0] || '2000-01-01'}' AND '${filters.endDate?.split('T')[0] || '2099-12-31'}'
         AND CAST(bb.vendor AS uuid) = CAST(po.vendor AS uuid)
         ${filters.vendorId ? 'AND po.vendor = $1::uuid' : ''}
         ${filters.startDate && filters.endDate ? `AND po.order_date BETWEEN '${filters.startDate.split('T')[0]}' AND '${filters.endDate.split('T')[0]}'` : ''}
@@ -753,7 +761,9 @@ export class ReportService {
         FROM sales_invoice_items si
         INNER JOIN barcode_batches bb ON bb.barcode_alias_8digit = si.barcode_8digit
         INNER JOIN purchase_orders po ON po.id = bb.po_id
+        INNER JOIN sales_invoices si_hdr ON si_hdr.id = si.invoice_id
         WHERE po.status = 'Completed'
+        AND si_hdr.invoice_date BETWEEN '${filters.startDate?.split('T')[0] || '2000-01-01'}' AND '${filters.endDate?.split('T')[0] || '2099-12-31'}'
         AND CAST(bb.vendor AS uuid) = CAST(po.vendor AS uuid)
         ${filters.vendorId ? 'AND po.vendor = $1::uuid' : ''}
         ${filters.startDate && filters.endDate ? `AND po.order_date BETWEEN '${filters.startDate.split('T')[0]}' AND '${filters.endDate.split('T')[0]}'` : ''}
@@ -768,13 +778,26 @@ export class ReportService {
         ${filters.startDate && filters.endDate ? ('AND po.order_date BETWEEN \'' + filters.startDate.split('T')[0] + '\' AND \'' + filters.endDate.split('T')[0] + '\'') : ''}
       `, filters.vendorId ? [filters.vendorId] : []);
       const nTotal = Number(totalPurchaseRes[0]?.count || 0);
-      const nAvail = Number(globalSummary?.totalAvailable || 0);
       const nRet = Number(returnsRes[0]?.count || 0);
       const nSold = Number(salesRes[0]?.count || 0);
+      const nAvail = Math.max(0, nTotal - nSold - nRet);
       const nCost = Number(globalSummary?.totalCost || 0);
 
-      // Estimated Profit calculation (using same logic as rows)
-      const nProfit = nSold * 500; // Placeholder or calculate properly if needed
+      // Pull actual profit from SalesInvoiceItems table
+      const profitRes = await AppDataSource.query(`
+        SELECT SUM(si.quantity * (bb.mrp - bb.cost_actual)) as total_profit
+        FROM sales_invoice_items si
+        INNER JOIN barcode_batches bb ON bb.barcode_alias_8digit = si.barcode_8digit
+        INNER JOIN purchase_orders po ON po.id = bb.po_id
+        INNER JOIN sales_invoices si_hdr ON si_hdr.id = si.invoice_id
+        WHERE po.status = 'Completed'
+        AND si_hdr.invoice_date BETWEEN '${filters.startDate?.split('T')[0] || '2000-01-01'}' AND '${filters.endDate?.split('T')[0] || '2099-12-31'}'
+        AND CAST(bb.vendor AS uuid) = CAST(po.vendor AS uuid)
+        ${filters.vendorId ? 'AND po.vendor = $1::uuid' : ''}
+        ${filters.startDate && filters.endDate ? `AND po.order_date BETWEEN '${filters.startDate.split('T')[0]}' AND '${filters.endDate.split('T')[0]}'` : ''}
+      `, filters.vendorId ? [filters.vendorId] : []);
+
+      const nProfit = Number(profitRes[0]?.total_profit || 0);
 
       const totalCount = nTotal;
       const totalPages = Math.ceil(totalCount / limit);
