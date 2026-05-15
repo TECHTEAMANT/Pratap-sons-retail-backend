@@ -21,21 +21,21 @@ export class BarcodeBatch {
   @Column({ type: 'text' })
   design_no: string;
 
-  @Column({ name: 'product_group', type: 'text', nullable: true })
+  @Column({ name: 'product_group', type: 'uuid', nullable: true })
   product_group_id: string;
 
   @ManyToOne(() => ProductGroup)
   @JoinColumn({ name: 'product_group', referencedColumnName: 'id' })
   product_group: ProductGroup;
 
-  @Column({ name: 'size', type: 'text', nullable: true })
+  @Column({ name: 'size', type: 'uuid', nullable: true })
   size_id: string;
 
   @ManyToOne(() => Size)
   @JoinColumn({ name: 'size', referencedColumnName: 'id' })
   size: Size;
 
-  @Column({ name: 'color', type: 'text', nullable: true })
+  @Column({ name: 'color', type: 'uuid', nullable: true })
   color_id: string;
 
   @ManyToOne(() => Color)
@@ -43,7 +43,7 @@ export class BarcodeBatch {
   color: Color;
 
   @Index()
-  @Column({ name: 'vendor', type: 'text', nullable: true })
+  @Column({ name: 'vendor', type: 'uuid', nullable: true })
   vendor_id: string;
 
   @ManyToOne(() => Vendor)
@@ -84,7 +84,7 @@ export class BarcodeBatch {
   order_number: string;
 
   @Index()
-  @Column({ name: 'floor', type: 'text', nullable: true })
+  @Column({ name: 'floor', type: 'uuid', nullable: true })
   floor_id: string;
 
   @ManyToOne(() => Floor)
