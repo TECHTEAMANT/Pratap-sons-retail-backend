@@ -661,8 +661,8 @@ export class ReportService {
           pg.name as "productGroup",
           cl.name as "color",
           sz.name as "size",
-          COALESCE(bb_agg.barcodes, bb_open.barcode_alias_8digit) as "barcode",
-          COALESCE(bb_agg.available_qty, bb_open.available_quantity, 0) as "availableQtyRaw",
+          COALESCE(bb_agg.barcodes_agg, bb_open.barcode_alias_8digit) as "barcode",
+          COALESCE(bb_agg.available_qty_total, bb_open.available_quantity, 0) as "availableQtyRaw",
           COALESCE(bb_open.photos[1], pm.photos[1]) as "photo",
           COALESCE(si_agg.sold_qty, 0) as "soldQty",
           COALESCE(ret_agg.ret_qty, 0) as "returnedQty",
@@ -673,17 +673,18 @@ export class ReportService {
         LEFT JOIN product_groups pg ON pg.id::text = c.pg_id
         LEFT JOIN colors cl ON cl.id::text = c.color_id
         LEFT JOIN sizes sz ON sz.id::text = c.size_id
-        -- Match back to specific barcode batch for live status (Aggregated to prevent 108% duplication)
+        -- Match back to specific barcode batch for live status (Optimized Aggregation)
         LEFT JOIN (
           SELECT 
             po_id::text as po_id_link, 
             design_no as design_link, 
             size::text as size_link, 
             color::text as color_link,
-            string_agg(barcode_alias_8digit, ', ') as barcodes,
-            SUM(available_quantity) as available_qty
+            string_agg(barcode_alias_8digit, ', ') as barcodes_agg,
+            SUM(available_quantity) as available_qty_total
           FROM barcode_batches
           WHERE status != 'deleted'
+          ${filters.vendorId ? "AND vendor::text = '" + filters.vendorId + "'" : ""}
           GROUP BY po_id_link, design_link, size_link, color_link
         ) bb_agg ON (c.source = 'PURCHASE' AND bb_agg.po_id_link = c.po_id AND bb_agg.design_link = c.design AND bb_agg.size_link = c.size_id AND bb_agg.color_link = c.color_id)
         
@@ -697,18 +698,18 @@ export class ReportService {
           AND (pm.color::text = c.color_id OR (pm.color IS NULL AND c.color_id IS NULL))
         )
         
-        -- Global Sales/Returns linking
+        -- Global Sales/Returns linking (Optimized to specific barcodes if possible)
         LEFT JOIN (
           SELECT sii.barcode_8digit, SUM(sii.quantity) as sold_qty 
           FROM sales_invoice_items sii
           GROUP BY sii.barcode_8digit
-        ) si_agg ON si_agg.barcode_8digit = COALESCE(bb_open.barcode_alias_8digit, split_part(bb_agg.barcodes, ', ', 1))
+        ) si_agg ON si_agg.barcode_8digit = COALESCE(bb_open.barcode_alias_8digit, (SELECT b FROM unnest(string_to_array(bb_agg.barcodes_agg, ', ')) b LIMIT 1))
         
         LEFT JOIN (
           SELECT pri.barcode_id, SUM(pri.quantity) as ret_qty 
           FROM purchase_return_items pri
           GROUP BY pri.barcode_id
-        ) ret_agg ON ret_agg.barcode_id = COALESCE(bb_open.barcode_alias_8digit, split_part(bb_agg.barcodes, ', ', 1))
+        ) ret_agg ON ret_agg.barcode_id = COALESCE(bb_open.barcode_alias_8digit, (SELECT b FROM unnest(string_to_array(bb_agg.barcodes_agg, ', ')) b LIMIT 1))
         ORDER BY c.po_date DESC, c.design ASC
         LIMIT ${limit} OFFSET ${(page - 1) * limit}
       `);
