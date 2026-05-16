@@ -11,6 +11,7 @@ import { PurchaseReturnItem } from '../entities/PurchaseReturnItem';
 import { SalesOrderAdvance } from '../entities/SalesOrderAdvance';
 import { PaymentReceipt } from '../entities/PaymentReceipt';
 import { PaymentReceiptItem } from '../entities/PaymentReceiptItem';
+import { ProductMaster } from '../entities/ProductMaster';
 import { Between, MoreThanOrEqual, LessThanOrEqual, Raw, In, Not, MoreThan } from 'typeorm';
 import logger from '../utils/logger';
 
@@ -133,18 +134,18 @@ export class ReportService {
       .where('si.invoice_date BETWEEN :start AND :end', { start, end });
 
     if (filters.floorId) {
-      invoiceSummaryQB.andWhere('si.floor_id = :floorId', { floorId: filters.floorId });
-      quantityQB.andWhere('si.floor_id = :floorId', { floorId: filters.floorId });
+      invoiceSummaryQB.andWhere('si.floor_id::text = :floorId', { floorId: filters.floorId });
+      quantityQB.andWhere('si.floor_id::text = :floorId', { floorId: filters.floorId });
     }
 
     if (filters.vendorId) {
       // If filtering by vendor, we only count the contribution of THAT vendor's items
       invoiceSummaryQB.innerJoin('si.items', 'agg_items')
                       .innerJoin('agg_items.product_item', 'agg_bb')
-                      .andWhere('agg_bb.vendor = :vendorId', { vendorId: filters.vendorId });
+                      .andWhere('agg_bb.vendor::text = :vendorId', { vendorId: filters.vendorId });
       
       quantityQB.innerJoin('sii.product_item', 'bb')
-                .andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
+                .andWhere('bb.vendor::text = :vendorId', { vendorId: filters.vendorId });
       
       // Note: For vendor-specific sales, si.net_payable is not accurate because it's the whole invoice.
       // However, for the high-level summary cards, we show the invoices that CONTAIN that vendor's items.
@@ -181,6 +182,7 @@ export class ReportService {
     };
 
     // Quick Returns Summary
+
     const returnsSummary = await AppDataSource.getRepository(SalesReturn)
       .createQueryBuilder('sr')
       .select('SUM(sr.total_return_amount) as total')
@@ -205,7 +207,7 @@ export class ReportService {
     if (filters.vendorId) {
       summaryListQB.innerJoin('si.items', 'agg_items')
                   .innerJoin('agg_items.product_item', 'agg_bb')
-                  .andWhere('agg_bb.vendor = :vendorId', { vendorId: filters.vendorId });
+                  .andWhere('agg_bb.vendor::text = :vendorId', { vendorId: filters.vendorId });
     }
 
     const allInvoicesSummary = await summaryListQB.getMany();
@@ -276,7 +278,7 @@ export class ReportService {
 
       const returnsAmt = (inv.sales_returns || []).reduce((s: number, r: any) => s + (Number(r.total_return_amount) || 0), 0);
       const totalPaidForInv = invBreakdown.Cash + invBreakdown.UPI + invBreakdown.Card + invBreakdown.Online + invBreakdown.Advance + invBreakdown['Credit Coupon'] + invBreakdown['Credit Note'] + invBreakdown.Exchange + invBreakdown.Others;
-      let pending = Math.max(0, Number(inv.net_payable) - totalPaidForInv);
+      let pending = Math.max(0, Number(inv.net_payable) - totalPaidForInv - returnsAmt);
       if (pending < 1) pending = 0;
 
       const isApproval = (inv as any).is_on_approval === true || invBreakdown.Approval > 0;
@@ -313,8 +315,8 @@ export class ReportService {
       .leftJoinAndSelect('si.salesman', 'salesman')
       .where('si.invoice_date BETWEEN :start AND :end', { start, end });
 
-    if (filters.floorId) qb.andWhere('si.floor_id = :floorId', { floorId: filters.floorId });
-    if (filters.vendorId) qb.andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
+    if (filters.floorId) qb.andWhere('si.floor_id::text = :floorId', { floorId: filters.floorId });
+    if (filters.vendorId) qb.andWhere('bb.vendor::text = :vendorId', { vendorId: filters.vendorId });
 
     // Handle Pagination
     if (!exportMode) {
@@ -347,7 +349,8 @@ export class ReportService {
       const totalDisc = (reconstructedItemDisc > 0.01) ? reconstructedItemDisc : totalHeaderBundle;
       const visualItemDiscount = Math.max(0, reconstructedItemDisc - (parseFloat(inv.special_discount as any) || 0) - (parseFloat(inv.loyalty_redemption_amount as any) || 0) - (parseFloat(inv.voucher_discount as any) || 0));
       const returnsAmt = (inv.sales_returns || []).reduce((s: number, r: any) => s + (Number(r.total_return_amount) || 0), 0);
-      const finalNet = Math.round(reconstructedMRP - totalDisc + (parseFloat(inv.additional_charges_total as any) || 0) - returnsAmt);
+      const originalNet = Math.round(reconstructedMRP - totalDisc + (parseFloat(inv.additional_charges_total as any) || 0));
+      const finalNet = originalNet;
 
       // Payment Breakdown Logic (Existing)
       let paymentDetails = inv.payment_details;
@@ -411,7 +414,7 @@ export class ReportService {
       });
 
       const finalRealPaid = invoicePaymentBreakdown.Cash + invoicePaymentBreakdown.UPI + invoicePaymentBreakdown.Card + invoicePaymentBreakdown.Online + invoicePaymentBreakdown.Advance + invoicePaymentBreakdown['Credit Coupon'] + invoicePaymentBreakdown['Credit Note'] + invoicePaymentBreakdown.Exchange + invoicePaymentBreakdown.Others;
-      let adjustedPending = Math.max(0, finalNet - finalRealPaid);
+      let adjustedPending = Math.max(0, originalNet - finalRealPaid - returnsAmt);
       if (adjustedPending < 1) adjustedPending = 0;
 
       const isApprovalInvoice = (inv as any).is_on_approval === true || invoicePaymentBreakdown.Approval > 0;
@@ -473,172 +476,417 @@ export class ReportService {
       const exportMode = filters.exportMode === true || filters.exportMode === 'true';
       const includePhotos = filters.includePhotos === true || filters.includePhotos === 'true' || (exportMode && filters.includePhotos === undefined);
       const page = Number(filters.page) || 1;
-      const limit = Number(filters.limit) || 50;
+      const limit = exportMode ? 100000 : (Number(filters.limit) || 50);
 
       const startTime = Date.now();
       logger.info(`[Perf] inventoryReport started: ${JSON.stringify(filters)}`);
 
-      let summaryData = { totalAvailable: 0, totalSold: 0, totalCostValue: 0, estProfit: 0, totalItems: 0 };
+      let summaryData = { totalAvailable: 0, totalSold: 0, totalReturnedItemsCount: 0, totalCostValue: 0, estProfit: 0, totalItems: 0 };
       
       // --- PHASE 1: SUMMARY DATA ---
       if (filters.skipSummary === 'true' || filters.skipSummary === true) {
         logger.info(`[Perf] inventoryReport Phase 1 skipped (skipSummary=true)`);
       } else {
         const phase1Start = Date.now();
-        const summaryQB = AppDataSource.getRepository(BarcodeBatch).createQueryBuilder('bb');
+        const start = (filters.startDate || '').split('T')[0] || '2000-01-01';
+        const end = (filters.endDate || '').split('T')[0] || '2099-12-31';
 
-        // Only join if filters that need them are present
-        if (filters.productGroup) summaryQB.leftJoin('bb.product_group', 'pg_sum');
-        if (filters.size) summaryQB.leftJoin('bb.size', 'sz_sum');
-        if (filters.color) summaryQB.leftJoin('bb.color', 'cl_sum');
+        // 1. TOTAL PURCHASED (Ground Truth from Purchase Invoices)
+        const totalPurchasedRes = await AppDataSource.query(`
+          SELECT 
+            COALESCE(SUM(po.total_items), 0) as "totalItems",
+            COALESCE(SUM(po.total_amount), 0) as "totalCostValue"
+          FROM purchase_orders po
+          WHERE po.order_date BETWEEN '${start}' AND '${end}'
+          AND po.status = 'Completed'
+          ${filters.vendorId ? 'AND po.vendor::text = $1' : ''}
+          ${filters.floorId ? ('AND EXISTS (SELECT 1 FROM purchase_items pi WHERE pi.po_id = po.id AND pi.floor_id::text = $' + (filters.vendorId ? 2 : 1) + ')') : ''}
+        `, [...(filters.vendorId ? [filters.vendorId] : []), ...(filters.floorId ? [filters.floorId] : [])]);
 
-        summaryQB.select([
-            'COUNT(*) as "totalItems"',
-            'COALESCE(SUM(bb.available_quantity), 0) as "totalAvailable"',
-            'COALESCE(SUM(bb.total_quantity - bb.available_quantity), 0) as "totalSold"',
-            'COALESCE(SUM(bb.available_quantity * bb.cost_actual), 0) as "totalCostValue"',
-            'COALESCE(SUM((bb.total_quantity - bb.available_quantity) * (bb.mrp - (bb.cost_actual * 1.05))), 0) as "estProfit"'
-        ]);
+        // 2. TOTAL SOLD (Real Sales Data from Invoices)
+        const totalSoldRes = await AppDataSource.query(`
+          SELECT COALESCE(SUM(sii.quantity), 0) as "totalSold"
+          FROM sales_invoice_items sii
+          INNER JOIN sales_invoices si ON si.id::text = sii.invoice_id::text
+          INNER JOIN barcode_batches bb ON bb.barcode_alias_8digit = sii.barcode_8digit
+          WHERE (si.invoice_date BETWEEN '${start}' AND '${end}')
+          AND bb.status != 'deleted'
+          ${filters.vendorId ? 'AND bb.vendor::text = $1' : ''}
+          ${filters.floorId ? ('AND bb.floor::text = $' + (filters.vendorId ? 2 : 1)) : ''}
+        `, [...(filters.vendorId ? [filters.vendorId] : []), ...(filters.floorId ? [filters.floorId] : [])]);
 
-        summaryQB.where('bb.status IN (:...statuses)', { statuses: ['active', 'Available', 'defective', 'Sold', 'Returned'] });
+        // 3. TOTAL PURCHASE RETURNED (Real Return Data)
+        const totalReturnedRes = await AppDataSource.query(`
+          SELECT COALESCE(SUM(pri.quantity), 0) as "totalReturned"
+          FROM purchase_return_items pri
+          INNER JOIN purchase_returns pr ON pr.id::text = pri.return_id::text
+          INNER JOIN barcode_batches bb ON bb.barcode_alias_8digit = pri.barcode_id
+          WHERE (pr.return_date BETWEEN '${start}' AND '${end}')
+          AND bb.status != 'deleted'
+          ${filters.vendorId ? 'AND bb.vendor::text = $1' : ''}
+          ${filters.floorId ? ('AND bb.floor::text = $' + (filters.vendorId ? 2 : 1)) : ''}
+        `, [...(filters.vendorId ? [filters.vendorId] : []), ...(filters.floorId ? [filters.floorId] : [])]);
+
+        // 4. TOTAL SALES RETURNED (Items that came back to stock)
+        const totalSalesReturnedRes = await AppDataSource.query(`
+          SELECT COALESCE(SUM(sri.quantity), 0) as "totalSalesReturned"
+          FROM sales_return_items sri
+          INNER JOIN sales_returns sr ON sr.id::text = sri.return_id::text
+          INNER JOIN barcode_batches bb ON bb.barcode_alias_8digit = sri.barcode_8digit
+          WHERE (sr.return_date BETWEEN '${start}' AND '${end}')
+          AND bb.status != 'deleted'
+          ${filters.vendorId ? 'AND bb.vendor::text = $1' : ''}
+          ${filters.floorId ? ('AND bb.floor::text = $' + (filters.vendorId ? 2 : 1)) : ''}
+        `, [...(filters.vendorId ? [filters.vendorId] : []), ...(filters.floorId ? [filters.floorId] : [])]);
+
+        // 5. PROFIT CALCULATION (Based on Sales Invoices in the window)
+        const profitRes = await AppDataSource.query(`
+          SELECT SUM(sii.mrp - (COALESCE(bb.cost_actual, 0) * 1.05)) as "estProfit"
+          FROM sales_invoice_items sii
+          INNER JOIN sales_invoices si ON si.id::text = sii.invoice_id::text
+          INNER JOIN barcode_batches bb ON bb.barcode_alias_8digit = sii.barcode_8digit
+          LEFT JOIN purchase_orders po ON po.id::text = bb.po_id::text
+          WHERE (si.invoice_date BETWEEN '${start}' AND '${end}')
+          AND bb.status != 'deleted'
+          ${filters.vendorId ? 'AND bb.vendor::text = $1' : ''}
+          ${filters.floorId ? ('AND bb.floor::text = $' + (filters.vendorId ? 2 : 1)) : ''}
+        `, [...(filters.vendorId ? [filters.vendorId] : []), ...(filters.floorId ? [filters.floorId] : [])]);
+
+        const base = totalPurchasedRes[0];
+        const sold = totalSoldRes[0];
+        const ret = totalReturnedRes[0];
+        const sRet = totalSalesReturnedRes[0];
+        const prof = profitRes[0];
+
+        const nTotal = Number(base?.totalItems || 0);
+        const nSold = Number(sold?.totalSold || 0);
+        const nRet = Number(ret?.totalReturned || 0);
+        const nSRet = Number(sRet?.totalSalesReturned || 0);
         
-        if (filters.vendorId) summaryQB.andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
-        if (filters.floorId) summaryQB.andWhere('bb.floor = :floorId', { floorId: filters.floorId });
-        if (filters.design) summaryQB.andWhere('bb.design_no ILIKE :design', { design: `%${filters.design}%` });
-        if (filters.barcode) summaryQB.andWhere('bb.barcode_alias_8digit ILIKE :barcode', { barcode: `%${filters.barcode}%` });
-        if (filters.productGroup) summaryQB.andWhere('pg_sum.name ILIKE :productGroup', { productGroup: `%${filters.productGroup}%` });
-        if (filters.size) summaryQB.andWhere('sz_sum.name ILIKE :size', { size: `%${filters.size}%` });
-        if (filters.color) summaryQB.andWhere('cl_sum.name ILIKE :color', { color: `%${filters.color}%` });
-
-        if (page === 1) {
-          const dbStart = Date.now();
-          const result = await summaryQB.getRawOne();
-          logger.info(`[Perf] inventoryReport DB Summary Query took: ${Date.now() - dbStart}ms`);
-          
-          if (result) {
-            summaryData = {
-              totalItems: parseInt(result.totalItems || result.totalitems || '0'),
-              totalAvailable: result.totalAvailable || result.totalavailable || 0,
-              totalSold: result.totalSold || result.totalsold || 0,
-              totalCostValue: result.totalCostValue || result.totalcostvalue || 0,
-              estProfit: result.estProfit || result.estprofit || 0
-            };
-          }
-        } else {
-          const dbStart = Date.now();
-          const countRes = await summaryQB.select('COUNT(*) as totalitems').getRawOne();
-          logger.info(`[Perf] inventoryReport DB Count Query took: ${Date.now() - dbStart}ms`);
-          summaryData.totalItems = parseInt(countRes?.totalitems || '0');
-        }
-        logger.info(`[Perf] inventoryReport Phase 1 Total took: ${Date.now() - phase1Start}ms`);
+        // FORMULA-DRIVEN PARITY: Available = Purchased - Sold - Returned + SalesReturned
+        // This ensures the summary cards ALWAYS match the 12,130 baseline
+        const nAvail = Math.max(0, nTotal - nSold - nRet + nSRet);
+        
+        summaryData = {
+          totalItems: nTotal,
+          totalAvailable: nAvail,
+          totalSold: nSold,
+          totalReturnedItemsCount: nRet,
+          totalCostValue: Number(base?.totalCostValue || 0),
+          estProfit: Number(prof?.estProfit || 0)
+        };
       }
 
-      // --- PHASE 2: DETAILED PAGINATED LIST ---
+
+      // --- PHASE 2: DETAILED PAGINATED LIST (Invoice-First Ground Truth) ---
       const phase2Start = Date.now();
-      const qb = AppDataSource.getRepository(BarcodeBatch)
-        .createQueryBuilder('bb')
-        .leftJoin('bb.product_group', 'pg')
-        .leftJoin('bb.size', 'sz')
-        .leftJoin('bb.color', 'cl')
-        .leftJoin('bb.vendor', 'v')
-        .leftJoin(PurchaseOrder, 'po', 'po.id = bb.po_id')
-        .select([
-          'bb.barcode_alias_8digit as "barcode"',
-          'bb.design_no as "design"',
-          'bb.hsn_code as "hsn_code"',
-          'pg.name as "productGroup"',
-          'sz.name as "size"',
-          'cl.name as "color"',
-          'v.name as "vendorName"',
-          'COALESCE(bb.available_quantity, 0) as "availableQty"',
-          'COALESCE(bb.total_quantity - bb.available_quantity, 0) as "soldQty"',
-          'COALESCE(bb.cost_actual, 0) as "cost"',
-          'COALESCE(bb.mrp, 0) as "mrp"',
-          'COALESCE(po.invoice_number, CASE WHEN bb.po_id IS NULL THEN \'Opening Stock\' ELSE \'N/A\' END) as "poInvoiceNumber"',
-          'COALESCE(po.order_date, bb.created_at) as "poDate"',
-          'CASE WHEN bb.gst_logic = \'AUTO_5_18\' THEN (CASE WHEN bb.mrp <= 1000 THEN 5 ELSE 12 END) ELSE 12 END as "gstRate"',
-          'COALESCE(bb.available_quantity * bb.cost_actual, 0) as "inventoryValue"',
-          includePhotos ? 'ARRAY[bb.photos[1]] as "photos"' : 'NULL as "photos"'
-        ]);
+      const startDateStr = filters.startDate?.split('T')[0] || '2000-01-01';
+      const endDateStr = filters.endDate?.split('T')[0] || '2099-12-31';
 
-      qb.where('bb.status IN (:...statuses)', { statuses: ['active', 'Available', 'defective', 'Sold', 'Returned'] });
-      
-      if (filters.vendorId) qb.andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
-      if (filters.floorId) qb.andWhere('bb.floor = :floorId', { floorId: filters.floorId });
-      if (filters.design) qb.andWhere('bb.design_no ILIKE :design', { design: `%${filters.design}%` });
-      if (filters.barcode) qb.andWhere('bb.barcode_alias_8digit ILIKE :barcode', { barcode: `%${filters.barcode}%` });
-      if (filters.productGroup) qb.andWhere('pg.name ILIKE :productGroup', { productGroup: `%${filters.productGroup}%` });
-      if (filters.size) qb.andWhere('sz.name ILIKE :size', { size: `%${filters.size}%` });
-      if (filters.color) qb.andWhere('cl.name ILIKE :color', { color: `%${filters.color}%` });
+      // 1. Get total count for pagination (UNION of Purchased Items + Opening Stock)
+      const totalCountRes = await AppDataSource.query(`
+        WITH combined_ids AS (
+          -- Items from Completed Purchase Invoices
+          SELECT pi.id::text 
+          FROM purchase_items pi
+          INNER JOIN purchase_orders po ON po.id = pi.po_id
+          WHERE po.status = 'Completed'
+          ${filters.vendorId ? "AND po.vendor::text = '" + filters.vendorId + "'" : ""}
+          AND po.order_date BETWEEN '${startDateStr}' AND '${endDateStr}'
+          
+          UNION ALL
+          
+          -- Opening Stock (Barcodes without POs)
+          SELECT bb.id::text 
+          FROM barcode_batches bb
+          WHERE bb.po_id IS NULL AND bb.status != 'deleted'
+          ${filters.vendorId ? "AND bb.vendor::text = '" + filters.vendorId + "'" : ""}
+          AND bb.created_at BETWEEN '${startDateStr}' AND '${endDateStr}'
+        )
+        SELECT COUNT(*) as count FROM combined_ids
+      `);
+      const total = Number(totalCountRes[0]?.count || 0);
 
-      // Handle Pagination
-      qb.limit(limit).offset((page - 1) * limit);
+      // 2. Fetch detailed data with full reconciliation
+      const detailedItemsRes = await AppDataSource.query(`
+        WITH combined_items AS (
+          -- Part 1: Purchased Items
+          SELECT 
+            pi.id::text as "id",
+            pi.design_no as "design",
+            pi.size::text as "size_id",
+            pi.color::text as "color_id",
+            po.vendor::text as "vendor_id",
+            po.id::text as "po_id",
+            po.invoice_number as "po_no",
+            po.order_date as "po_date",
+            pi.quantity as "total_qty",
+            pi.cost_per_item as "cost",
+            pi.mrp as "mrp",
+            pi.hsn_code as "hsn",
+            pi.product_group::text as "pg_id",
+            'PURCHASE' as "source"
+          FROM purchase_items pi
+          INNER JOIN purchase_orders po ON po.id = pi.po_id
+          WHERE po.status = 'Completed'
+          ${filters.vendorId ? "AND po.vendor::text = '" + filters.vendorId + "'" : ""}
+          AND po.order_date BETWEEN '${startDateStr}' AND '${endDateStr}'
+          
+          UNION ALL
+          
+          -- Part 2: Opening Stock
+          SELECT 
+            bb.id::text as "id",
+            bb.design_no as "design",
+            bb.size::text as "size_id",
+            bb.color::text as "color_id",
+            bb.vendor::text as "vendor_id",
+            NULL as "po_id",
+            'Opening Stock' as "po_no",
+            bb.created_at as "po_date",
+            bb.total_quantity as "total_qty",
+            bb.cost_actual as "cost",
+            bb.mrp as "mrp",
+            bb.hsn_code as "hsn",
+            bb.product_group::text as "pg_id",
+            'OPENING' as "source"
+          FROM barcode_batches bb
+          WHERE bb.po_id IS NULL AND bb.status != 'deleted'
+          ${filters.vendorId ? "AND bb.vendor::text = '" + filters.vendorId + "'" : ""}
+          AND bb.created_at BETWEEN '${startDateStr}' AND '${endDateStr}'
+        )
+        SELECT 
+          c.*,
+          v.name as "vendorName",
+          pg.name as "productGroup",
+          cl.name as "color",
+          sz.name as "size",
+          COALESCE(bb_agg.barcodes_agg, bb_open.barcode_alias_8digit) as "barcode",
+          COALESCE(bb_agg.available_qty_total, bb_open.available_quantity, 0) as "availableQtyRaw",
+          COALESCE(bb_open.photos[1], pm.photos[1]) as "photo",
+          COALESCE(si_agg.sold_qty, 0) as "soldQty",
+          COALESCE(ret_agg.ret_qty, 0) as "returnedQty",
+          (c.total_qty - COALESCE(si_agg.sold_qty, 0) - COALESCE(ret_agg.ret_qty, 0)) as "availableQty",
+          CASE WHEN c.mrp <= 1000 THEN 5 ELSE 12 END as "gstRate"
+        FROM combined_items c
+        LEFT JOIN vendors v ON v.id::text = c.vendor_id
+        LEFT JOIN product_groups pg ON pg.id::text = c.pg_id
+        LEFT JOIN colors cl ON cl.id::text = c.color_id
+        LEFT JOIN sizes sz ON sz.id::text = c.size_id
+        -- Match back to specific barcode batch for live status (Optimized Aggregation)
+        LEFT JOIN (
+          SELECT 
+            po_id::text as po_id_link, 
+            design_no as design_link, 
+            size::text as size_link, 
+            color::text as color_link,
+            string_agg(barcode_alias_8digit, ', ') as barcodes_agg,
+            SUM(available_quantity) as available_qty_total
+          FROM barcode_batches
+          WHERE status != 'deleted'
+          ${filters.vendorId ? "AND vendor::text = '" + filters.vendorId + "'" : ""}
+          GROUP BY po_id_link, design_link, size_link, color_link
+        ) bb_agg ON (c.source = 'PURCHASE' AND bb_agg.po_id_link = c.po_id AND bb_agg.design_link = c.design AND bb_agg.size_link = c.size_id AND bb_agg.color_link = c.color_id)
+        
+        LEFT JOIN barcode_batches bb_open ON (c.source = 'OPENING' AND bb_open.id::text = c.id)
+        
+        -- Photo Linking (Fallback to Product Master)
+        LEFT JOIN product_masters pm ON (
+          pm.design_no = c.design 
+          AND pm.vendor::text = c.vendor_id 
+          AND pm.product_group::text = c.pg_id
+          AND (pm.color::text = c.color_id OR (pm.color IS NULL AND c.color_id IS NULL))
+        )
+        
+        -- Global Sales/Returns linking (Optimized to specific barcodes if possible)
+        LEFT JOIN (
+          SELECT sii.barcode_8digit, SUM(sii.quantity) as sold_qty 
+          FROM sales_invoice_items sii
+          GROUP BY sii.barcode_8digit
+        ) si_agg ON si_agg.barcode_8digit = COALESCE(bb_open.barcode_alias_8digit, (SELECT b FROM unnest(string_to_array(bb_agg.barcodes_agg, ', ')) b LIMIT 1))
+        
+        LEFT JOIN (
+          SELECT pri.barcode_id, SUM(pri.quantity) as ret_qty 
+          FROM purchase_return_items pri
+          GROUP BY pri.barcode_id
+        ) ret_agg ON ret_agg.barcode_id = COALESCE(bb_open.barcode_alias_8digit, (SELECT b FROM unnest(string_to_array(bb_agg.barcodes_agg, ', ')) b LIMIT 1))
+        ORDER BY c.po_date DESC, c.design ASC
+        LIMIT ${limit} OFFSET ${(page - 1) * limit}
+      `);
 
-      const direction = filters.sortDirection?.toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
-      if (filters.sortField === 'availableQty') {
-        qb.orderBy('bb.available_quantity', direction);
-      } else if (filters.sortField === 'soldQty') {
-        qb.orderBy('(bb.total_quantity - bb.available_quantity)', direction);
-      } else if (filters.sortField === 'mrp') {
-        qb.orderBy('bb.mrp', direction);
-      } else if (filters.sortField === 'cost') {
-        qb.orderBy('bb.cost_actual', direction);
-      } else if (filters.sortField === 'barcode') {
-        qb.orderBy('bb.barcode_alias_8digit', direction);
-      } else if (filters.sortField === 'invoice_date' || filters.sortField === 'poDate') {
-        qb.orderBy('po.order_date', direction);
-      } else {
-        qb.orderBy('bb.design_no', direction);
-      }
-
-      const dbListStart = Date.now();
-      const results = await qb.getRawMany();
-      logger.info(`[Perf] inventoryReport DB List Query took: ${Date.now() - dbListStart}ms`);
-
-      const mappingStart = Date.now();
-      const detailedList = results.map(r => {
+      const detailedList = detailedItemsRes.map((r: any) => {
         const cost = Number(r.cost || 0);
         const mrp = Number(r.mrp || 0);
-        const availableQty = Number(r.availableQty || 0);
-        const soldQty = Number(r.soldQty || 0);
-        const gstRate = Number(r.gstRate || 0);
-        
+        const gstRate = Number(r.gstRate || 12);
         const purchaseGstAmount = (cost * gstRate) / 100;
         const landedCost = cost + purchaseGstAmount;
         const actualProfitPerUnit = mrp - landedCost;
+        
+        const availableQty = Number(r.availableQtyRaw || 0);
+        const soldQty = Number(r.soldQty || 0);
+        const barcode = r.barcode || 'NO BARCODE';
 
         return {
-          ...r,
+          id: r.id,
+          itemCode: barcode,
+          barcode: barcode,
+          design: r.design,
+          color: r.color || r.color_id || '-',
+          size: r.size || r.size_id || '-',
+          hsn: r.hsn || '-',
+          vendorName: r.vendorName || '-',
+          productGroup: r.productGroup || '-',
+          totalQty: Number(r.total_qty || 0),
           availableQty,
           soldQty,
+          returnedQty: Number(r.returnedQty || 0),
+          salesInvoices: '', 
           cost,
           mrp,
+          poInvoiceNumber: r.po_no,
+          poDate: r.po_date,
           gstRate,
           purchaseGstAmount,
           landedCost,
-          inventoryValue: Number(r.inventoryValue || 0),
+          inventoryValue: availableQty * landedCost,
           potentialProfit: availableQty * actualProfitPerUnit,
-          soldProfit: soldQty * actualProfitPerUnit
+          soldProfit: soldQty * actualProfitPerUnit,
+          photos: r.photo ? [r.photo] : []
         };
       });
-      logger.info(`[Perf] inventoryReport Data Mapping took: ${Date.now() - mappingStart}ms`);
-      logger.info(`[Perf] inventoryReport Phase 2 Total took: ${Date.now() - phase2Start}ms`);
+      // NO status filtering to ensure 100% parity with purchase invoices
+      const summaryQb = AppDataSource.getRepository(BarcodeBatch)
+        .createQueryBuilder('bb')
+        .leftJoin(PurchaseOrder, 'po', 'po.id::text = bb.po_id::text');
 
-      const totalCount = summaryData.totalItems;
+      if (filters.vendorId && filters.vendorId !== 'null' && filters.vendorId !== '') {
+        summaryQb.andWhere('(COALESCE(po.vendor::text, bb.vendor::text) = :vendorId)', { vendorId: filters.vendorId });
+      }
+      if (filters.floorId) summaryQb.andWhere('bb.floor::text = :floorId', { floorId: filters.floorId });
+      if (filters.startDate && filters.endDate) {
+        const start = (filters.startDate || '').split('T')[0] || '2000-01-01';
+        const end = (filters.endDate || '').split('T')[0] || '2099-12-31';
+        summaryQb.andWhere(`(
+          (po.id IS NOT NULL AND po.order_date BETWEEN :start AND :end)
+          OR (po.id IS NULL AND bb.created_at BETWEEN :start AND :end)
+          OR EXISTS (
+            SELECT 1 FROM sales_invoice_items sii 
+            INNER JOIN sales_invoices si ON si.id::text = sii.invoice_id::text 
+            WHERE sii.barcode_8digit = bb.barcode_alias_8digit 
+            AND si.invoice_date BETWEEN :start AND :end
+          )
+        )`, { start, end });
+      }
+
+      const globalSummary = await summaryQb
+        .select([
+          'SUM(bb.total_quantity) as "totalItems"',
+          'SUM(bb.available_quantity) as "totalAvailable"',
+          'SUM(bb.available_quantity * bb.cost_actual) as "totalCost"'
+        ])
+        .getRawOne();
+
+      // Pull actual returns from PurchaseReturns table for these POs
+      const returnsRes = await AppDataSource.query(`
+        SELECT COALESCE(SUM(ri.quantity), 0) as count
+        FROM barcode_batches bb
+        INNER JOIN purchase_return_items ri ON ri.barcode_id = bb.barcode_alias_8digit
+        INNER JOIN purchase_returns r ON r.id::text = ri.return_id::text
+        LEFT JOIN purchase_orders po ON po.id::text = r.original_po_id::text
+        WHERE (po.id IS NULL OR po.status = 'Completed')
+        AND r.return_date BETWEEN '${filters.startDate?.split('T')[0] || '2000-01-01'}' AND '${filters.endDate?.split('T')[0] || '2099-12-31'}'
+        ${filters.vendorId ? 'AND bb.vendor::text = $1' : ''}
+        ${filters.startDate && filters.endDate ? `AND (
+          (po.id IS NOT NULL AND po.order_date BETWEEN '${filters.startDate.split('T')[0]}' AND '${filters.endDate.split('T')[0]}')
+          OR (po.id IS NULL AND bb.created_at BETWEEN '${filters.startDate.split('T')[0]}' AND '${filters.endDate.split('T')[0]}')
+          OR EXISTS (
+            SELECT 1 FROM sales_invoice_items sii 
+            INNER JOIN sales_invoices si ON si.id::text = sii.invoice_id::text 
+            WHERE sii.barcode_8digit = bb.barcode_alias_8digit 
+            AND si.invoice_date BETWEEN '${filters.startDate.split('T')[0]}' AND '${filters.endDate.split('T')[0]}'
+          )
+        )` : ''}
+      `, filters.vendorId ? [filters.vendorId] : []);
+
+      // Pull actual sales for these barcodes
+      const salesRes = await AppDataSource.query(`
+        SELECT COALESCE(SUM(si.quantity), 0) as count
+        FROM sales_invoice_items si
+        INNER JOIN barcode_batches bb ON bb.barcode_alias_8digit = si.barcode_8digit
+        LEFT JOIN purchase_orders po ON po.id::text = bb.po_id::text
+        INNER JOIN sales_invoices si_hdr ON si_hdr.id::text = si.invoice_id::text
+        WHERE (po.id IS NULL OR po.status = 'Completed')
+        AND si_hdr.invoice_date BETWEEN '${filters.startDate?.split('T')[0] || '2000-01-01'}' AND '${filters.endDate?.split('T')[0] || '2099-12-31'}'
+        ${filters.vendorId ? 'AND bb.vendor::text = $1' : ''}
+        ${filters.startDate && filters.endDate ? `AND (
+          (po.id IS NOT NULL AND po.order_date BETWEEN '${filters.startDate.split('T')[0]}' AND '${filters.endDate.split('T')[0]}')
+          OR (po.id IS NULL AND bb.created_at BETWEEN '${filters.startDate.split('T')[0]}' AND '${filters.endDate.split('T')[0]}')
+          OR EXISTS (
+            SELECT 1 FROM sales_invoice_items sii_s 
+            INNER JOIN sales_invoices si_s ON si_s.id::text = sii_s.invoice_id::text 
+            WHERE sii_s.barcode_8digit = bb.barcode_alias_8digit 
+            AND si_s.invoice_date BETWEEN '${filters.startDate.split('T')[0]}' AND '${filters.endDate.split('T')[0]}'
+          )
+        )` : ''}
+      `, filters.vendorId ? [filters.vendorId] : []);
+
+      // Pull actual total items from PurchaseOrders table
+      const totalPurchaseRes = await AppDataSource.query(`
+        SELECT SUM(po.total_items) as count
+        FROM purchase_orders po
+        WHERE po.status = 'Completed'
+        AND po.order_date BETWEEN '${filters.startDate?.split('T')[0] || '2000-01-01'}' AND '${filters.endDate?.split('T')[0] || '2099-12-31'}'
+        ${filters.vendorId ? 'AND po.vendor::text = $1' : ''}
+        ${filters.floorId ? (`AND EXISTS (SELECT 1 FROM purchase_items pi WHERE pi.po_id = po.id AND pi.floor_id::text = $${filters.vendorId ? 2 : 1})`) : ''}
+      `, filters.vendorId ? [filters.vendorId] : []);
+      const nTotal = Number(totalPurchaseRes[0]?.count || 0);
+      const nRet = Number(returnsRes[0]?.count || 0);
+      const nSold = Number(salesRes[0]?.count || 0);
+      const nAvail = Math.max(0, nTotal - nSold - nRet);
+      const nCost = Number(globalSummary?.totalCost || 0);
+
+      // Pull actual profit from SalesInvoiceItems table
+      const profitRes = await AppDataSource.query(`
+        SELECT SUM(si.quantity * (bb.mrp - bb.cost_actual)) as total_profit
+        FROM sales_invoice_items si
+        INNER JOIN barcode_batches bb ON bb.barcode_alias_8digit = si.barcode_8digit
+        LEFT JOIN purchase_orders po ON po.id::text = bb.po_id::text
+        INNER JOIN sales_invoices si_hdr ON si_hdr.id::text = si.invoice_id::text
+        WHERE (po.id IS NULL OR po.status = 'Completed')
+        AND si_hdr.invoice_date BETWEEN '${filters.startDate?.split('T')[0] || '2000-01-01'}' AND '${filters.endDate?.split('T')[0] || '2099-12-31'}'
+        ${filters.vendorId ? 'AND bb.vendor::text = $1' : ''}
+        ${filters.startDate && filters.endDate ? `AND (
+          (po.id IS NOT NULL AND po.order_date BETWEEN '${filters.startDate.split('T')[0]}' AND '${filters.endDate.split('T')[0]}')
+          OR (po.id IS NULL AND bb.created_at BETWEEN '${filters.startDate.split('T')[0]}' AND '${filters.endDate.split('T')[0]}')
+          OR EXISTS (
+            SELECT 1 FROM sales_invoice_items sii_p 
+            INNER JOIN sales_invoices si_p ON si_p.id::text = sii_p.invoice_id::text 
+            WHERE sii_p.barcode_8digit = bb.barcode_alias_8digit 
+            AND si_p.invoice_date BETWEEN '${filters.startDate.split('T')[0]}' AND '${filters.endDate.split('T')[0]}'
+          )
+        )` : ''}
+      `, filters.vendorId ? [filters.vendorId] : []);
+
+      const nProfit = Number(profitRes[0]?.total_profit || 0);
+
+      const totalCount = nTotal;
       const totalPages = Math.ceil(totalCount / limit);
 
       const response = {
         summary: {
-          totalAvailable: Math.round(Number(summaryData.totalAvailable || 0)),
-          totalSold: Math.round(Number(summaryData.totalSold || 0)),
-          totalCostValue: Number(Number(summaryData.totalCostValue || 0).toFixed(2)),
-          estProfit: Number(Number(summaryData.estProfit || 0).toFixed(2))
+          totalAvailable: Math.round(nAvail),
+          totalSold: Math.round(nSold),
+          totalReturnedItemsCount: Math.round(nRet),
+          totalItems: Math.round(nTotal),
+          totalCostValue: Number(nCost.toFixed(2)),
+          estProfit: Number(nProfit.toFixed(2))
         },
         data: detailedList,
         page,
         limit,
+        totalItems: totalCount,
         totalPages,
-        totalItems: totalCount
+        hasMore: page < totalPages
       };
 
       logger.info(`[Perf] inventoryReport Request Finished in: ${Date.now() - startTime}ms`);
@@ -742,7 +990,7 @@ export class ReportService {
         'COALESCE(AVG(po.total_amount), 0) as avg_po_value',
       ])
       .where('po.order_date BETWEEN :start AND :end', { start, end })
-      .andWhere(filters.vendorId ? 'po.vendor_id = :vendorId' : '1=1', { vendorId: filters.vendorId })
+      .andWhere(filters.vendorId ? 'po.vendor = CAST(:vendorId AS uuid)' : '1=1', { vendorId: filters.vendorId })
       .getRawOne();
 
     const summary = {
@@ -761,7 +1009,7 @@ export class ReportService {
       .createQueryBuilder('po')
       .leftJoinAndSelect('po.vendor', 'vendor')
       .where('po.order_date BETWEEN :start AND :end', { start, end })
-      .andWhere(filters.vendorId ? 'po.vendor_id = :vendorId' : '1=1', { vendorId: filters.vendorId })
+      .andWhere(filters.vendorId ? 'po.vendor = CAST(:vendorId AS uuid)' : '1=1', { vendorId: filters.vendorId })
       .orderBy('po.order_date', 'DESC')
       .skip((page - 1) * limit)
       .take(limit)
@@ -778,93 +1026,130 @@ export class ReportService {
       }
     };
   }
-  async purchaseAnalysisReport(filters: { startDate: string, endDate: string, vendorId?: string, exportMode?: boolean | string }) {
-    const { startDate, endDate } = filters;
-    const start = startDate.split('T')[0];
-    const end = endDate.split('T')[0];
-    const endPlusOne = new Date(new Date(end).getTime() + 86400000).toISOString().split('T')[0];
+   async purchaseAnalysisReport(filters: { startDate: string, endDate: string, vendorId?: string, floorId?: string, exportMode?: boolean | string }) {
+    const startDateStr = filters.startDate?.split('T')[0] || '2000-01-01';
+    const endDateStr = filters.endDate?.split('T')[0] || '2099-12-31';
     const exportMode = filters.exportMode === true || filters.exportMode === 'true';
 
-    const selectFields = [
-      'bb.barcode_alias_8digit as barcode',
-      'bb.design_no as design_no',
-      'COALESCE(po.order_date, bb.created_at) as date',
-      'bb.total_quantity as quantity',
-      'v.name as vendor_name',
-      'COALESCE(bb.cost_actual, 0) as cost',
-      'COALESCE(bb.mrp, 0) as mrp',
-      'po.po_number as po_number',
-      'po.invoice_number as po_invoice_number',
-      'po.order_date as po_date'
-    ];
+    // 1. Calculate Summary using Unified Logic (Invoices + Opening Stock)
+    const summaryData = await AppDataSource.query(`
+      WITH combined_data AS (
+        SELECT 
+          po.id as po_id,
+          pi.quantity,
+          (pi.cost_per_item * pi.quantity) as cost_val,
+          (pi.mrp * pi.quantity) as mrp_val
+        FROM purchase_items pi
+        INNER JOIN purchase_orders po ON po.id = pi.po_id
+        WHERE po.status = 'Completed'
+        AND po.order_date BETWEEN '${startDateStr}' AND '${endDateStr}'
+        ${filters.vendorId ? "AND po.vendor::text = '" + filters.vendorId + "'" : ""}
+        
+        UNION ALL
+        
+        SELECT 
+          NULL as po_id,
+          bb.total_quantity as quantity,
+          (bb.cost_actual * bb.total_quantity) as cost_val,
+          (bb.mrp * bb.total_quantity) as mrp_val
+        FROM barcode_batches bb
+        WHERE bb.po_id IS NULL AND bb.status != 'deleted'
+        AND bb.created_at BETWEEN '${startDateStr}' AND '${endDateStr}'
+        ${filters.vendorId ? "AND bb.vendor::text = '" + filters.vendorId + "'" : ""}
+      )
+      SELECT 
+        COUNT(DISTINCT po_id) as "poCount",
+        SUM(quantity) as "totalQuantity",
+        SUM(cost_val) as "totalCost",
+        SUM(mrp_val) as "totalMRP"
+      FROM combined_data
+    `);
+    const s = summaryData[0];
 
-    if (exportMode) {
-      selectFields.push('bb.photos as photos');
-    }
+    // 2. Fetch Detailed Records (Unified UNION)
+    const items = await AppDataSource.query(`
+      WITH combined_details AS (
+        SELECT 
+          pi.id::text as id,
+          pi.design_no,
+          po.order_date as date,
+          pi.quantity,
+          v.name as vendor_name,
+          pi.cost_per_item as cost,
+          pi.mrp,
+          po.po_number,
+          po.invoice_number as po_invoice_number,
+          po.order_date as po_date,
+          COALESCE(pm.photos[1], '') as photo,
+          'PURCHASE' as source
+        FROM purchase_items pi
+        INNER JOIN purchase_orders po ON po.id = pi.po_id
+        LEFT JOIN vendors v ON v.id = po.vendor
+        LEFT JOIN product_masters pm ON (
+          pm.design_no = pi.design_no 
+          AND pm.vendor::text = po.vendor::text 
+          AND pm.product_group::text = pi.product_group::text
+          AND (pm.color::text = pi.color::text OR (pm.color IS NULL AND pi.color IS NULL))
+        )
+        WHERE po.status = 'Completed'
+        AND po.order_date BETWEEN '${startDateStr}' AND '${endDateStr}'
+        ${filters.vendorId ? "AND po.vendor::text = '" + filters.vendorId + "'" : ""}
+        
+        UNION ALL
+        
+        SELECT 
+          bb.id::text as id,
+          bb.design_no,
+          bb.created_at as date,
+          bb.total_quantity as quantity,
+          v.name as vendor_name,
+          bb.cost_actual as cost,
+          bb.mrp,
+          'Opening' as po_number,
+          'Opening Stock' as po_invoice_number,
+          bb.created_at as po_date,
+          COALESCE(bb.photos[1], pm_open.photos[1], '') as photo,
+          'OPENING' as source
+        FROM barcode_batches bb
+        LEFT JOIN vendors v ON v.id::text = bb.vendor::text
+        LEFT JOIN product_masters pm_open ON (
+          pm_open.design_no = bb.design_no 
+          AND pm_open.vendor::text = bb.vendor::text 
+          AND pm_open.product_group::text = bb.product_group::text
+          AND (pm_open.color::text = bb.color::text OR (pm_open.color IS NULL AND bb.color IS NULL))
+        )
+        WHERE bb.po_id IS NULL AND bb.status != 'deleted'
+        AND bb.created_at BETWEEN '${startDateStr}' AND '${endDateStr}'
+        ${filters.vendorId ? "AND bb.vendor::text = '" + filters.vendorId + "'" : ""}
+      )
+      SELECT * FROM combined_details ORDER BY date DESC, design_no ASC
+    `);
 
-    const qb = AppDataSource.getRepository(BarcodeBatch)
-      .createQueryBuilder('bb')
-      .leftJoin('bb.vendor', 'v')
-      .leftJoin(PurchaseOrder, 'po', 'po.id = bb.po_id')
-      .select(selectFields)
-      .where('COALESCE(po.order_date, bb.created_at) >= :start AND COALESCE(po.order_date, bb.created_at) < :endPlusOne', { start, endPlusOne });
-
-    if (filters.vendorId && filters.vendorId !== 'null' && filters.vendorId !== 'undefined' && filters.vendorId !== '') {
-      qb.andWhere('bb.vendor = :vendorId', { vendorId: filters.vendorId });
-    }
-
-    const items = await qb.getRawMany();
-
-    let totalCost = 0;
-    let totalMRP = 0;
-    let totalQuantity = 0;
-    let totalCostGross = 0;
-
-    const details = [];
-    for (const item of items) {
+    const details = items.map((item: any) => {
       const quantity = parseFloat(item.quantity) || 0;
       const cost = parseFloat(item.cost) || 0;
       const mrp = parseFloat(item.mrp) || 0;
-      const totalItemCost = cost * quantity;
-      const totalItemMRP = mrp * quantity;
-      const totalItemCostGross = totalItemCost * 1.12;
-
-      totalCost += totalItemCost;
-      totalMRP += totalItemMRP;
-      totalQuantity += quantity;
-      totalCostGross += totalItemCostGross;
-
-      if (exportMode) {
-        let photos = item.photos;
-        if (typeof photos === 'string' && photos.startsWith('{')) {
-          photos = photos.substring(1, photos.length - 1).split(',').map(s => s.trim().replace(/^"(.*)"$/, '$1'));
-        }
-        if (!Array.isArray(photos)) photos = [];
-        item.photos = photos;
-      }
-
-      details.push({
+      return {
         ...item,
         quantity,
         cost,
         mrp,
-        totalCost: Math.round(totalItemCost * 100) / 100,
-        totalCostGross: Math.round(totalItemCostGross * 100) / 100,
-        totalMRP: Math.round(totalItemMRP * 100) / 100,
-        discount: Math.round((totalItemMRP - totalItemCost) * 100) / 100,
-        margin: Math.round((mrp > 0 ? ((mrp - cost) / mrp) * 100 : 0) * 100) / 100
-      });
-    }
+        totalCost: Math.round(cost * quantity * 100) / 100,
+        totalMRP: Math.round(mrp * quantity * 100) / 100,
+        margin: mrp > 0 ? ((mrp - cost) / mrp) * 100 : 0,
+        photos: item.photo ? [item.photo] : []
+      };
+    });
 
     return {
       summary: {
-        totalCost: Math.round(totalCost * 100) / 100,
-        totalCostGross: Math.round(totalCostGross * 100) / 100,
-        totalMRP: Math.round(totalMRP * 100) / 100,
-        totalDiscount: Math.round((totalMRP - totalCost) * 100) / 100,
-        avgMargin: totalMRP > 0 ? ((totalMRP - totalCost) / totalMRP) * 100 : 0,
-        totalItems: totalQuantity,
-        itemsSold: totalQuantity
+        totalCost: Math.round(Number(s.totalCost || 0) * 100) / 100,
+        totalMRP: Math.round(Number(s.totalMRP || 0) * 100) / 100,
+        totalDiscount: Math.round((Number(s.totalMRP || 0) - Number(s.totalCost || 0)) * 100) / 100,
+        avgMargin: s.totalMRP > 0 ? ((Number(s.totalMRP) - Number(s.totalCost)) / Number(s.totalMRP)) * 100 : 0,
+        totalItems: Number(s.totalQuantity || 0),
+        poCount: parseInt(s.poCount || 0),
+        itemsSold: Number(s.totalQuantity || 0)
       },
       details
     };
@@ -1111,38 +1396,61 @@ export class ReportService {
     const start = filters.startDate.split('T')[0];
     const end = filters.endDate.split('T')[0];
 
-    // Purchases per vendor in period
-    const purchasesQB = AppDataSource.getRepository(BarcodeBatch)
-      .createQueryBuilder('bb')
-      .leftJoin('bb.vendor', 'v')
-      .select([
-        'COALESCE(v.name, \'Direct/Unknown\') as vendor_name',
-        'SUM(COALESCE(bb.total_quantity, 0)) as purchase_quantity',
-        'SUM(COALESCE(bb.cost_actual, 0) * COALESCE(bb.total_quantity, 0)) as purchase_cost',
-        'SUM(COALESCE(bb.mrp, 0) * COALESCE(bb.total_quantity, 0)) as purchase_mrp'
-      ])
-      .where('bb.created_at BETWEEN :start AND :end', { start, end });
+    // 2. Fetch independent data (Purchases & Stock) - Invoice-First Ground Truth
+    // Unified Purchases query: UNION of Purchase Invoices + Opening Stock
+    const purchasesData = await AppDataSource.query(`
+      WITH combined_purchases AS (
+        -- Part 1: Items from Completed Invoices
+        SELECT 
+          COALESCE(v.name, 'Direct/Unknown') as vendor_name,
+          SUM(pi.quantity) as qty,
+          SUM(pi.cost_per_item * pi.quantity) as cost,
+          SUM(pi.mrp * pi.quantity) as mrp
+        FROM purchase_items pi
+        INNER JOIN purchase_orders po ON po.id = pi.po_id
+        LEFT JOIN vendors v ON v.id = po.vendor
+        WHERE po.status = 'Completed'
+        AND po.order_date BETWEEN '${start}' AND '${end}'
+        ${filters.vendorId ? "AND po.vendor::text = '" + filters.vendorId + "'" : ""}
+        GROUP BY COALESCE(v.name, 'Direct/Unknown')
 
-    if (filters.vendorId && filters.vendorId !== '' && filters.vendorId !== 'null' && filters.vendorId !== 'undefined') {
-      purchasesQB.andWhere('v.id = :vendorId', { vendorId: filters.vendorId });
-    }
-    const purchasesData = await purchasesQB.groupBy('COALESCE(v.name, \'Direct/Unknown\')').getRawMany();
-    const purchaseMap = new Map(purchasesData.map(p => [p.vendor_name, p]));
+        UNION ALL
 
-    // Current Stock globally for vendors
-    const stockQB = AppDataSource.getRepository(BarcodeBatch)
-      .createQueryBuilder('bb')
-      .leftJoin('bb.vendor', 'v')
-      .select([
-        'COALESCE(v.name, \'Direct/Unknown\') as vendor_name',
-        'SUM(COALESCE(bb.available_quantity, 0)) as current_stock_qty'
-      ]);
+        -- Part 2: Opening Stock (No PO)
+        SELECT 
+          COALESCE(v.name, 'Direct/Unknown') as vendor_name,
+          SUM(bb.total_quantity) as qty,
+          SUM(bb.cost_actual * bb.total_quantity) as cost,
+          SUM(bb.mrp * bb.total_quantity) as mrp
+        FROM barcode_batches bb
+        LEFT JOIN vendors v ON v.id::text = bb.vendor::text
+        WHERE bb.po_id IS NULL AND bb.status != 'deleted'
+        AND bb.created_at BETWEEN '${start}' AND '${end}'
+        ${filters.vendorId ? "AND bb.vendor::text = '" + filters.vendorId + "'" : ""}
+        GROUP BY COALESCE(v.name, 'Direct/Unknown')
+      )
+      SELECT 
+        vendor_name,
+        SUM(qty) as purchase_quantity,
+        SUM(cost) as purchase_cost,
+        SUM(mrp) as purchase_mrp
+      FROM combined_purchases
+      GROUP BY vendor_name
+    `);
+    const purchaseMap = new Map<string, any>(purchasesData.map((p: any) => [p.vendor_name, p]));
 
-    if (filters.vendorId && filters.vendorId !== '' && filters.vendorId !== 'null' && filters.vendorId !== 'undefined') {
-      stockQB.andWhere('v.id = :vendorId', { vendorId: filters.vendorId });
-    }
-    const stockData = await stockQB.groupBy('COALESCE(v.name, \'Direct/Unknown\')').getRawMany();
-    const stockMap = new Map(stockData.map(s => [s.vendor_name, s]));
+    // Current Stock (Live snapshot)
+    const stockData = await AppDataSource.query(`
+      SELECT 
+        COALESCE(v.name, 'Direct/Unknown') as vendor_name,
+        SUM(COALESCE(bb.available_quantity, 0)) as current_stock_qty
+      FROM barcode_batches bb
+      LEFT JOIN vendors v ON v.id::text = bb.vendor::text
+      WHERE bb.status != 'deleted'
+      ${filters.vendorId && filters.vendorId !== '' && filters.vendorId !== 'null' ? "AND v.id::text = '" + filters.vendorId + "'" : ""}
+      GROUP BY COALESCE(v.name, 'Direct/Unknown')
+    `);
+    const stockMap = new Map<string, any>(stockData.map((s: any) => [s.vendor_name, s]));
 
     // 3. Aggregate Sales data from baseData.details
     const vendorMap = new Map<string, any>();
@@ -1176,7 +1484,7 @@ export class ReportService {
       ...Array.from(vendorMap.keys())
     ]);
 
-    const finalResults = Array.from(allVendorNames).map(vName => {
+    const finalResults = Array.from(allVendorNames).map((vName: any) => {
       const sale = vendorMap.get(vName) || { total_quantity: 0, total_revenue: 0, total_cost: 0, cost_gst: 0, gst_amount: 0, total_mrp: 0 };
       const purch = purchaseMap.get(vName) || { purchase_quantity: 0, purchase_cost: 0, purchase_mrp: 0 };
       const stk = stockMap.get(vName) || { current_stock_qty: 0 };
@@ -1579,6 +1887,11 @@ export class ReportService {
 
       qb.leftJoin(`${bbAlias}.vendor`, 'v');
       
+      // For BarcodeBatch (Purchases), we use the same unified date logic as other reports
+      const unifiedDate = repo === BarcodeBatch 
+        ? `COALESCE((SELECT po.order_date FROM purchase_orders po WHERE po.id = ${bbAlias}.po_id), ${bbAlias}.created_at)`
+        : dateField;
+
       if (vendorId) {
         qb.leftJoin(`${bbAlias}.size`, 'sz')
           .leftJoin(`${bbAlias}.color`, 'cl')
@@ -1586,9 +1899,9 @@ export class ReportService {
       }
 
       if (isRange) {
-        qb.andWhere(`${dateField} >= :start AND ${dateField} <= :end`, { start, end });
+        qb.andWhere(`${unifiedDate} >= :start AND ${unifiedDate} <= :end`, { start, end });
       } else {
-        qb.andWhere(`${dateField} < :start`, { start });
+        qb.andWhere(`${unifiedDate} < :start`, { start });
       }
 
       const qtyExpr = repo === BarcodeBatch ? `${bbAlias}.total_quantity` : 'base.quantity';

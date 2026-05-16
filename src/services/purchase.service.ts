@@ -648,7 +648,8 @@ export class PurchaseService {
         const costEncoded = encodeCost ? encodeCost(item.cost_per_item) : null;
 
         for (const sq of item.sizes) {
-          if (!sq.quantity || sq.quantity <= 0) continue;
+          const qtyVal = Number(sq.quantity);
+          if (isNaN(qtyVal) || qtyVal <= 0) continue;
           const alias = aliases[aliasIdx++];
           const structured = buildStructuredBarcode(groupCode, item.design_no, colorCode, vendor_code, item.mrp, alias);
           const printQty = sq.print_quantity ?? sq.quantity * (item.barcodes_per_item ?? 1);
@@ -843,7 +844,8 @@ export class PurchaseService {
       const newMap: Record<string, number> = {};
       for (const item of items) {
         for (const sq of item.sizes) {
-          if (!sq.quantity || sq.quantity <= 0) continue;
+          const qtyVal = Number(sq.quantity);
+          if (isNaN(qtyVal) || qtyVal <= 0) continue;
           const key = [
             ensureId(vendor),
             ensureId(item.design_no),
@@ -1070,7 +1072,8 @@ export class PurchaseService {
         const effectiveFloor = ensureId(item.floor_id) || gInfo?.floorId || null;
 
         for (const sq of item.sizes) {
-          if (!sq.quantity || sq.quantity <= 0) continue;
+          const qtyVal = Number(sq.quantity);
+          if (isNaN(qtyVal) || qtyVal <= 0) continue;
           piPlaceholders.push(
             `($${piIdx},$${piIdx+1},$${piIdx+2},$${piIdx+3},$${piIdx+4},$${piIdx+5},$${piIdx+6},$${piIdx+7},$${piIdx+8},$${piIdx+9},$${piIdx+10},$${piIdx+11},$${piIdx+12},$${piIdx+13},$${piIdx+14})`
           );

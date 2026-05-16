@@ -3,7 +3,7 @@ import { BarcodeBatch } from '../entities/BarcodeBatch';
 import { BarcodeSequence } from '../entities/BarcodeSequence';
 import { ProductMaster } from '../entities/ProductMaster';
 import { encodeCost } from '../utils/costEncoding';
-import { ILike } from 'typeorm';
+import { ILike, IsNull } from 'typeorm';
 import logger from '../utils/logger';
 
 export class InventoryService {
@@ -465,7 +465,12 @@ export class InventoryService {
     if (data.photos && Array.isArray(data.photos) && batch.design_no && batch.vendor_id) {
       try {
         await AppDataSource.getRepository(ProductMaster).update(
-          { design_no: batch.design_no, vendor_id: batch.vendor_id },
+          { 
+            design_no: batch.design_no, 
+            vendor_id: batch.vendor_id, 
+            color_id: batch.color_id || IsNull(),
+            product_group_id: batch.product_group_id
+          },
           { photos: data.photos, updated_at: new Date() }
         );
       } catch (err) {
