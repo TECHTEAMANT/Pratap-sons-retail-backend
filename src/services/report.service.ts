@@ -661,10 +661,9 @@ export class ReportService {
           pg.name as "productGroup",
           cl.name as "color",
           sz.name as "size",
-          bb_agg.barcodes as "barcodes",
-          bb_agg.available_qty as "available_qty",
-          bb_open.barcode_alias_8digit as "barcode_open",
-          bb_open.available_quantity as "available_qty_open",
+          COALESCE(bb_agg.barcodes, bb_open.barcode_alias_8digit) as "barcode",
+          COALESCE(bb_agg.available_qty, bb_open.available_quantity, 0) as "availableQtyRaw",
+          COALESCE(bb_open.photos[1], pm.photos[1]) as "photo",
           COALESCE(si_agg.sold_qty, 0) as "soldQty",
           COALESCE(ret_agg.ret_qty, 0) as "returnedQty",
           (c.total_qty - COALESCE(si_agg.sold_qty, 0) - COALESCE(ret_agg.ret_qty, 0)) as "availableQty",
@@ -688,8 +687,15 @@ export class ReportService {
           GROUP BY po_id_link, design_link, size_link, color_link
         ) bb_agg ON (c.source = 'PURCHASE' AND bb_agg.po_id_link = c.po_id AND bb_agg.design_link = c.design AND bb_agg.size_link = c.size_id AND bb_agg.color_link = c.color_id)
         
-        -- Special join for Opening Stock (1:1 by ID)
         LEFT JOIN barcode_batches bb_open ON (c.source = 'OPENING' AND bb_open.id::text = c.id)
+        
+        -- Photo Linking (Fallback to Product Master)
+        LEFT JOIN product_masters pm ON (
+          pm.design_no = c.design 
+          AND pm.vendor::text = c.vendor_id 
+          AND pm.product_group::text = c.pg_id
+          AND (pm.color::text = c.color_id OR (pm.color IS NULL AND c.color_id IS NULL))
+        )
         
         -- Global Sales/Returns linking
         LEFT JOIN (
@@ -715,16 +721,14 @@ export class ReportService {
         const landedCost = cost + purchaseGstAmount;
         const actualProfitPerUnit = mrp - landedCost;
         
-        // For purchased items, use aggregated available quantity
-        // For opening stock, use the single batch quantity
-        const availableQty = r.source === 'OPENING' ? Number(r.available_qty_open || 0) : Number(r.available_qty || 0);
+        const availableQty = Number(r.availableQtyRaw || 0);
         const soldQty = Number(r.soldQty || 0);
-        const barcodes = r.source === 'OPENING' ? r.barcode_open : r.barcodes;
+        const barcode = r.barcode || 'NO BARCODE';
 
         return {
           id: r.id,
-          itemCode: barcodes || 'NO BARCODE',
-          barcode: barcodes || 'NO BARCODE',
+          itemCode: barcode,
+          barcode: barcode,
           design: r.design,
           color: r.color || r.color_id || '-',
           size: r.size || r.size_id || '-',
@@ -745,7 +749,8 @@ export class ReportService {
           landedCost,
           inventoryValue: availableQty * landedCost,
           potentialProfit: availableQty * actualProfitPerUnit,
-          soldProfit: soldQty * actualProfitPerUnit
+          soldProfit: soldQty * actualProfitPerUnit,
+          photos: r.photo ? [r.photo] : []
         };
       });
       // NO status filtering to ensure 100% parity with purchase invoices
@@ -1074,10 +1079,17 @@ export class ReportService {
           po.po_number,
           po.invoice_number as po_invoice_number,
           po.order_date as po_date,
+          COALESCE(pm.photos[1], '') as photo,
           'PURCHASE' as source
         FROM purchase_items pi
         INNER JOIN purchase_orders po ON po.id = pi.po_id
         LEFT JOIN vendors v ON v.id = po.vendor
+        LEFT JOIN product_masters pm ON (
+          pm.design_no = pi.design_no 
+          AND pm.vendor::text = po.vendor::text 
+          AND pm.product_group::text = pi.product_group::text
+          AND (pm.color::text = pi.color::text OR (pm.color IS NULL AND pi.color IS NULL))
+        )
         WHERE po.status = 'Completed'
         AND po.order_date BETWEEN '${startDateStr}' AND '${endDateStr}'
         ${filters.vendorId ? "AND po.vendor::text = '" + filters.vendorId + "'" : ""}
@@ -1095,9 +1107,16 @@ export class ReportService {
           'Opening' as po_number,
           'Opening Stock' as po_invoice_number,
           bb.created_at as po_date,
+          COALESCE(bb.photos[1], pm_open.photos[1], '') as photo,
           'OPENING' as source
         FROM barcode_batches bb
         LEFT JOIN vendors v ON v.id::text = bb.vendor::text
+        LEFT JOIN product_masters pm_open ON (
+          pm_open.design_no = bb.design_no 
+          AND pm_open.vendor::text = bb.vendor::text 
+          AND pm_open.product_group::text = bb.product_group::text
+          AND (pm_open.color::text = bb.color::text OR (pm_open.color IS NULL AND bb.color IS NULL))
+        )
         WHERE bb.po_id IS NULL AND bb.status != 'deleted'
         AND bb.created_at BETWEEN '${startDateStr}' AND '${endDateStr}'
         ${filters.vendorId ? "AND bb.vendor::text = '" + filters.vendorId + "'" : ""}
@@ -1116,7 +1135,8 @@ export class ReportService {
         mrp,
         totalCost: Math.round(cost * quantity * 100) / 100,
         totalMRP: Math.round(mrp * quantity * 100) / 100,
-        margin: mrp > 0 ? ((mrp - cost) / mrp) * 100 : 0
+        margin: mrp > 0 ? ((mrp - cost) / mrp) * 100 : 0,
+        photos: item.photo ? [item.photo] : []
       };
     });
 
