@@ -655,6 +655,7 @@ export class ReportService {
           ${filters.vendorId ? "AND bb.vendor::text = '" + filters.vendorId + "'" : ""}
           AND bb.created_at BETWEEN '${startDateStr}' AND '${endDateStr}'
         )
+        -- Optimized main query with index-friendly joins and lateral sales lookup
         SELECT 
           c.*,
           v.name as "vendorName",
@@ -669,47 +670,53 @@ export class ReportService {
           (c.total_qty - COALESCE(si_agg.sold_qty, 0) - COALESCE(ret_agg.ret_qty, 0)) as "availableQty",
           CASE WHEN c.mrp <= 1000 THEN 5 ELSE 12 END as "gstRate"
         FROM combined_items c
-        LEFT JOIN vendors v ON v.id::text = c.vendor_id
-        LEFT JOIN product_groups pg ON pg.id::text = c.pg_id
-        LEFT JOIN colors cl ON cl.id::text = c.color_id
-        LEFT JOIN sizes sz ON sz.id::text = c.size_id
-        -- Match back to specific barcode batch for live status (Optimized Aggregation)
+        -- Use native UUID joins (Fastest)
+        LEFT JOIN vendors v ON v.id = CAST(c.vendor_id AS uuid)
+        LEFT JOIN product_groups pg ON pg.id = CAST(c.pg_id AS uuid)
+        LEFT JOIN colors cl ON cl.id = CAST(c.color_id AS uuid)
+        LEFT JOIN sizes sz ON sz.id = CAST(c.size_id AS uuid)
+        
+        -- High Performance Aggregation for Purchase Barcodes
         LEFT JOIN (
           SELECT 
-            po_id::text as po_id_link, 
+            po_id::uuid as po_id_link, 
             design_no as design_link, 
-            size::text as size_link, 
-            color::text as color_link,
-            string_agg(barcode_alias_8digit, ', ') as barcodes_agg,
+            size::uuid as size_link, 
+            color::uuid as color_link,
+            ${exportMode ? "string_agg(barcode_alias_8digit, ', ') as barcodes_agg" : "NULL as barcodes_agg"},
+            (array_agg(barcode_alias_8digit))[1] as first_barcode,
             SUM(available_quantity) as available_qty_total
           FROM barcode_batches
           WHERE status != 'deleted'
-          ${filters.vendorId ? "AND vendor::text = '" + filters.vendorId + "'" : ""}
+          ${filters.vendorId ? "AND vendor = CAST('" + filters.vendorId + "' AS uuid)" : ""}
           GROUP BY po_id_link, design_link, size_link, color_link
-        ) bb_agg ON (c.source = 'PURCHASE' AND bb_agg.po_id_link = c.po_id AND bb_agg.design_link = c.design AND bb_agg.size_link = c.size_id AND bb_agg.color_link = c.color_id)
+        ) bb_agg ON (c.source = 'PURCHASE' AND bb_agg.po_id_link = CAST(c.po_id AS uuid) AND bb_agg.design_link = c.design AND bb_agg.size_link = CAST(c.size_id AS uuid) AND bb_agg.color_link = CAST(c.color_id AS uuid))
         
-        LEFT JOIN barcode_batches bb_open ON (c.source = 'OPENING' AND bb_open.id::text = c.id)
+        LEFT JOIN barcode_batches bb_open ON (c.source = 'OPENING' AND bb_open.id = CAST(c.id AS uuid))
         
-        -- Photo Linking (Fallback to Product Master)
+        -- Photo Linking (Fallback to Product Master) - Only if photos are needed
+        ${includePhotos ? `
         LEFT JOIN product_masters pm ON (
           pm.design_no = c.design 
-          AND pm.vendor::text = c.vendor_id 
-          AND pm.product_group::text = c.pg_id
-          AND (pm.color::text = c.color_id OR (pm.color IS NULL AND c.color_id IS NULL))
+          AND pm.vendor = CAST(c.vendor_id AS uuid)
+          AND pm.product_group = CAST(c.pg_id AS uuid)
+          AND (pm.color = CAST(c.color_id AS uuid) OR (pm.color IS NULL AND c.color_id IS NULL))
         )
+        ` : 'LEFT JOIN (SELECT ARRAY[]::text[] as photos) pm ON true'}
         
-        -- Global Sales/Returns linking (Optimized to specific barcodes if possible)
-        LEFT JOIN (
-          SELECT sii.barcode_8digit, SUM(sii.quantity) as sold_qty 
-          FROM sales_invoice_items sii
-          GROUP BY sii.barcode_8digit
-        ) si_agg ON si_agg.barcode_8digit = COALESCE(bb_open.barcode_alias_8digit, (SELECT b FROM unnest(string_to_array(bb_agg.barcodes_agg, ', ')) b LIMIT 1))
+        -- LATERAL Joins for Sales/Returns (Extremely fast for paginated results)
+        LEFT JOIN LATERAL (
+          SELECT SUM(quantity) as sold_qty 
+          FROM sales_invoice_items 
+          WHERE barcode_8digit = COALESCE(bb_open.barcode_alias_8digit, bb_agg.first_barcode)
+        ) si_agg ON true
         
-        LEFT JOIN (
-          SELECT pri.barcode_id, SUM(pri.quantity) as ret_qty 
-          FROM purchase_return_items pri
-          GROUP BY pri.barcode_id
-        ) ret_agg ON ret_agg.barcode_id = COALESCE(bb_open.barcode_alias_8digit, (SELECT b FROM unnest(string_to_array(bb_agg.barcodes_agg, ', ')) b LIMIT 1))
+        LEFT JOIN LATERAL (
+          SELECT SUM(quantity) as ret_qty 
+          FROM purchase_return_items 
+          WHERE barcode_id = COALESCE(bb_open.barcode_alias_8digit, bb_agg.first_barcode)
+        ) ret_agg ON true
+        
         ORDER BY c.po_date DESC, c.design ASC
         LIMIT ${limit} OFFSET ${(page - 1) * limit}
       `);
@@ -724,12 +731,24 @@ export class ReportService {
         
         const availableQty = Number(r.availableQtyRaw || 0);
         const soldQty = Number(r.soldQty || 0);
-        const barcode = r.barcode || 'NO BARCODE';
+        
+        // Safety: Limit barcode string to prevent "Invalid string length" (and Excel cell limits)
+        let displayBarcode = r.barcodes_agg || r.barcode || 'NO BARCODE';
+        if (displayBarcode.length > 2000) {
+          displayBarcode = displayBarcode.substring(0, 2000) + '... (truncated)';
+        }
+
+        // Safety: Check if photo is Base64 and block it if too large
+        // Only subscript if we actually fetched photos
+        let photo = includePhotos ? r.photo : '';
+        if (photo && photo.startsWith('data:image') && photo.length > 1000) {
+          photo = ''; // Block heavy base64 strings in report
+        }
 
         return {
           id: r.id,
-          itemCode: barcode,
-          barcode: barcode,
+          itemCode: displayBarcode,
+          barcode: displayBarcode,
           design: r.design,
           color: r.color || r.color_id || '-',
           size: r.size || r.size_id || '-',
@@ -751,7 +770,7 @@ export class ReportService {
           inventoryValue: availableQty * landedCost,
           potentialProfit: availableQty * actualProfitPerUnit,
           soldProfit: soldQty * actualProfitPerUnit,
-          photos: r.photo ? [r.photo] : []
+          photos: photo ? [photo] : []
         };
       });
       // NO status filtering to ensure 100% parity with purchase invoices
