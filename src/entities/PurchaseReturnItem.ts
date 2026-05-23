@@ -5,6 +5,7 @@ import {
   ManyToOne,
   JoinColumn,
   CreateDateColumn,
+  Index,
 } from 'typeorm';
 import { PurchaseReturn } from './PurchaseReturn';
 import { BarcodeBatch } from './BarcodeBatch';
@@ -14,6 +15,7 @@ export class PurchaseReturnItem {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
 
+  @Index()
   @Column({ type: 'uuid' })
   return_id!: string;
 
@@ -21,6 +23,7 @@ export class PurchaseReturnItem {
   @JoinColumn({ name: 'return_id' })
   purchase_return!: PurchaseReturn;
 
+  @Index()
   @Column({ type: 'uuid' })
   item_id!: string;
   
@@ -28,6 +31,7 @@ export class PurchaseReturnItem {
   @JoinColumn({ name: 'item_id' })
   item!: BarcodeBatch;
 
+  @Index()
   @Column({ type: 'text' })
   barcode_id!: string;
 

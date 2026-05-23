@@ -40,30 +40,98 @@ export class PurchaseReturnService {
   }
 
   async findAllItems(filters: any) {
-    const qb = AppDataSource.getRepository(PurchaseReturnItem).createQueryBuilder('pri')
-      .leftJoinAndSelect('pri.purchase_return', 'pr');
-      
+    // Build WHERE clauses
+    const whereClauses: string[] = [];
+    const params: any[] = [];
+    let paramIdx = 1;
+
     if (filters['gte_purchase_return.return_date']) {
-      qb.andWhere('DATE(pr.return_date) >= :gte', { gte: filters['gte_purchase_return.return_date'] });
+      whereClauses.push(`DATE(pr.return_date) >= $${paramIdx++}`);
+      params.push(filters['gte_purchase_return.return_date']);
     }
     if (filters['lte_purchase_return.return_date']) {
-      qb.andWhere('DATE(pr.return_date) <= :lte', { lte: filters['lte_purchase_return.return_date'] });
+      whereClauses.push(`DATE(pr.return_date) <= $${paramIdx++}`);
+      params.push(filters['lte_purchase_return.return_date']);
     }
     if (filters.return_id) {
-      if (filters.return_id.includes(',')) {
-        qb.andWhere('pri.return_id IN (:...returnIds)', { returnIds: filters.return_id.split(',') });
-      } else {
-        qb.andWhere('pri.return_id = :returnId', { returnId: filters.return_id });
-      }
+      const ids = filters.return_id.includes(',') ? filters.return_id.split(',') : [filters.return_id];
+      whereClauses.push(`pri.return_id = ANY($${paramIdx++}::uuid[])`);
+      params.push(ids);
     }
 
-    // Always join item details for returns (often needed for invoices/analysis)
-    qb.leftJoinAndSelect('pri.item', 'item')
-      .leftJoinAndSelect('item.product_group', 'pg')
-      .leftJoinAndSelect('item.color', 'c')
-      .leftJoinAndSelect('item.size', 's');
-    
-    return qb.getMany();
+    const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+
+    // Fast raw SQL: joins barcode_batches WITHOUT status filter (so soft-deleted barcodes still show data)
+    // Also pulls purchase order, vendor, product group, color, size for full Design/Product columns
+    const rows = await AppDataSource.query(`
+      SELECT
+        pri.id,
+        pri.return_id,
+        pri.item_id,
+        pri.barcode_id,
+        pri.reason,
+        pri.condition,
+        pri.cost,
+        pri.discount,
+        pri.quantity,
+        pri.hsn_code,
+        pr.return_number,
+        pr.return_date,
+        pr.status as return_status,
+        v.name as vendor_name,
+        po.invoice_number as po_invoice_number,
+        bb.design_no,
+        bb.barcode_structured,
+        bb.barcode_alias_8digit,
+        bb.mrp,
+        pg.name as product_group,
+        c.name as color,
+        s.name as size
+      FROM purchase_return_items pri
+      INNER JOIN purchase_returns pr ON pr.id = pri.return_id
+      LEFT JOIN vendors v ON v.id = pr.vendor_id
+      LEFT JOIN purchase_orders po ON po.id = pr.original_po_id
+      LEFT JOIN barcode_batches bb ON bb.id = pri.item_id
+      LEFT JOIN product_groups pg ON pg.id = bb.product_group
+      LEFT JOIN colors c ON c.id = bb.color
+      LEFT JOIN sizes s ON s.id = bb.size
+      ${whereSql}
+      ORDER BY pr.return_date DESC, pr.return_number DESC, pri.id
+    `, params);
+
+    return rows.map((r: any) => ({
+      id: r.id,
+      return_id: r.return_id,
+      item_id: r.item_id,
+      barcode_id: r.barcode_id,
+      reason: r.reason,
+      condition: r.condition,
+      cost: r.cost,
+      discount: r.discount,
+      quantity: r.quantity,
+      hsn_code: r.hsn_code,
+      design_no: r.design_no || 'N/A',
+      product_group: { name: r.product_group || '-' },
+      gst_logic: 'AUTO_5_18',
+      mrp: r.mrp || 0,
+      purchase_return: {
+        id: r.return_id,
+        return_number: r.return_number,
+        return_date: r.return_date,
+        status: r.return_status,
+        vendor: { name: r.vendor_name || '-' },
+        original_po: r.po_invoice_number ? { invoice_number: r.po_invoice_number } : null,
+      },
+      item: {
+        design_no: r.design_no || 'N/A',
+        barcode_structured: r.barcode_structured,
+        barcode_alias_8digit: r.barcode_alias_8digit,
+        mrp: r.mrp,
+        product_group: { name: r.product_group || '-' },
+        color: r.color ? { name: r.color } : null,
+        size: r.size ? { name: r.size } : null,
+      },
+    }));
   }
 
   async create(data: any, userId: string) {
@@ -306,6 +374,11 @@ export class PurchaseReturnService {
 
         if (updateResult.length === 0) {
           const [check] = await manager.query(`SELECT available_quantity, barcode_alias_8digit FROM barcode_batches WHERE id = $1`, [itemId]);
+          if (!check) {
+            throw new Error(`Inventory record not found for Item ID: ${itemId}`);
+          } else {
+            throw new Error(`Insufficient inventory for ${check.barcode_alias_8digit}. Available: ${check.available_quantity}, Requested Delta: ${delta}`);
+          }
         }
       }
 
@@ -359,16 +432,16 @@ export class PurchaseReturnService {
         sgst = combinedGst / 2;
       }
 
-      // 10. Update the return header
+      // 10. Update the return header (preserving original return_date)
       await manager.query(
         `UPDATE purchase_returns SET
-           return_date = $1, total_items = $2, total_amount = $3,
-           ledger_discount = $4, ledger_freight = $5, ledger_freight_gst_rate = $6,
-           gst_type = $7, cgst_amount = $8, sgst_amount = $9, igst_amount = $10,
-           total_return_amount = $11, reason = $12, notes = $13, updated_at = NOW()
-         WHERE id = $14`,
+           total_items = $1, total_amount = $2,
+           ledger_discount = $3, ledger_freight = $4, ledger_freight_gst_rate = $5,
+           gst_type = $6, cgst_amount = $7, sgst_amount = $8, igst_amount = $9,
+           total_return_amount = $10, reason = $11, notes = $12, updated_at = NOW()
+         WHERE id = $13`,
         [
-          payload.return_date, totalItems, totalAmount,
+          totalItems, totalAmount,
           ledgerDiscount > 0 ? ledgerDiscount : null,
           ledgerFreight > 0 ? ledgerFreight : null,
           ledgerFreight > 0 ? ledgerFreightGstRate : null,
