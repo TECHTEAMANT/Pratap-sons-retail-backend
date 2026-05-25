@@ -193,7 +193,7 @@ export class PurchaseService {
       qb.andWhere('po.po_number ILIKE :poNum', { poNum: `${filters.search_po_number}%` });
     }
     if (filters.search) {
-      qb.andWhere('(po.po_number ILIKE :s OR v.name ILIKE :s)', { s: `%${filters.search}%` });
+      qb.andWhere('(po.po_number ILIKE :s OR v.name ILIKE :s OR po.invoice_number ILIKE :s)', { s: `%${filters.search}%` });
     }
     if (filters.po_number) {
       qb.andWhere('po.po_number = :exactPoNum', { exactPoNum: filters.po_number });
@@ -495,11 +495,14 @@ export class PurchaseService {
       const designNos = [...new Set(items.map(i => ensureId(i.design_no)?.trim().toUpperCase()))].filter(Boolean) as string[];
       const existingMasters: any[] = designNos.length
         ? await manager.query(
-            `SELECT id, design_no, hsn_code FROM product_masters WHERE vendor = $1 AND UPPER(TRIM(design_no)) = ANY($2)`,
+            `SELECT id, design_no, color, hsn_code FROM product_masters WHERE vendor = $1 AND UPPER(TRIM(design_no)) = ANY($2)`,
             [vendor, designNos]
           )
         : [];
-      const masterMap = new Map(existingMasters.map(m => [m.design_no.trim().toUpperCase(), m]));
+      const masterMap = new Map(existingMasters.map(m => [
+        [m.design_no.trim().toUpperCase(), ensureId(m.color) || ''].join('__'),
+        m
+      ]));
       t = lap(`Step 3 — Fetch product_masters (${designNos.length} designs, ${existingMasters.length} found)`, t);
 
       // ── 4. Batch resolve group/color codes (single query each) ────────────
@@ -519,13 +522,20 @@ export class PurchaseService {
       t = lap(`Step 5+6 — Reserve ${totalBarcodeCount} barcode aliases`, t);
 
       // ── 7. Upsert product_masters (batch: one UPDATE + one multi-row INSERT) ─
-      const toUpdate = items.filter(item => masterMap.has(ensureId(item.design_no)?.trim().toUpperCase() || ''));
-      const toInsert = items.filter(item => !masterMap.has(ensureId(item.design_no)?.trim().toUpperCase() || ''));
+      const toUpdate = items.filter(item => {
+        const key = [ensureId(item.design_no)?.trim().toUpperCase() || '', ensureId(item.color) || ''].join('__');
+        return masterMap.has(key);
+      });
+      const toInsert = items.filter(item => {
+        const key = [ensureId(item.design_no)?.trim().toUpperCase() || '', ensureId(item.color) || ''].join('__');
+        return !masterMap.has(key);
+      });
 
       // Run all product master updates in parallel
       if (toUpdate.length > 0) {
         await Promise.all(toUpdate.map(item => {
-          const existing = masterMap.get(ensureId(item.design_no)?.trim().toUpperCase() || '')!;
+          const key = [ensureId(item.design_no)?.trim().toUpperCase() || '', ensureId(item.color) || ''].join('__');
+          const existing = masterMap.get(key)!;
           return manager.query(
             `UPDATE product_masters SET
                hsn_code = $1, mrp = $2, barcodes_per_item = $3,
@@ -765,17 +775,26 @@ export class PurchaseService {
       const designNos = [...new Set(items.map(i => ensureId(i.design_no)?.trim().toUpperCase()))].filter(Boolean) as string[];
       const existingMasters: any[] = designNos.length
         ? await manager.query(
-            `SELECT id, design_no, hsn_code FROM product_masters WHERE vendor = $1 AND UPPER(TRIM(design_no)) = ANY($2)`,
+            `SELECT id, design_no, color, hsn_code FROM product_masters WHERE vendor = $1 AND UPPER(TRIM(design_no)) = ANY($2)`,
             [vendor, designNos]
           )
         : [];
-      const masterMap = new Map(existingMasters.map(m => [m.design_no.trim().toUpperCase(), m]));
+      const masterMap = new Map(existingMasters.map(m => [
+        [m.design_no.trim().toUpperCase(), ensureId(m.color) || ''].join('__'),
+        m
+      ]));
 
       // ── Bulk UPDATE existing masters (single VALUES query) ────────────────
       const pmToUpdate = items
-        .map(item => ({ item, existing: masterMap.get(ensureId(item.design_no)?.trim().toUpperCase() || '') }))
+        .map(item => {
+          const key = [ensureId(item.design_no)?.trim().toUpperCase() || '', ensureId(item.color) || ''].join('__');
+          return { item, existing: masterMap.get(key) };
+        })
         .filter((x): x is { item: BulkItem; existing: any } => !!x.existing);
-      const pmToInsert = items.filter(item => !masterMap.has(ensureId(item.design_no)?.trim().toUpperCase() || ''));
+      const pmToInsert = items.filter(item => {
+        const key = [ensureId(item.design_no)?.trim().toUpperCase() || '', ensureId(item.color) || ''].join('__');
+        return !masterMap.has(key);
+      });
 
       if (pmToUpdate.length > 0) {
         const pmVals: any[] = [];

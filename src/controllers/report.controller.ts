@@ -16,11 +16,26 @@ export class ReportController {
       sendSuccess(res, await reportService.salesReport(params)); 
     } catch (e: any) { sendError(res, e.message); } 
   }
+  async salesAnalysisReport(req: AuthenticatedRequest, res: Response) { 
+    if (req.user?.role === 'Vendor') return sendError(res, 'Access denied', 403);
+    try { 
+      const params = req.query as any;
+      if (params.exportMode === 'true') params.exportMode = true;
+      if (params.page) params.page = parseInt(params.page);
+      if (params.limit) params.limit = parseInt(params.limit);
+      
+      sendSuccess(res, await reportService.salesAnalysisReport(params)); 
+    } catch (e: any) { sendError(res, e.message); } 
+  }
   async inventoryReport(req: AuthenticatedRequest, res: Response) { 
     try { 
       const filters = req.query as any;
       if (req.user?.role === 'Vendor') filters.vendorId = req.user.vendorId || undefined;
       if (filters.exportMode === 'true') filters.exportMode = true;
+      if (filters.includePhotos === 'true') filters.includePhotos = true;
+      if (filters.skipSummary === 'true') filters.skipSummary = true;
+      if (filters.page) filters.page = parseInt(filters.page);
+      if (filters.limit) filters.limit = parseInt(filters.limit);
       sendSuccess(res, await reportService.inventoryReport(filters)); 
     } catch (e: any) { sendError(res, e.message); } 
   }
@@ -129,6 +144,15 @@ export class ReportController {
       sendSuccess(res, data);
     } catch (e: any) { sendError(res, e.message); }
   }
+  async stockLedgerReport(req: AuthenticatedRequest, res: Response) { 
+    if (req.user?.role === 'Vendor') return sendError(res, 'Access denied', 403);
+    try { 
+      const filters = req.query as any;
+      if (filters.page) filters.page = parseInt(filters.page);
+      if (filters.limit) filters.limit = parseInt(filters.limit);
+      sendSuccess(res, await reportService.stockLedgerReport(filters)); 
+    } catch (e: any) { sendError(res, e.message); } 
+  }
   async designAnalysisReport(req: AuthenticatedRequest, res: Response) { 
     try { 
       const filters = req.query as any;
@@ -153,6 +177,21 @@ export class ReportController {
   async pendingPayments(req: AuthenticatedRequest, res: Response) {
     if (req.user?.role === 'Vendor') return sendError(res, 'Access denied', 403);
     try { sendSuccess(res, await reportService.pendingPaymentsReport()); } catch (e: any) { sendError(res, e.message); }
+  }
+  async customerCreditReport(req: AuthenticatedRequest, res: Response) {
+    if (req.user?.role === 'Vendor') return sendError(res, 'Access denied', 403);
+    try { sendSuccess(res, await reportService.customerCreditReport(req.query as any)); } catch (e: any) { sendError(res, e.message); }
+  }
+  async customerLedger(req: AuthenticatedRequest, res: Response) {
+    if (req.user?.role === 'Vendor') return sendError(res, 'Access denied', 403);
+    const { customerId } = req.params;
+    if (!customerId) return sendError(res, 'Customer ID is required');
+    try { sendSuccess(res, await reportService.customerLedger(customerId)); } catch (e: any) { sendError(res, e.message); }
+  }
+
+  async barcodeReconciliationReport(req: AuthenticatedRequest, res: Response) {
+    if (req.user?.role === 'Vendor') return sendError(res, 'Access denied', 403);
+    try { sendSuccess(res, await reportService.barcodeReconciliationReport(req.query as any)); } catch (e: any) { sendError(res, e.message); }
   }
 }
 

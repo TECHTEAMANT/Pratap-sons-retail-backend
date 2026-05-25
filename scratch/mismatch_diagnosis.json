@@ -1,0 +1,129 @@
+{
+  "actualSales": {
+    "total_sold": 3395,
+    "line_items": "3375"
+  },
+  "inventorySales": {
+    "counted_sold": 3378
+  },
+  "nullBarcodeSales": {
+    "qty": null,
+    "line_items": "0"
+  },
+  "missingSalesTop": [
+    {
+      "barcode_8digit": "00007544",
+      "qty": 3,
+      "line_items": "3"
+    },
+    {
+      "barcode_8digit": "00004716",
+      "qty": 2,
+      "line_items": "2"
+    },
+    {
+      "barcode_8digit": "00007550",
+      "qty": 2,
+      "line_items": "2"
+    },
+    {
+      "barcode_8digit": "00001404",
+      "qty": 1,
+      "line_items": "1"
+    },
+    {
+      "barcode_8digit": "00005153",
+      "qty": 1,
+      "line_items": "1"
+    },
+    {
+      "barcode_8digit": "00000844",
+      "qty": 1,
+      "line_items": "1"
+    },
+    {
+      "barcode_8digit": "00000954",
+      "qty": 1,
+      "line_items": "1"
+    },
+    {
+      "barcode_8digit": "00006011",
+      "qty": 1,
+      "line_items": "1"
+    },
+    {
+      "barcode_8digit": "00003216",
+      "qty": 1,
+      "line_items": "1"
+    },
+    {
+      "barcode_8digit": "00005152",
+      "qty": 1,
+      "line_items": "1"
+    },
+    {
+      "barcode_8digit": "00005154",
+      "qty": 1,
+      "line_items": "1"
+    },
+    {
+      "barcode_8digit": "00001405",
+      "qty": 1,
+      "line_items": "1"
+    },
+    {
+      "barcode_8digit": "00003218",
+      "qty": 1,
+      "line_items": "1"
+    }
+  ],
+  "actualPurchaseReturns": {
+    "total_returned": 750,
+    "line_items": "598"
+  },
+  "inventoryPurchaseReturns": {
+    "counted_returned": 742
+  },
+  "missingPurchaseReturnsTop": [
+    {
+      "barcode_id": "00006439",
+      "qty": 1,
+      "line_items": "1"
+    },
+    {
+      "barcode_id": "00008387",
+      "qty": 1,
+      "line_items": "1"
+    },
+    {
+      "barcode_id": "00001180",
+      "qty": 1,
+      "line_items": "1"
+    },
+    {
+      "barcode_id": "00001185",
+      "qty": 1,
+      "line_items": "1"
+    },
+    {
+      "barcode_id": "00001181",
+      "qty": 1,
+      "line_items": "1"
+    },
+    {
+      "barcode_id": "00001179",
+      "qty": 1,
+      "line_items": "1"
+    },
+    {
+      "barcode_id": "00008430",
+      "qty": 1,
+      "line_items": "1"
+    },
+    {
+      "barcode_id": "00005156",
+      "qty": 1,
+      "line_items": "1"
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, ManyToOne, JoinColumn } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, ManyToOne, JoinColumn, Index } from 'typeorm';
 import { SalesReturn } from './SalesReturn';
 import { Salesman } from './Salesman';
 
@@ -10,9 +10,11 @@ export class SalesReturnItem {
   id: string;
 
 
+  @Index()
   @Column({ type: 'text', nullable: true })
   barcode_8digit: string;
 
+  @Index()
   @Column({ type: 'text', nullable: true })
   design_no: string;
 
@@ -53,6 +55,7 @@ export class SalesReturnItem {
   created_at: Date;
 
   // Relations
+  @Index()
   @ManyToOne(() => SalesReturn, ret => ret.items, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'return_id' })
   salesReturn: SalesReturn;

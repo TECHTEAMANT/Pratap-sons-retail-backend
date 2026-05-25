@@ -14,6 +14,7 @@ router.get('/design-analysis', requirePermissionOrVendor('can_view_reports'), (r
 router.use(requirePermission('can_view_reports'));
 
 router.get('/sales', (req, res) => reportController.salesReport(req, res));
+router.get('/sales-analysis', (req, res) => reportController.salesAnalysisReport(req, res));
 router.get('/inventory', (req, res) => reportController.inventoryReport(req, res));
 router.get('/inventory/photo/:barcode', (req, res) => reportController.getInventoryPhoto(req, res));
 router.get('/gst', (req, res) => reportController.gstReport(req, res));
@@ -33,5 +34,9 @@ router.get('/advances', (req, res) => reportController.advanceAnalysis(req, res)
 router.get('/approval', (req, res) => reportController.approvalReport(req, res));
 router.get('/wallet-ledger', (req, res) => reportController.walletLedgerReport(req, res));
 router.get('/pending-payments', (req, res) => reportController.pendingPayments(req, res));
+router.get('/customer-credits', (req, res) => reportController.customerCreditReport(req, res));
+router.get('/customer-ledger/:customerId', (req, res) => reportController.customerLedger(req, res));
+router.get('/barcode-reconciliation', (req, res) => reportController.barcodeReconciliationReport(req, res));
+router.get('/stock-ledger', (req, res) => reportController.stockLedgerReport(req, res));
 
 export default router;

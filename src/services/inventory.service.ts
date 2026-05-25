@@ -246,27 +246,47 @@ export class InventoryService {
         LEFT JOIN vendors vd ON vd.id = bb.vendor
         LEFT JOIN product_groups pg ON pg.id = bb.product_group
         LEFT JOIN colors cl ON cl.id = bb.color
-        WHERE bb.status IN ('active', 'Available', 'returned', 'defective', 'Sold', 'Returned') ${searchCond}
+        WHERE bb.status IN ('active', 'Available', 'returned', 'defective', 'Sold', 'Returned') AND bb.total_quantity > 0 ${searchCond}
         GROUP BY bb.design_no, bb.vendor, bb.product_group, bb.color
       ) g
     `;
 
     const dataSql = `
-      WITH def_agg AS (
-        SELECT COALESCE(ds.barcode_batch_id, bb_link.id) as batch_id, 
-               SUM(ds.quantity) AS defective_qty
+      WITH paginated_groups AS (
+        SELECT bb.design_no, bb.vendor, bb.product_group, bb.color, MAX(bb.created_at) as max_created
+        FROM barcode_batches bb
+        LEFT JOIN vendors vd ON vd.id = bb.vendor
+        LEFT JOIN product_groups pg ON pg.id = bb.product_group
+        LEFT JOIN colors cl ON cl.id = bb.color
+        WHERE bb.status IN ('active', 'Available', 'returned', 'defective', 'Sold', 'Returned') AND bb.total_quantity > 0 ${searchCond}
+        GROUP BY bb.design_no, bb.vendor, bb.product_group, bb.color
+        ORDER BY MAX(bb.created_at) DESC
+        LIMIT $${limitIdx} OFFSET $${offsetIdx}
+      ),
+      filtered_batches AS (
+        SELECT bb.* 
+        FROM barcode_batches bb
+        INNER JOIN paginated_groups pg ON 
+              bb.design_no = pg.design_no 
+          AND (bb.vendor = pg.vendor OR (bb.vendor IS NULL AND pg.vendor IS NULL))
+          AND (bb.product_group = pg.product_group OR (bb.product_group IS NULL AND pg.product_group IS NULL))
+          AND (bb.color = pg.color OR (bb.color IS NULL AND pg.color IS NULL))
+      ),
+      def_agg AS (
+        SELECT fb.id AS batch_id, SUM(ds.quantity) AS defective_qty
         FROM defective_stock ds
-        LEFT JOIN barcode_batches bb_link ON bb_link.barcode_alias_8digit = ds.barcode_alias
+        INNER JOIN filtered_batches fb ON (fb.barcode_alias_8digit = ds.barcode_alias OR fb.id = ds.barcode_batch_id)
         WHERE ds.reason != 'Returned to vendor' OR ds.reason IS NULL
-        GROUP BY batch_id
+        GROUP BY fb.id
       ),
       ret_agg AS (
         SELECT item_id, SUM(quantity) AS returned_qty
         FROM purchase_return_items
+        INNER JOIN filtered_batches fb ON fb.id = item_id
         GROUP BY item_id
       )
       SELECT
-        bb.design_no,
+        fb.design_no,
         vd.id          AS vendor_id,
         vd.name        AS vendor_name,
         vd.vendor_code AS vendor_code,
@@ -274,48 +294,51 @@ export class InventoryService {
         pg.name        AS product_group_name,
         cl.id          AS color_id,
         cl.name        AS color_name,
-        SUM(bb.available_quantity) AS total_available,
-        SUM(bb.total_quantity)     AS total_quantity,
+        SUM(fb.available_quantity) AS total_available,
+        SUM(fb.total_quantity)     AS total_quantity,
         SUM(COALESCE(r.returned_qty, 0)) AS total_returned,
-        MAX(bb.mrp)                AS mrp,
-        MAX(bb.cost_actual)        AS cost,
-        MAX(bb.order_number)       AS order_number,
-        MAX(bb.gst_logic)          AS gst_logic,
-        MAX(bb.mrp_markup_percent) AS mrp_markup_percent,
-        MAX(bb.hsn_code)           AS hsn_code,
-        MAX(bb.description)        AS description,
-        ARRAY_AGG(DISTINCT ARRAY_TO_STRING(bb.photos, ',')) FILTER (WHERE bb.photos IS NOT NULL AND CARDINALITY(bb.photos) > 0) AS images,
+        MAX(fb.mrp)                AS mrp,
+        MAX(fb.cost_actual)        AS cost,
+        MAX(fb.order_number)       AS order_number,
+        MAX(fb.gst_logic)          AS gst_logic,
+        MAX(fb.mrp_markup_percent) AS mrp_markup_percent,
+        MAX(fb.hsn_code)           AS hsn_code,
+        MAX(fb.description)        AS description,
+        ARRAY_AGG(DISTINCT ARRAY_TO_STRING(fb.photos, ',')) FILTER (WHERE fb.photos IS NOT NULL AND CARDINALITY(fb.photos) > 0) AS images,
         JSON_AGG(
           JSON_BUILD_OBJECT(
-            'batch_id',       bb.id,
+            'batch_id',       fb.id,
             'size_id',        sz.id,
             'size_name',      COALESCE(sz.name, 'Unknown'),
-            'barcode_8digit', bb.barcode_alias_8digit,
-            'available',      bb.available_quantity,
-            'total',          bb.total_quantity,
+            'barcode_8digit', fb.barcode_alias_8digit,
+            'available',      fb.available_quantity,
+            'total',          fb.total_quantity,
             'floor_name',     COALESCE(fl.name, 'Unassigned'),
             'floor_id',       COALESCE(fl.id::text, ''),
             'defective_qty',  COALESCE(d.defective_qty, 0),
             'returned_qty',   COALESCE(r.returned_qty, 0),
-            'cost',           bb.cost_actual,
-            'mrp',            bb.mrp,
+            'cost',           fb.cost_actual,
+            'mrp',            fb.mrp,
             'invoice_no',     COALESCE(po.po_number, ''),
             'vendor_invoice', COALESCE(po.invoice_number, '')
           ) ORDER BY sz.sort_order NULLS LAST
         ) AS sizes
-      FROM barcode_batches bb
-      LEFT JOIN vendors        vd  ON vd.id  = bb.vendor
-      LEFT JOIN product_groups pg  ON pg.id  = bb.product_group
-      LEFT JOIN colors         cl  ON cl.id  = bb.color
-      LEFT JOIN sizes          sz  ON sz.id  = bb.size
-      LEFT JOIN floors         fl  ON fl.id  = bb.floor
-      LEFT JOIN purchase_orders po ON po.id  = bb.po_id
-      LEFT JOIN def_agg        d   ON d.batch_id = bb.id
-      LEFT JOIN ret_agg        r   ON r.item_id = bb.id
-      WHERE bb.status IN ('active', 'Available', 'returned', 'defective', 'Sold', 'Returned') ${searchCond}
-      GROUP BY bb.design_no, vd.id, vd.name, vd.vendor_code, pg.id, pg.name, cl.id, cl.name
-      ORDER BY MAX(bb.created_at) DESC
-      LIMIT $${limitIdx} OFFSET $${offsetIdx}
+      FROM filtered_batches fb
+      INNER JOIN paginated_groups pgrp ON 
+            fb.design_no = pgrp.design_no 
+        AND (fb.vendor = pgrp.vendor OR (fb.vendor IS NULL AND pgrp.vendor IS NULL))
+        AND (fb.product_group = pgrp.product_group OR (fb.product_group IS NULL AND pgrp.product_group IS NULL))
+        AND (fb.color = pgrp.color OR (fb.color IS NULL AND pgrp.color IS NULL))
+      LEFT JOIN vendors        vd  ON vd.id  = fb.vendor
+      LEFT JOIN product_groups pg  ON pg.id  = fb.product_group
+      LEFT JOIN colors         cl  ON cl.id  = fb.color
+      LEFT JOIN sizes          sz  ON sz.id  = fb.size
+      LEFT JOIN floors         fl  ON fl.id  = fb.floor
+      LEFT JOIN purchase_orders po ON po.id  = fb.po_id
+      LEFT JOIN def_agg        d   ON d.batch_id = fb.id
+      LEFT JOIN ret_agg        r   ON r.item_id = fb.id
+      GROUP BY fb.design_no, vd.id, vd.name, vd.vendor_code, pg.id, pg.name, cl.id, cl.name, pgrp.max_created
+      ORDER BY pgrp.max_created DESC
     `;
 
     console.log("SQL QUERY DEBUG:", dataSql);

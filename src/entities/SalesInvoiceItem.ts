@@ -1,4 +1,4 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, ManyToOne, JoinColumn } from 'typeorm';
+import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, ManyToOne, JoinColumn, Index } from 'typeorm';
 import { SalesInvoice } from './SalesInvoice';
 import { Salesman } from './Salesman';
 import { BarcodeBatch } from './BarcodeBatch';
@@ -8,15 +8,18 @@ export class SalesInvoiceItem {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
+  @Index()
   @Column({ type: 'uuid' })
   invoice_id: string;
 
   @Column({ type: 'int', nullable: true })
   sr_no: number;
 
+  @Index()
   @Column({ type: 'text', nullable: true })
   barcode_8digit: string;
 
+  @Index()
   @Column({ type: 'text', nullable: true })
   design_no: string;
 
