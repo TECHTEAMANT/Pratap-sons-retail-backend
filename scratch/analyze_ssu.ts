@@ -1,39 +1,35 @@
-import 'reflect-metadata';
-import { AppDataSource, initializeDatabase, closeDatabase } from '../src/config/data-source';
+import { AppDataSource } from '../src/config/data-source';
 
-async function fullAnalyze() {
-  await initializeDatabase();
-  const ds = AppDataSource;
-  const design = 'SSU-034-25';
+async function main() {
+    await AppDataSource.initialize();
+    
+    const designNo = 'ssu-034-25';
+    
+    console.log("--- Barcode Batches ---");
+    const batches = await AppDataSource.query(`
+        SELECT id, barcode_alias_8digit, design_no, total_quantity, available_quantity, status
+        FROM barcode_batches
+        WHERE design_no ILIKE $1
+    `, [`%${designNo}%`]);
+    console.table(batches);
 
-  const pur = await ds.query(`SELECT SUM(quantity) as pq FROM purchase_items WHERE design_no = $1`, [design]);
-  console.log('Purchased Qty:', pur[0].pq);
+    console.log("--- Purchase Items ---");
+    const purchases = await AppDataSource.query(`
+        SELECT id, design_no, quantity, po_id, created_at
+        FROM purchase_items
+        WHERE design_no ILIKE $1
+    `, [`%${designNo}%`]);
+    console.table(purchases);
 
-  const sold = await ds.query(`
-    SELECT SUM(si.quantity) as sq
-    FROM sales_invoice_items si
-    JOIN sales_invoices s ON s.id = si.invoice_id
-    LEFT JOIN barcode_batches bb ON bb.barcode_alias_8digit = si.barcode_8digit
-    WHERE bb.design_no = $1 OR si.barcode_8digit IN (SELECT barcode_alias_8digit FROM barcode_batches WHERE design_no = $1)
-  `, [design]);
-  console.log('Gross Sold Qty:', sold[0].sq);
+    console.log("--- Sales Items ---");
+    const sales = await AppDataSource.query(`
+        SELECT id, design_no, barcode_8digit, quantity, created_at
+        FROM sales_invoice_items
+        WHERE design_no ILIKE $1 OR barcode_8digit IN (SELECT barcode_alias_8digit FROM barcode_batches WHERE design_no ILIKE $1)
+    `, [`%${designNo}%`]);
+    console.table(sales);
 
-  const returned = await ds.query(`
-    SELECT SUM(sri.quantity) as rq
-    FROM sales_return_items sri
-    JOIN sales_returns sr ON sr.id = sri.return_id
-    LEFT JOIN barcode_batches bb ON bb.barcode_alias_8digit = sri.barcode_8digit
-    WHERE bb.design_no = $1 OR sri.barcode_8digit IN (SELECT barcode_alias_8digit FROM barcode_batches WHERE design_no = $1)
-  `, [design]);
-  console.log('Sales Return Qty:', returned[0].rq);
-  
-  const bb = await ds.query(`
-    SELECT SUM(total_quantity) as tq, SUM(available_quantity) as aq
-    FROM barcode_batches WHERE design_no = $1 AND status != 'deleted'
-  `, [design]);
-  console.log('Barcode Batches:', bb[0]);
-
-  await closeDatabase();
+    await AppDataSource.destroy();
 }
 
-fullAnalyze().catch(console.error);
+main().catch(console.error);

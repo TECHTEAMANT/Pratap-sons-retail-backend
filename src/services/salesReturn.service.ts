@@ -5,7 +5,7 @@ import { SalesInvoice } from '../entities/SalesInvoice';
 import { CreditNote } from '../entities/CreditNote';
 import { CreditNoteApplication } from '../entities/CreditNoteApplication';
 import { BarcodeBatch } from '../entities/BarcodeBatch';
-import { Customer, LoyaltyConfig, LoyaltyHistory, LoyaltyTransactionType } from '../entities';
+import { Customer, LoyaltyConfig, LoyaltyHistory, LoyaltyTransactionType, User, CreditCouponApplication } from '../entities';
 import { ILike, In } from 'typeorm';
 import { CreditCoupon } from '../entities/CreditCoupon';
 import { creditCouponService } from './creditCoupon.service';
@@ -319,7 +319,33 @@ export class SalesReturnService {
       if (oldReturn.credit_coupon_no) {
         const coupon = await manager.findOne(CreditCoupon, { where: { coupon_no: oldReturn.credit_coupon_no } });
         if (coupon && coupon.status === 'redeemed') {
-          throw new Error('This return cannot be edited because the associated Credit Coupon has already been redeemed.');
+          const user = await manager.findOne(User, { where: { id: userId }, relations: ['roles'] });
+          const roleName = user?.roles?.name || user?.role || '';
+          const isAdmin = roleName.toLowerCase().includes('admin');
+          
+          if (!isAdmin) {
+            throw new Error('This return cannot be edited because the associated Credit Coupon has already been redeemed. Only Administrators can edit this return.');
+          }
+
+          // Admin override: Revert the applications on the target invoices before deleting the coupon
+          const applications = await manager.find(CreditCouponApplication, { where: { coupon_id: coupon.id } });
+          for (const app of applications) {
+            const targetInv = await manager.findOne(SalesInvoice, { where: { id: app.invoice_id } });
+            if (targetInv) {
+              targetInv.amount_paid = Math.max(0, Number(targetInv.amount_paid) - Number(app.amount_applied));
+              targetInv.amount_pending = Number(targetInv.amount_pending) + Number(app.amount_applied);
+              
+              if (Number(targetInv.amount_pending) <= 0.05) {
+                targetInv.payment_status = 'paid';
+              } else if (Number(targetInv.amount_paid) > 0.01) {
+                targetInv.payment_status = 'partial';
+              } else {
+                targetInv.payment_status = 'pending';
+              }
+              
+              await manager.save(SalesInvoice, targetInv);
+            }
+          }
         }
         if (coupon) await manager.remove(CreditCoupon, coupon);
       }
