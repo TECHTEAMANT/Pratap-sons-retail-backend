@@ -187,12 +187,14 @@ export class SalesReturnService {
             directPaid = pd.reduce((sum: number, p: any) => {
               const mode = (p.mode || '').toString().toUpperCase();
               if (mode.includes('APPROVAL')) return sum;
+              if (mode.includes('ADVANCE') || mode.includes('COUPON') || mode.includes('COUPAN') || mode.includes('CREDIT NOTE')) return sum;
               return sum + (Number(p.amount || 0));
             }, 0);
           } else if (pd && typeof pd === 'object') {
             directPaid = Object.entries(pd).reduce((sum: number, [key, val]: [string, any]) => {
               const mode = key.toUpperCase();
               if (mode.includes('APPROVAL')) return sum;
+              if (mode.includes('ADVANCE') || mode.includes('COUPON') || mode.includes('COUPAN') || mode.includes('CREDIT NOTE')) return sum;
               return sum + (Number(val) || 0);
             }, 0);
           }
@@ -515,12 +517,14 @@ export class SalesReturnService {
             directPaid = pd.reduce((sum: number, p: any) => {
               const mode = (p.mode || '').toString().toUpperCase();
               if (mode.includes('APPROVAL')) return sum;
+              if (mode.includes('ADVANCE') || mode.includes('COUPON') || mode.includes('COUPAN') || mode.includes('CREDIT NOTE')) return sum;
               return sum + (Number(p.amount || 0));
             }, 0);
           } else if (pd && typeof pd === 'object') {
             directPaid = Object.entries(pd).reduce((sum: number, [key, val]: [string, any]) => {
               const mode = key.toUpperCase();
               if (mode.includes('APPROVAL')) return sum;
+              if (mode.includes('ADVANCE') || mode.includes('COUPON') || mode.includes('COUPAN') || mode.includes('CREDIT NOTE')) return sum;
               return sum + (Number(val) || 0);
             }, 0);
           }

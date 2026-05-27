@@ -1,6 +1,7 @@
 import { AppDataSource } from '../config/data-source';
 import { CreditCoupon } from '../entities/CreditCoupon';
 import { CreditCouponApplication } from '../entities/CreditCouponApplication';
+import { CreditCouponRefund } from '../entities/CreditCouponRefund';
 import { EntityManager } from 'typeorm';
 
 export class CreditCouponService {
@@ -94,11 +95,67 @@ export class CreditCouponService {
         `SELECT COALESCE(SUM(amount_applied)::numeric, 0) as used FROM credit_coupon_applications WHERE coupon_id = $1`,
         [couponId]
       );
-      const remaining = Math.max(0, Number(coupon.amount) - Number(used || 0));
+      const [{ refunded }] = await manager.query(
+        `SELECT COALESCE(SUM(amount)::numeric, 0) as refunded FROM credit_coupon_refunds WHERE coupon_id = $1`,
+        [couponId]
+      );
+      const remaining = Math.max(0, Number(coupon.amount) - Number(used || 0) - Number(refunded || 0));
       coupon.status = remaining <= 0 ? 'redeemed' : 'active';
       coupon.updated_at = new Date();
       await couponRepo.save(coupon);
     }
+  }
+
+  /**
+   * Adjust (Refund / Cash Out) a credit coupon manually
+   */
+  async adjust(couponNo: string, amount: number, paymentMode: string, notes: string, userId: string) {
+    return AppDataSource.transaction(async (manager) => {
+      const couponRepo = manager.getRepository(CreditCoupon);
+      const refundRepo = manager.getRepository(CreditCouponRefund);
+
+      const coupon = await couponRepo.findOne({ where: { coupon_no: couponNo } });
+      if (!coupon) throw new Error(`Invalid coupon: ${couponNo}`);
+
+      // Calculate remaining balance
+      const [{ used }] = await manager.query(
+        `SELECT COALESCE(SUM(amount_applied)::numeric, 0) as used FROM credit_coupon_applications WHERE coupon_id = $1`,
+        [coupon.id]
+      );
+      const [{ refunded }] = await manager.query(
+        `SELECT COALESCE(SUM(amount)::numeric, 0) as refunded FROM credit_coupon_refunds WHERE coupon_id = $1`,
+        [coupon.id]
+      );
+      
+      const remaining = Math.max(0, Number(coupon.amount) - Number(used || 0) - Number(refunded || 0));
+      const amt = Number(amount || 0);
+      
+      if (amt <= 0) throw new Error('Adjustment amount must be greater than 0');
+      
+      const roundedAmt = Math.round(amt * 100);
+      const roundedRemaining = Math.round(remaining * 100);
+
+      if (roundedAmt > roundedRemaining) {
+        throw new Error(`Coupon ${couponNo} has only ₹${remaining.toFixed(2)} remaining`);
+      }
+
+      // Create refund record
+      await refundRepo.save(refundRepo.create({
+        coupon_id: coupon.id,
+        amount: amt,
+        payment_mode: paymentMode,
+        notes: notes,
+        created_by: userId
+      }));
+
+      // Update coupon status if depleted
+      const newRemaining = remaining - amt;
+      coupon.status = newRemaining <= 0 ? 'redeemed' : 'active';
+      coupon.updated_at = new Date();
+      await couponRepo.save(coupon);
+
+      return { success: true, remaining: newRemaining };
+    });
   }
 
   /**
@@ -147,7 +204,11 @@ export class CreditCouponService {
         `SELECT COALESCE(SUM(amount_applied)::numeric, 0) as used FROM credit_coupon_applications WHERE coupon_id = $1`,
         [coupon.id]
       );
-      const remaining = Math.max(0, Number(coupon.amount) - Number(used || 0));
+      const [{ refunded }] = await AppDataSource.query(
+        `SELECT COALESCE(SUM(amount)::numeric, 0) as refunded FROM credit_coupon_refunds WHERE coupon_id = $1`,
+        [coupon.id]
+      );
+      const remaining = Math.max(0, Number(coupon.amount) - Number(used || 0) - Number(refunded || 0));
       return { ...coupon, amount: remaining, original_amount: coupon.amount };
     }));
   }
@@ -166,7 +227,11 @@ export class CreditCouponService {
         `SELECT COALESCE(SUM(amount_applied)::numeric, 0) as used FROM credit_coupon_applications WHERE coupon_id = $1`,
         [coupon.id]
       );
-      const remaining = Math.max(0, Number(coupon.amount) - Number(used || 0));
+      const [{ refunded }] = await AppDataSource.query(
+        `SELECT COALESCE(SUM(amount)::numeric, 0) as refunded FROM credit_coupon_refunds WHERE coupon_id = $1`,
+        [coupon.id]
+      );
+      const remaining = Math.max(0, Number(coupon.amount) - Number(used || 0) - Number(refunded || 0));
       return { ...coupon, amount: remaining, original_amount: coupon.amount };
     }));
   }

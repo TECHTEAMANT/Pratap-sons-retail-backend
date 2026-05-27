@@ -3,6 +3,7 @@ import { SalesOrder } from '../entities/SalesOrder';
 import { SalesOrderItem } from '../entities/SalesOrderItem';
 import { SalesOrderAdvance } from '../entities/SalesOrderAdvance';
 import { SalesOrderAdvanceApplication } from '../entities/SalesOrderAdvanceApplication';
+import { SalesOrderAdvanceRefund } from '../entities/SalesOrderAdvanceRefund';
 import { ILike } from 'typeorm';
 import { getFiscalYearPrefix } from '../utils/fiscalYear';
 
@@ -340,7 +341,11 @@ export class SalesOrderService {
       `SELECT COALESCE(SUM(amount_applied)::numeric, 0) as used FROM sales_order_advance_applications WHERE advance_id = $1`,
       [adv.id]
     );
-    const remaining = Math.max(0, Number(adv.amount) - Number(used || 0));
+    const [{ refunded }] = await manager.query(
+      `SELECT COALESCE(SUM(amount)::numeric, 0) as refunded FROM sales_order_advance_refunds WHERE advance_id = $1`,
+      [adv.id]
+    );
+    const remaining = Math.max(0, Number(adv.amount) - Number(used || 0) - Number(refunded || 0));
 
     const amt = Number(amountToApply || 0);
     if (amt <= 0) return;
@@ -379,11 +384,60 @@ export class SalesOrderService {
         `SELECT COALESCE(SUM(amount_applied)::numeric, 0) as used FROM sales_order_advance_applications WHERE advance_id = $1`,
         [advanceId]
       );
-      const remaining = Math.max(0, Number(adv.amount) - Number(used || 0));
+      const [{ refunded }] = await manager.query(
+        `SELECT COALESCE(SUM(amount)::numeric, 0) as refunded FROM sales_order_advance_refunds WHERE advance_id = $1`,
+        [advanceId]
+      );
+      const remaining = Math.max(0, Number(adv.amount) - Number(used || 0) - Number(refunded || 0));
       adv.status = remaining <= 0 ? 'redeemed' : 'active';
       adv.redeemed_invoice_id = remaining <= 0 ? adv.redeemed_invoice_id : null;
       await advRepo.save(adv);
     }
+  }
+
+  async adjustAdvance(advanceId: string, amount: number, paymentMode: string, notes: string, userId: string) {
+    return AppDataSource.transaction(async (manager) => {
+      const advRepo = manager.getRepository(SalesOrderAdvance);
+      const refundRepo = manager.getRepository(SalesOrderAdvanceRefund);
+
+      const adv = await advRepo.findOne({ where: { id: advanceId } });
+      if (!adv) throw new Error(`Invalid advance ID: ${advanceId}`);
+
+      const [{ used }] = await manager.query(
+        `SELECT COALESCE(SUM(amount_applied)::numeric, 0) as used FROM sales_order_advance_applications WHERE advance_id = $1`,
+        [adv.id]
+      );
+      const [{ refunded }] = await manager.query(
+        `SELECT COALESCE(SUM(amount)::numeric, 0) as refunded FROM sales_order_advance_refunds WHERE advance_id = $1`,
+        [adv.id]
+      );
+      
+      const remaining = Math.max(0, Number(adv.amount) - Number(used || 0) - Number(refunded || 0));
+      const amt = Number(amount || 0);
+
+      if (amt <= 0) throw new Error('Adjustment amount must be greater than 0');
+      
+      const roundedAmt = Math.round(amt * 100);
+      const roundedRemaining = Math.round(remaining * 100);
+
+      if (roundedAmt > roundedRemaining) {
+        throw new Error(`Advance has only ₹${remaining.toFixed(2)} remaining`);
+      }
+
+      await refundRepo.save(refundRepo.create({
+        advance_id: adv.id,
+        amount: amt,
+        payment_mode: paymentMode,
+        notes: notes,
+        created_by: userId
+      }));
+
+      const newRemaining = remaining - amt;
+      adv.status = newRemaining <= 0 ? 'redeemed' : 'active';
+      await advRepo.save(adv);
+
+      return { success: true, remaining: newRemaining };
+    });
   }
 }
 

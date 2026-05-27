@@ -1705,6 +1705,7 @@ export class ReportService {
       .leftJoin('sr.salesman', 's')
       .leftJoin(SalesReturnItem, 'sri', 'sri.return_id = sr.id')
       .leftJoin('sri.product_item', 'bb')
+      .leftJoin(CreditCoupon, 'cc', 'cc.original_sales_return_id = sr.id')
       .select([
         'sr.id as id',
         'sr.return_number as return_number',
@@ -1717,6 +1718,7 @@ export class ReportService {
         'sr.status as status',
         's.name as salesman_name',
         'sr.credit_coupon_no as credit_coupon_no',
+        'cc.amount as credit_coupon_amount',
         'sr.credit_note_number as credit_note_number',
         'COALESCE(SUM(sri.quantity), 0) as total_quantity',
         'sr.total_discount_amount as total_discount_amount',
@@ -1736,6 +1738,7 @@ export class ReportService {
       .addGroupBy('s.name')
       .addGroupBy('sr.credit_coupon_no')
       .addGroupBy('sr.credit_note_number')
+      .addGroupBy('cc.amount')
       .addGroupBy('sr.total_discount_amount')
       .addGroupBy('sr.total_loyalty_amount')
       .orderBy('sr.return_date', 'DESC')
@@ -1761,7 +1764,8 @@ export class ReportService {
         totalCash: 0,
         salesCash: 0,
         receiptCash: 0,
-        advanceCash: 0
+        advanceCash: 0,
+        refundCash: 0
       },
       details: [] as any[]
     };
@@ -1864,7 +1868,39 @@ export class ReportService {
       });
     });
 
-    result.summary.totalCash = result.summary.salesCash + result.summary.receiptCash + result.summary.advanceCash;
+    // 4. Cash Refunds (Payouts for Coupons and Advances)
+    const refunds = await AppDataSource.query(`
+      SELECT 'Credit Coupon' as source, ccr.id, ccr.amount, ccr.created_at as date, cc.coupon_no as reference, cc.customer_mobile as mobile, c.name as customer
+      FROM credit_coupon_refunds ccr
+      INNER JOIN credit_coupons cc ON cc.id = ccr.coupon_id
+      LEFT JOIN customers c ON c.mobile = cc.customer_mobile
+      WHERE ccr.payment_mode = 'Cash' AND ccr.created_at BETWEEN $1 AND $2
+
+      UNION ALL
+
+      SELECT 'Advance' as source, soar.id, soar.amount, soar.created_at as date, COALESCE(soa.receipt_number, so.order_number) as reference, c.mobile as mobile, c.name as customer
+      FROM sales_order_advance_refunds soar
+      INNER JOIN sales_order_advances soa ON soa.id = soar.advance_id
+      INNER JOIN sales_orders so ON so.id = soa.sales_order_id
+      LEFT JOIN customers c ON c.id = so.customer_id
+      WHERE soar.payment_mode = 'Cash' AND soar.created_at BETWEEN $1 AND $2
+    `, [start, end]);
+
+    refunds.forEach((ref: any) => {
+      const amount = parseFloat(ref.amount) || 0;
+      result.summary.refundCash += amount;
+      result.details.push({
+        id: ref.id,
+        date: ref.date,
+        source: `${ref.source} Refund`,
+        reference: ref.reference || 'N/A',
+        customer: ref.customer || 'Customer',
+        mobile: ref.mobile || '',
+        amount: -amount // Negative for cash out
+      });
+    });
+
+    result.summary.totalCash = result.summary.salesCash + result.summary.receiptCash + result.summary.advanceCash - result.summary.refundCash;
     
     // Sort details by date descending
     result.details.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
@@ -2375,6 +2411,7 @@ export class ReportService {
       WITH raw_data AS (
         -- Credit Coupons: Issuance (Credit)
         SELECT
+          cc.id::text AS instrument_id,
           'Credit'::text AS entry_type,
           'Credit Coupon'::text AS type,
           cc.customer_mobile::text AS mobile,
@@ -2394,8 +2431,8 @@ export class ReportService {
 
         UNION ALL
 
-        -- Credit Coupons: Usage (Debit)
         SELECT
+          cc.id::text AS instrument_id,
           'Debit'::text AS entry_type,
           'Credit Coupon'::text AS type,
           cc.customer_mobile::text AS mobile,
@@ -2415,6 +2452,7 @@ export class ReportService {
 
         -- Advance: Issuance (Credit)
         SELECT
+          soa.id::text AS instrument_id,
           'Credit'::text AS entry_type,
           'Advance'::text AS type,
           COALESCE(c.mobile, '-')::text AS mobile,
@@ -2431,8 +2469,8 @@ export class ReportService {
 
         UNION ALL
 
-        -- Advance: Usage (Debit)
         SELECT
+          soa.id::text AS instrument_id,
           'Debit'::text AS entry_type,
           'Advance'::text AS type,
           COALESCE(c.mobile, '-')::text AS mobile,
@@ -2446,6 +2484,43 @@ export class ReportService {
         FROM sales_order_advance_applications soaa
         INNER JOIN sales_order_advances soa ON soa.id = soaa.advance_id
         INNER JOIN sales_invoices si ON si.id = soaa.invoice_id
+        INNER JOIN sales_orders so ON so.id = soa.sales_order_id
+        LEFT JOIN customers c ON c.id = so.customer_id
+
+        UNION ALL
+
+        SELECT
+          cc.id::text AS instrument_id,
+          'Debit'::text AS entry_type,
+          'Credit Coupon'::text AS type,
+          cc.customer_mobile::text AS mobile,
+          COALESCE(c.name, '-')::text AS name,
+          ccr.created_at::timestamptz AS transaction_date,
+          cc.coupon_no::text AS external_no,
+          (-1 * ccr.amount)::numeric AS transaction_amount,
+          cc.amount::numeric AS original_amount,
+          '-'::text AS invoice_no,
+          ('Refund: ' || ccr.payment_mode)::text AS reference
+        FROM credit_coupon_refunds ccr
+        INNER JOIN credit_coupons cc ON cc.id = ccr.coupon_id
+        LEFT JOIN customers c ON c.mobile = cc.customer_mobile
+
+        UNION ALL
+
+        SELECT
+          soa.id::text AS instrument_id,
+          'Debit'::text AS entry_type,
+          'Advance'::text AS type,
+          COALESCE(c.mobile, '-')::text AS mobile,
+          COALESCE(c.name, '-')::text AS name,
+          soar.created_at::timestamptz AS transaction_date,
+          COALESCE(soa.receipt_number, so.order_number)::text AS external_no,
+          (-1 * soar.amount)::numeric AS transaction_amount,
+          soa.amount::numeric AS original_amount,
+          '-'::text AS invoice_no,
+          ('Refund: ' || soar.payment_mode)::text AS reference
+        FROM sales_order_advance_refunds soar
+        INNER JOIN sales_order_advances soa ON soa.id = soar.advance_id
         INNER JOIN sales_orders so ON so.id = soa.sales_order_id
         LEFT JOIN customers c ON c.id = so.customer_id
       ),
@@ -2501,6 +2576,25 @@ export class ReportService {
         INNER JOIN sales_order_advances soa ON soa.id = soaa.advance_id 
         INNER JOIN sales_orders so ON so.id = soa.sales_order_id 
         INNER JOIN sales_invoices si ON si.id = soaa.invoice_id
+        LEFT JOIN customers c ON c.id = so.customer_id
+
+        UNION ALL
+
+        -- Credit Coupon Refund
+        SELECT 
+           'Credit Coupon'::text AS type, cc.customer_mobile::text AS mobile, COALESCE(cust.name, '-')::text AS name, cc.coupon_no::text AS external_no, ccr.created_at::timestamptz AS transaction_date, '-'::text AS invoice_no, 'Refund'::text AS reference
+        FROM credit_coupon_refunds ccr 
+        INNER JOIN credit_coupons cc ON cc.id = ccr.coupon_id
+        LEFT JOIN customers cust ON cust.mobile = cc.customer_mobile
+
+        UNION ALL
+
+        -- Advance Refund
+        SELECT 
+           'Advance'::text AS type, c.mobile::text AS mobile, COALESCE(c.name, '-')::text AS name, soa.receipt_number::text AS external_no, soar.created_at::timestamptz AS transaction_date, '-'::text AS invoice_no, 'Refund'::text AS reference 
+        FROM sales_order_advance_refunds soar 
+        INNER JOIN sales_order_advances soa ON soa.id = soar.advance_id 
+        INNER JOIN sales_orders so ON so.id = soa.sales_order_id 
         LEFT JOIN customers c ON c.id = so.customer_id
       )
       SELECT COUNT(*)::int AS total

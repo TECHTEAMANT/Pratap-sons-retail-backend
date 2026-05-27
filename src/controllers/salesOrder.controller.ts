@@ -43,6 +43,22 @@ export class SalesOrderController {
       advance ? sendSuccess(res, advance) : sendNotFound(res, 'Advance record');
     } catch (e: any) { sendError(res, e.message); } 
   }
+  async adjustAdvance(req: AuthenticatedRequest, res: Response) {
+    try {
+      const advanceId = req.params.id;
+      const { amount, payment_mode, notes } = req.body;
+      const userId = req.user!.id;
+
+      if (!amount || !payment_mode) {
+        return sendError(res, 'Amount and payment mode are required', 400);
+      }
+
+      const result = await salesOrderService.adjustAdvance(advanceId, Number(amount), payment_mode, notes, userId);
+      sendSuccess(res, result, 'Advance adjusted successfully');
+    } catch (e: any) {
+      sendError(res, e.message, 400);
+    }
+  }
 }
 
 export const salesOrderController = new SalesOrderController();

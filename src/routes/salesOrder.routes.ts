@@ -11,6 +11,7 @@ router.get('/items', (req, res) => salesOrderController.getItems(req, res));
 router.post('/items', (req, res) => salesOrderController.createItem(req, res));
 router.get('/advances', (req, res) => salesOrderController.getAdvances(req, res));
 router.get('/advances/:id', (req, res) => salesOrderController.findAdvanceById(req, res));
+router.post('/advances/:id/adjust', (req, res) => salesOrderController.adjustAdvance(req, res));
 router.post('/advances', (req, res) => salesOrderController.addAdvance(req, res));
 
 router.get('/', (req, res) => salesOrderController.findAll(req, res));
