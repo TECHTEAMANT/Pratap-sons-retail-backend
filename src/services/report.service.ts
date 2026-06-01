@@ -346,19 +346,10 @@ export class ReportService {
     if (filters.floorId) qb.andWhere('si.floor_id::text = :floorId', { floorId: filters.floorId });
     if (filters.vendorId) qb.andWhere('bb.vendor::text = :vendorId', { vendorId: filters.vendorId });
 
-    // Handle Pagination
-    if (!exportMode) {
-      qb.orderBy('si.created_at', 'DESC')
-        .skip((page - 1) * limit)
-        .take(limit);
-    } else {
-      qb.orderBy('si.created_at', 'ASC');
-    }
-
-    const invoices = await qb.getMany();
-
     const detailedList: any[] = [];
-    invoices.forEach(inv => {
+
+    const processInvoices = (invoiceBatch: SalesInvoice[]) => {
+      invoiceBatch.forEach(inv => {
       // Re-use existing complex business logic for data integrity
       let invoiceItems = inv.items || [];
       if (filters.vendorId) {
@@ -447,8 +438,11 @@ export class ReportService {
 
       const isApprovalInvoice = (inv as any).is_on_approval === true || invoicePaymentBreakdown.Approval > 0;
 
+      // Strip heavy nested relations (like items containing base64 photos) to prevent Invalid String Length crash
+      const { items, receipt_items, sales_returns, coupon_applications, advance_applications, credit_note_applications, salesman, ...cleanInv } = inv as any;
+
       detailedList.push({
-        ...inv,
+        ...cleanInv,
         salesman_name_display: inv.salesman?.name || (inv.items && inv.items[0] && (inv.items[0] as any).salesman?.name) || '-',
         gross_mrp: reconstructedMRP,
         base_discount: visualItemDiscount,
@@ -466,10 +460,35 @@ export class ReportService {
         is_on_approval: isApprovalInvoice,
         payment_breakdown: invoicePaymentBreakdown,
         payment_status: (adjustedPending <= 0.05) ? 'paid' : (finalRealPaid > 0.1 ? 'partial' : 'pending'),
-        total_qty: inv.items ? inv.items.reduce((sum, i) => sum + (Number(i.quantity) || 0), 0) : 0,
+        total_quantity: inv.items ? inv.items.reduce((sum: any, i: any) => sum + (Number(i.quantity) || 0), 0) : 0,
         return_credit: returnsAmt
       });
     });
+    };
+
+    // Handle Pagination
+    if (!exportMode) {
+      qb.orderBy('si.created_at', 'DESC')
+        .skip((page - 1) * limit)
+        .take(limit);
+      const invoices = await qb.getMany();
+      processInvoices(invoices);
+    } else {
+      qb.orderBy('si.created_at', 'ASC');
+      // Fetch in chunks to avoid Join Inflation Memory Crash (Invalid string length)
+      const chunkSize = 100;
+      let currentSkip = 0;
+      let chunk: SalesInvoice[] = [];
+      do {
+        const chunkQb = qb.clone();
+        chunkQb.skip(currentSkip).take(chunkSize);
+        chunk = await chunkQb.getMany();
+        if (chunk.length > 0) {
+          processInvoices(chunk);
+          currentSkip += chunkSize;
+        }
+      } while (chunk.length === chunkSize);
+    }
 
     return {
       ...result,
