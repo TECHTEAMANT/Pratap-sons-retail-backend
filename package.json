@@ -12,9 +12,20 @@
     "db:reset": "ts-node src/database/reset.ts",
     "db:import-csv": "ts-node src/database/import-csv.ts",
     "lint": "eslint src/**/*.ts",
-    "lint:fix": "eslint src/**/*.ts --fix"
+    "lint:fix": "eslint src/**/*.ts --fix",
+    "fix:net-payable": "ts-node src/scripts/fixNetPayable.ts"
   },
-  "keywords": ["erp", "inventory", "retail", "garment", "showroom", "typescript", "nodejs", "express", "postgresql"],
+  "keywords": [
+    "erp",
+    "inventory",
+    "retail",
+    "garment",
+    "showroom",
+    "typescript",
+    "nodejs",
+    "express",
+    "postgresql"
+  ],
   "author": "Pratap Sons Heritage",
   "license": "MIT",
   "description": "Backend API for INVENTO ERP - Ladies Garment Showroom Management System",

@@ -124,7 +124,8 @@ export class ReportService {
         'SUM(si.cgst_5) as "cgst_5"',
         'SUM(si.sgst_5) as "sgst_5"',
         'SUM(si.cgst_18) as "cgst_18"',
-        'SUM(si.sgst_18) as "sgst_18"'
+        'SUM(si.sgst_18) as "sgst_18"',
+        'SUM(si.additional_charges_total) as "additionalCharges"'
       ])
       .where('si.invoice_date BETWEEN :start AND :end', { start, end });
 
@@ -176,23 +177,44 @@ export class ReportService {
       returnQtyQB.getRawOne()
     ]);
     
-    const grossSales = parseFloat(rawSummary.totalSales) || 0;
+    // The raw 'totalSales' is SUM(si.net_payable).
+    // Because the application auto-corrects net_payable to be Post-Return (MRP - Discount - Returns + Charges),
+    // SUM(si.net_payable) is actually the True NET Sales (after returns).
+    const netSales = parseFloat(rawSummary.totalSales) || 0; 
     const returnAmount = parseFloat(rawRetSummary?.totalReturnAmount) || 0;
+    
+    // Therefore, True Gross Sales (before returns) is Net Sales + Returns
+    const trueGrossSales = netSales + returnAmount;
     
     const grossQty = parseInt(rawQty?.grossQuantity) || 0;
     const netReturnQty = parseInt(rawRetQty?.returnQuantity) || 0;
 
+    const totalMRP = parseFloat(rawSummary.totalMRP) || 0;
+    const additionalCharges = parseFloat(rawSummary.additionalCharges) || 0;
+    
+    const totalSpecialDiscount = parseFloat(rawSummary.totalSpecialDiscount) || 0;
+    const totalLoyalty = parseFloat(rawSummary.totalLoyalty) || 0;
+    const totalVoucher = parseFloat(rawSummary.totalVoucher) || 0;
+
+    // Mathematical Ground Truth for ALL discounts given:
+    // Total Discount = Total MRP - True Gross Sales + Additional Charges
+    const totalDiscountAll = totalMRP - trueGrossSales + additionalCharges;
+    
+    // The "Base" Item discount is whatever is left after explicitly named discounts.
+    // This perfectly bypasses historical data pollution in si.total_discount.
+    const baseTotalDiscount = Math.max(0, totalDiscountAll - totalSpecialDiscount - totalLoyalty - totalVoucher);
+
     const result = {
-      totalSales: grossSales - returnAmount,
-      grossSales: grossSales,
+      totalSales: netSales, // This is the Net Sales
+      grossSales: trueGrossSales,
       totalReturnAmount: returnAmount,
-      totalMRP: parseFloat(rawSummary.totalMRP) || 0,
-      totalDiscount: parseFloat(rawSummary.totalDiscount) || 0,
+      totalMRP: totalMRP,
+      totalDiscount: baseTotalDiscount,
       totalGST: parseFloat(rawSummary.totalGST) || 0,
       taxableValue: parseFloat(rawSummary.taxableValue) || 0,
-      totalSpecialDiscount: parseFloat(rawSummary.totalSpecialDiscount) || 0,
-      totalLoyalty: parseFloat(rawSummary.totalLoyalty) || 0,
-      totalVoucher: parseFloat(rawSummary.totalVoucher) || 0,
+      totalSpecialDiscount: totalSpecialDiscount,
+      totalLoyalty: totalLoyalty,
+      totalVoucher: totalVoucher,
       totalPending: 0,
       invoiceCount: parseInt(rawSummary.invoiceCount) || 0,
       cgst_5: parseFloat(rawSummary.cgst_5) || 0,
