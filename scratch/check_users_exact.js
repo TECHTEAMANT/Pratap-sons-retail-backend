@@ -12,12 +12,10 @@ const pool = new Pool({
 async function run() {
   try {
     const res = await pool.query(`
-      SELECT relname, n_live_tup
-      FROM pg_stat_user_tables
-      ORDER BY n_live_tup DESC;
+      SELECT COUNT(*) FROM users;
     `);
     
-    console.log(res.rows);
+    console.log("Users count:", res.rows[0].count);
   } catch(e) {
     console.error(e);
   } finally {

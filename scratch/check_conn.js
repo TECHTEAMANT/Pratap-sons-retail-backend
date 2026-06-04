@@ -4,7 +4,7 @@ require('dotenv').config();
 const pool = new Pool({
   host: process.env.DB_HOST,
   port: process.env.DB_PORT,
-  database: process.env.DB_NAME,
+  database: 'postgres', // connect to postgres default
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
 });
@@ -12,12 +12,12 @@ const pool = new Pool({
 async function run() {
   try {
     const res = await pool.query(`
-      SELECT relname, n_live_tup
-      FROM pg_stat_user_tables
-      ORDER BY n_live_tup DESC;
+      SELECT pid, usename, client_addr
+      FROM pg_stat_activity
+      WHERE datname = 'invento_erp' AND pid <> pg_backend_pid();
     `);
     
-    console.log(res.rows);
+    console.log("Active connections to invento_erp:", res.rows);
   } catch(e) {
     console.error(e);
   } finally {

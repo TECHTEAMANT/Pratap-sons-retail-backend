@@ -408,10 +408,8 @@ export class SalesReturnService {
       await manager.delete(SalesReturnItem, { salesReturn: { id: oldReturn.id } });
       await manager.delete(CreditNote, { return_id: oldReturn.id });
 
-      // Preserve the original return date - it should not change on edit
-      // oldReturn.return_date = data.return_date || oldReturn.return_date; 
-      // We explicitly keep the old date to prevent "today's date" from overwriting historical data
-      oldReturn.return_date = oldReturn.return_date;
+      // Allow user to change the return date explicitly on edit
+      oldReturn.return_date = data.return_date || oldReturn.return_date;
       oldReturn.return_reason = data.return_reason || oldReturn.return_reason;
       oldReturn.total_return_amount = data.total_return_amount;
       oldReturn.total_discount_amount = data.total_discount_amount || 0;

@@ -12,11 +12,17 @@ const pool = new Pool({
 async function run() {
   try {
     const res = await pool.query(`
-      SELECT relname, n_live_tup
-      FROM pg_stat_user_tables
-      ORDER BY n_live_tup DESC;
+      SELECT 
+        ts.po_id, 
+        ts.total_amount as tally_amt, 
+        po.total_amount as po_amt,
+        (ts.total_amount - po.total_amount) as diff
+      FROM tally_sync ts
+      JOIN purchase_orders po ON po.id = ts.po_id
+      WHERE ts.record_type = 'purchase'
+      AND ts.invoice_date BETWEEN '2026-05-01' AND '2026-05-31'
+      AND ts.total_amount != po.total_amount;
     `);
-    
     console.log(res.rows);
   } catch(e) {
     console.error(e);

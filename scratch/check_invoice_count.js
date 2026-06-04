@@ -12,12 +12,12 @@ const pool = new Pool({
 async function run() {
   try {
     const res = await pool.query(`
-      SELECT relname, n_live_tup
-      FROM pg_stat_user_tables
-      ORDER BY n_live_tup DESC;
+      SELECT COUNT(*) as count
+      FROM sales_invoices si
+      WHERE si.invoice_date >= '2026-02-01' AND si.invoice_date <= '2026-06-01'
     `);
     
-    console.log(res.rows);
+    console.log("Invoice count:", res.rows[0].count);
   } catch(e) {
     console.error(e);
   } finally {

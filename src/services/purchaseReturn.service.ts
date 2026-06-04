@@ -86,7 +86,12 @@ export class PurchaseReturnService {
         bb.mrp,
         pg.name as product_group,
         c.name as color,
-        s.name as size
+        s.name as size,
+        ((pri.cost * pri.quantity) * 
+         (pr.total_return_amount / NULLIF(
+           (SELECT SUM(pri2.cost * pri2.quantity) FROM purchase_return_items pri2 WHERE pri2.return_id = pr.id), 0
+         ))
+        ) AS cost_val
       FROM purchase_return_items pri
       INNER JOIN purchase_returns pr ON pr.id = pri.return_id
       LEFT JOIN vendors v ON v.id = pr.vendor_id
@@ -107,6 +112,7 @@ export class PurchaseReturnService {
       reason: r.reason,
       condition: r.condition,
       cost: r.cost,
+      cost_val: r.cost_val,
       discount: r.discount,
       quantity: r.quantity,
       hsn_code: r.hsn_code,

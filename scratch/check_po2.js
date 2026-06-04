@@ -12,11 +12,17 @@ const pool = new Pool({
 async function run() {
   try {
     const res = await pool.query(`
-      SELECT relname, n_live_tup
-      FROM pg_stat_user_tables
-      ORDER BY n_live_tup DESC;
+      SELECT 
+        po.id,
+        po.total_amount,
+        po.taxable_value,
+        po.ledger_discount,
+        po.ledger_freight,
+        (SELECT SUM(pi.cost_per_item * pi.quantity) FROM purchase_items pi WHERE pi.po_id = po.id) as pi_sum
+      FROM purchase_orders po
+      WHERE po.order_date BETWEEN '2026-05-01' AND '2026-05-31'
+      LIMIT 10;
     `);
-    
     console.log(res.rows);
   } catch(e) {
     console.error(e);

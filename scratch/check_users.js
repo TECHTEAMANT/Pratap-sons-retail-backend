@@ -12,9 +12,9 @@ const pool = new Pool({
 async function run() {
   try {
     const res = await pool.query(`
-      SELECT relname, n_live_tup
-      FROM pg_stat_user_tables
-      ORDER BY n_live_tup DESC;
+      SELECT id, username, mobile, role, password
+      FROM users
+      LIMIT 10;
     `);
     
     console.log(res.rows);

@@ -13,6 +13,7 @@ import { PaymentReceipt } from '../entities/PaymentReceipt';
 import { PaymentReceiptItem } from '../entities/PaymentReceiptItem';
 import { ProductMaster } from '../entities/ProductMaster';
 import { CreditCoupon } from '../entities/CreditCoupon';
+import { LoyaltyHistory } from '../entities/LoyaltyHistory';
 import { Between, MoreThanOrEqual, LessThanOrEqual, Raw, In, Not, MoreThan } from 'typeorm';
 import logger from '../utils/logger';
 
@@ -355,7 +356,8 @@ export class ReportService {
     const qb = AppDataSource.getRepository(SalesInvoice)
       .createQueryBuilder('si')
       .leftJoinAndSelect('si.items', 'items')
-      .leftJoinAndSelect('items.product_item', 'bb')
+      .leftJoin('items.product_item', 'bb')
+      .addSelect(['bb.id', 'bb.vendor'])
       .leftJoinAndSelect('si.receipt_items', 'ri')
       .leftJoinAndSelect('ri.receipt', 'receipt')
       .leftJoinAndSelect('si.sales_returns', 'sr')
@@ -382,16 +384,22 @@ export class ReportService {
       const reconstructedMRP = invoiceItems.reduce((s, i) => s + (Number(i.mrp || i.selling_price || 0) * Number(i.quantity || 1)), 0);
       const reconstructedItemDisc = invoiceItems.reduce((s, i) => s + (Number(i.discount || 0) * Number(i.quantity || 1)), 0);
       
-      const totalHeaderBundle = (parseFloat(inv.total_discount as any) || 0) + 
-                               (parseFloat(inv.special_discount as any) || 0) + 
-                               (parseFloat(inv.voucher_discount as any) || 0) + 
-                               (parseFloat(inv.loyalty_redemption_amount as any) || 0);
-
-      const totalDisc = (reconstructedItemDisc > 0.01) ? reconstructedItemDisc : totalHeaderBundle;
-      const visualItemDiscount = Math.max(0, reconstructedItemDisc - (parseFloat(inv.special_discount as any) || 0) - (parseFloat(inv.loyalty_redemption_amount as any) || 0) - (parseFloat(inv.voucher_discount as any) || 0));
       const returnsAmt = (inv.sales_returns || []).reduce((s: number, r: any) => s + (Number(r.total_return_amount) || 0), 0);
-      const originalNet = Math.round(reconstructedMRP - totalDisc + (parseFloat(inv.additional_charges_total as any) || 0));
-      const finalNet = originalNet;
+      
+      // Net Amount (Before Returns) is accurately derived from the DB's true net_payable
+      // We already know net_payable = MRP - Discount - Returns + Charges
+      const finalNet = Number(inv.net_payable) + returnsAmt;
+      const originalNet = finalNet;
+
+      // Mathematical Ground Truth for ALL discounts given on this invoice:
+      // Total Discount = MRP - Gross Net Amount + Additional Charges
+      const totalDiscountAll = reconstructedMRP - finalNet + (parseFloat(inv.additional_charges_total as any) || 0);
+
+      // Base Item Discount is whatever is left after explicitly named discounts are removed.
+      const visualItemDiscount = Math.max(0, totalDiscountAll - 
+                                             (parseFloat(inv.special_discount as any) || 0) - 
+                                             (parseFloat(inv.loyalty_redemption_amount as any) || 0) - 
+                                             (parseFloat(inv.voucher_discount as any) || 0));
 
       // Payment Breakdown Logic (Existing)
       let paymentDetails = inv.payment_details;
@@ -1100,7 +1108,7 @@ export class ReportService {
         SELECT 
           po.id as po_id,
           pi.quantity,
-          (pi.cost_per_item * pi.quantity) as cost_val,
+          ((pi.cost_per_item * pi.quantity) * (COALESCE(po.total_amount, 0) / COALESCE(NULLIF((COALESCE(po.taxable_value, 0) + COALESCE(po.ledger_discount, 0)), 0), 1))) as cost_val,
           (pi.mrp * pi.quantity) as mrp_val
         FROM purchase_items pi
         INNER JOIN purchase_orders po ON po.id = pi.po_id
@@ -1149,7 +1157,7 @@ export class ReportService {
           po.order_date as date,
           pi.quantity,
           v.name as vendor_name,
-          pi.cost_per_item as cost,
+          (pi.cost_per_item * (COALESCE(po.total_amount, 0) / COALESCE(NULLIF((COALESCE(po.taxable_value, 0) + COALESCE(po.ledger_discount, 0)), 0), 1))) as cost,
           pi.mrp,
           po.po_number,
           po.invoice_number as po_invoice_number,
@@ -2212,6 +2220,46 @@ export class ReportService {
     }
 
     return results;
+  }
+
+  async loyaltyAnalysis(filters: { startDate: string, endDate: string }) {
+    const start = filters.startDate.split('T')[0];
+    const end = filters.endDate.split('T')[0] + ' 23:59:59';
+
+    const history = await AppDataSource.getRepository(LoyaltyHistory)
+      .createQueryBuilder('lh')
+      .leftJoinAndSelect('lh.customer', 'c')
+      .where('lh.created_at BETWEEN :start AND :end', { start, end })
+      .orderBy('lh.created_at', 'DESC')
+      .getMany();
+
+    const summary = {
+      total_earned: 0,
+      total_redeemed: 0,
+      count: history.length
+    };
+
+    const details = history.map(h => {
+      const points = Number(h.points) || 0;
+      if (points > 0) summary.total_earned += points;
+      else summary.total_redeemed += Math.abs(points);
+
+      return {
+        id: h.id,
+        created_at: h.created_at,
+        customer_name: h.customer?.name || 'Unknown',
+        customer_mobile: h.customer?.mobile || 'N/A',
+        type: h.type,
+        points: points,
+        reference_id: h.reference_id,
+        notes: h.notes
+      };
+    });
+
+    return {
+      summary,
+      details
+    };
   }
 
   async advanceAnalysis(filters: { startDate: string, endDate: string }) {

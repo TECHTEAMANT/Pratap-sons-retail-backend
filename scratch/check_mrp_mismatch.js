@@ -12,9 +12,13 @@ const pool = new Pool({
 async function run() {
   try {
     const res = await pool.query(`
-      SELECT relname, n_live_tup
-      FROM pg_stat_user_tables
-      ORDER BY n_live_tup DESC;
+      SELECT si.invoice_number, 
+             si.total_mrp as db_mrp, 
+             (SELECT SUM(mrp * quantity) FROM sales_invoice_items sii WHERE sii.invoice_id = si.id) as item_mrp
+      FROM sales_invoices si
+      WHERE si.invoice_date BETWEEN '2026-02-01' AND '2026-06-01'
+      AND ABS(si.total_mrp - (SELECT SUM(mrp * quantity) FROM sales_invoice_items sii WHERE sii.invoice_id = si.id)) > 10
+      LIMIT 10
     `);
     
     console.log(res.rows);
