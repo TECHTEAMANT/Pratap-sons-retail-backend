@@ -166,6 +166,14 @@ export class ReportController {
     if (req.user?.role === 'Vendor') return sendError(res, 'Access denied', 403);
     try { sendSuccess(res, await reportService.loyaltyAnalysis(req.query as any)); } catch (e: any) { sendError(res, e.message); } 
   }
+  async paymentModeReport(req: AuthenticatedRequest, res: Response) { 
+    if (req.user?.role === 'Vendor') return sendError(res, 'Access denied', 403);
+    try { sendSuccess(res, await reportService.paymentModeReport(req.query as any)); } catch (e: any) { sendError(res, e.message); } 
+  }
+  async tallyPayloadAuditReport(req: AuthenticatedRequest, res: Response) { 
+    if (req.user?.role === 'Vendor') return sendError(res, 'Access denied', 403);
+    try { sendSuccess(res, await reportService.tallyPayloadAuditReport(req.query as any)); } catch (e: any) { sendError(res, e.message); } 
+  }
   async advanceAnalysis(req: AuthenticatedRequest, res: Response) { 
     if (req.user?.role === 'Vendor') return sendError(res, 'Access denied', 403);
     try { sendSuccess(res, await reportService.advanceAnalysis(req.query as any)); } catch (e: any) { sendError(res, e.message); } 

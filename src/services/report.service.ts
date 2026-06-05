@@ -1837,7 +1837,7 @@ export class ReportService {
         paymentDetails.forEach((pd: any) => {
           const amount = parseFloat(pd.amount) || 0;
           totalPaidFromDetails += amount;
-          if (pd.mode === 'Cash') cashAmount += amount;
+          if ((pd.mode || '').toLowerCase().trim() === 'cash') cashAmount += amount;
         });
       }
 
@@ -1874,9 +1874,9 @@ export class ReportService {
       let cashAmount = 0;
       if (paymentDetails && Array.isArray(paymentDetails)) {
         paymentDetails.forEach((pd: any) => {
-          if (pd.mode === 'Cash') cashAmount += parseFloat(pd.amount) || 0;
+          if ((pd.mode || '').toLowerCase().trim() === 'cash') cashAmount += parseFloat(pd.amount) || 0;
         });
-      } else if (receipt.payment_mode === 'Cash') {
+      } else if ((receipt.payment_mode || '').toLowerCase().trim() === 'cash') {
         cashAmount = parseFloat(receipt.amount_received as any) || 0;
       }
 
@@ -1898,7 +1898,7 @@ export class ReportService {
     const advances = await AppDataSource.getRepository(SalesOrderAdvance).find({
       where: {
         created_at: Between(start as any, end as any),
-        payment_mode: 'Cash'
+        payment_mode: Raw(alias => `LOWER(TRIM(${alias})) = 'cash'`)
       },
       relations: ['salesOrder', 'salesOrder.customer']
     });
@@ -1923,7 +1923,7 @@ export class ReportService {
       FROM credit_coupon_refunds ccr
       INNER JOIN credit_coupons cc ON cc.id = ccr.coupon_id
       LEFT JOIN customers c ON c.mobile = cc.customer_mobile
-      WHERE ccr.payment_mode = 'Cash' AND ccr.created_at BETWEEN $1 AND $2
+      WHERE LOWER(TRIM(ccr.payment_mode)) = 'cash' AND ccr.created_at BETWEEN $1 AND $2
 
       UNION ALL
 
@@ -1932,7 +1932,7 @@ export class ReportService {
       INNER JOIN sales_order_advances soa ON soa.id = soar.advance_id
       INNER JOIN sales_orders so ON so.id = soa.sales_order_id
       LEFT JOIN customers c ON c.id = so.customer_id
-      WHERE soar.payment_mode = 'Cash' AND soar.created_at BETWEEN $1 AND $2
+      WHERE LOWER(TRIM(soar.payment_mode)) = 'cash' AND soar.created_at BETWEEN $1 AND $2
     `, [start, end]);
 
     refunds.forEach((ref: any) => {
@@ -1955,6 +1955,272 @@ export class ReportService {
     result.details.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
     return result;
+  }
+
+  async paymentModeReport(filters: { startDate: string, endDate: string }) {
+    const start = new Date(`${filters.startDate.split('T')[0]}T00:00:00.000Z`);
+    const end = new Date(`${filters.endDate.split('T')[0]}T23:59:59.999Z`);
+
+    const classifyMode = (raw: string): 'Cash' | 'Card' | 'UPI' | 'Bank' | 'Cheque' | 'Advance' | 'Credit Coupon' | 'Exchange' | 'Others' => {
+      const m = (raw || '').toLowerCase().trim();
+      if (m === 'cash') return 'Cash';
+      if (m.includes('card') || m.includes('visa') || m.includes('master') || m.includes('debit') || m.includes('pos')) return 'Card';
+      if (m.includes('upi') || m.includes('gpay') || m.includes('g-pay') || m.includes('phonepe') || m.includes('paytm') || m.includes('bhim')) return 'UPI';
+      if (m.includes('cheque')) return 'Cheque';
+      if (m.includes('bank') || m.includes('transfer') || m.includes('neft') || m.includes('rtgs') || m.includes('online') || m.includes('hdfc') || m.includes('icici')) return 'Bank';
+      if (m.includes('advance')) return 'Advance';
+      if (m.includes('coupon') || m.includes('credit note') || m.includes('return')) return 'Credit Coupon';
+      if (m.includes('exchange')) return 'Exchange';
+      return 'Others';
+    };
+
+    type ModeKey = 'Cash' | 'Card' | 'UPI' | 'Bank' | 'Cheque' | 'Advance' | 'Credit Coupon' | 'Exchange' | 'Others';
+    const zeroBreakdown = () => ({ Cash: 0, Card: 0, UPI: 0, Bank: 0, Cheque: 0, Advance: 0, 'Credit Coupon': 0, Exchange: 0, Others: 0 });
+
+    const result = {
+      summary: zeroBreakdown(),
+      details: [] as any[]
+    };
+
+    // 1. Sales Invoices (billing-time payments)
+    const invoices = await AppDataSource.getRepository(SalesInvoice).find({
+      where: { invoice_date: Between(start as any, end as any) }
+    });
+
+    invoices.forEach(inv => {
+      let paymentDetails = inv.payment_details;
+      if (typeof paymentDetails === 'string') {
+        try { paymentDetails = JSON.parse(paymentDetails); } catch { paymentDetails = null; }
+      }
+
+      const breakdown: Record<ModeKey, number> = zeroBreakdown() as Record<ModeKey, number>;
+
+      if (paymentDetails && Array.isArray(paymentDetails)) {
+        paymentDetails.forEach((pd: any) => {
+          const bucket = classifyMode(pd.mode || '');
+          // CRITICAL: Use Math.round() to match exactly what mapInvoiceToReceipt sends to Tally
+          const amt = Math.round(parseFloat(pd.amount) || 0);
+          if (amt > 0) breakdown[bucket] += amt;
+        });
+      } else if (paymentDetails && typeof paymentDetails === 'object') {
+        Object.entries(paymentDetails).forEach(([key, val]: any) => {
+          const bucket = classifyMode(key);
+          const amt = Math.round(parseFloat(val) || 0);
+          if (amt > 0) breakdown[bucket] += amt;
+        });
+      } else if (inv.payment_mode) {
+        // No payment_details — entire invoice amount in one mode (matches Tally fallback)
+        const bucket = classifyMode(inv.payment_mode);
+        const amt = Math.round(parseFloat(inv.net_payable as any) || 0);
+        if (amt > 0) breakdown[bucket] += amt;
+      }
+
+      const hasAny = (Object.values(breakdown) as number[]).some(v => v > 0);
+      if (hasAny) {
+        (Object.keys(breakdown) as ModeKey[]).forEach(k => {
+          if (breakdown[k] > 0) {
+            result.summary[k] = (result.summary[k] || 0) + breakdown[k];
+            
+            let ref = inv.invoice_number;
+            if (k === 'Credit Coupon' && inv.coupon_no) {
+              ref += ` (CPN: ${inv.coupon_no})`;
+            }
+
+            result.details.push({
+              id: inv.id,
+              date: inv.invoice_date,
+              source: 'Sales Invoice',
+              mode: k,
+              reference: ref,
+              customer: inv.customer_name,
+              mobile: inv.customer_mobile,
+              amount: breakdown[k],
+              tally_ledger: k === 'Card' ? 'Retail Card' : k === 'UPI' ? 'Retail UPI' : k === 'Bank' ? 'Retail Bank Transfer' : k === 'Advance' ? 'Retail Advance B2C' : k === 'Credit Coupon' ? 'Retail Credit Coupon B2C' : 'Retail Cash'
+            });
+          }
+        });
+      }
+    });
+
+
+    // 2. Pending Payment Receipts
+    const receipts = await AppDataSource.getRepository(PaymentReceipt).find({
+      where: { receipt_date: Between(start as any, end as any) }
+    });
+
+    receipts.forEach(receipt => {
+      let paymentDetails = receipt.payment_details;
+      if (typeof paymentDetails === 'string') {
+        try { paymentDetails = JSON.parse(paymentDetails); } catch { paymentDetails = null; }
+      }
+
+      const breakdown: Record<ModeKey, number> = zeroBreakdown() as Record<ModeKey, number>;
+
+      if (paymentDetails && Array.isArray(paymentDetails)) {
+        paymentDetails.forEach((pd: any) => {
+          const bucket = classifyMode(pd.mode || '');
+          const amt = Math.round(parseFloat(pd.amount) || 0);
+          if (amt > 0) breakdown[bucket] += amt;
+        });
+      } else {
+        const bucket = classifyMode(receipt.payment_mode || '');
+        const amt = Math.round(parseFloat(receipt.amount_received as any) || 0);
+        if (amt > 0) breakdown[bucket] += amt;
+      }
+
+      (Object.keys(breakdown) as ModeKey[]).forEach(k => {
+        if (breakdown[k] > 0) {
+          result.summary[k] = (result.summary[k] || 0) + breakdown[k];
+          result.details.push({
+            id: receipt.id,
+            date: receipt.receipt_date,
+            source: 'Pending Receipt',
+            mode: k,
+            reference: receipt.receipt_number,
+            customer: receipt.customer_name,
+            mobile: receipt.customer_mobile,
+            amount: breakdown[k],
+            tally_ledger: k === 'Card' ? 'Retail Card' : k === 'UPI' ? 'Retail UPI' : k === 'Bank' ? 'Retail Bank Transfer' : 'Retail Cash'
+          });
+        }
+      });
+    });
+
+    // 3. Sales Order Advances
+    const advances = await AppDataSource.getRepository(SalesOrderAdvance).find({
+      where: { created_at: Between(start as any, end as any) },
+      relations: ['salesOrder', 'salesOrder.customer']
+    });
+
+    advances.forEach(adv => {
+      const bucket = classifyMode(adv.payment_mode || '');
+      const amt = Math.round(parseFloat(adv.amount as any) || 0);
+      if (amt > 0) {
+        result.summary[bucket] = (result.summary[bucket] || 0) + amt;
+        result.details.push({
+          id: adv.id,
+          date: adv.created_at,
+          source: 'Order Advance',
+          mode: bucket,
+          reference: (adv as any).salesOrder?.order_number || 'N/A',
+          customer: (adv as any).salesOrder?.customer?.name || 'Customer',
+          mobile: (adv as any).salesOrder?.customer?.mobile || '',
+          amount: amt,
+          tally_ledger: bucket === 'Card' ? 'Retail Card' : bucket === 'UPI' ? 'Retail UPI' : bucket === 'Bank' ? 'Retail Bank Transfer' : 'Retail Advance B2C'
+        });
+      }
+    });
+
+    // 4. Sales Returns (Coupon Issuances)
+    const returns = await AppDataSource.getRepository(SalesReturn).find({
+      where: { return_date: Between(start as any, end as any) }
+    });
+
+    returns.forEach(ret => {
+      const totalAmount = Math.round(parseFloat(ret.total_return_amount as any) || 0);
+      const isCoupon = !!ret.credit_coupon_no;
+      
+      if (isCoupon && totalAmount > 0) {
+        result.summary['Credit Coupon'] = (result.summary['Credit Coupon'] || 0) + totalAmount;
+        result.details.push({
+          id: ret.id,
+          date: ret.return_date,
+          source: 'Credit Coupon Issued',
+          mode: 'Credit Coupon',
+          reference: ret.return_number,
+          customer: ret.customer_name,
+          mobile: ret.customer_mobile,
+          amount: totalAmount,
+          tally_ledger: 'Retail Credit Coupon B2C'
+        });
+      }
+    });
+
+    result.details.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+    // Build Tally-equivalent summary by directly querying the exact synced payloads!
+    // This guarantees the "Tally-Equivalent View" matches the Tally Payload Audit tab 100%.
+    const tallyAuditData = await this.tallyPayloadAuditReport(filters);
+    const tally_summary: Record<string, number> = {};
+    
+    tallyAuditData.summary.forEach((s: any) => {
+      tally_summary[s.ledger] = Math.abs(s.net); // Tally view usually shows absolute balance
+    });
+
+    return { summary: result.summary, tally_summary, details: result.details };
+  }
+
+  async tallyPayloadAuditReport(filters: { startDate: string, endDate: string }) {
+    const start = `${filters.startDate.split('T')[0]}T00:00:00.000Z`;
+    const end = `${filters.endDate.split('T')[0]}T23:59:59.999Z`;
+
+    const tallyRecords = await AppDataSource.query(`
+      SELECT sync_data, record_type, invoice_date, invoice_number 
+      FROM tally_sync 
+      WHERE sync_status = 'synced' 
+        AND invoice_date >= $1 
+        AND invoice_date <= $2
+        AND sync_data IS NOT NULL
+    `, [start, end]);
+
+    const ledgerSummary: Record<string, { debit: number, credit: number, net: number }> = {};
+    const details: any[] = [];
+
+    tallyRecords.forEach((record: any) => {
+      const data = record.sync_data;
+      if (!data || !data.partyDetail || !Array.isArray(data.partyDetail)) return;
+
+      const voucherType = data.voucherType || record.record_type;
+      const voucherNumber = data.voucherNumber || record.invoice_number;
+      const date = data.date || record.invoice_date;
+
+      data.partyDetail.forEach((pd: any) => {
+        const ledger = pd.ledger;
+        if (!ledger) return;
+        
+        // Ignore the main sales/purchase ledgers, focus on the payment/cash ledgers
+        // Wait, the user wants to see what we sent. We should show all.
+        // Actually, Tally trial balance is net. Let's just track everything.
+        
+        const amount = Math.round(parseFloat(pd.entryAmount) || 0);
+        if (amount === 0) return;
+
+        if (!ledgerSummary[ledger]) {
+          ledgerSummary[ledger] = { debit: 0, credit: 0, net: 0 };
+        }
+
+        const isDebit = pd.transactionType === 'debit';
+        
+        if (isDebit) {
+          ledgerSummary[ledger].debit += amount;
+          ledgerSummary[ledger].net += amount;
+        } else {
+          ledgerSummary[ledger].credit += amount;
+          ledgerSummary[ledger].net -= amount; // credit reduces net for assets, but increases for liabilities. We just show raw net (debit - credit)
+        }
+
+        details.push({
+          date: date,
+          voucherNumber: voucherNumber,
+          voucherType: voucherType,
+          ledger: ledger,
+          transactionType: pd.transactionType,
+          amount: amount
+        });
+      });
+    });
+
+    details.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+    // Convert ledgerSummary to array for easier frontend rendering
+    const summaryArray = Object.entries(ledgerSummary).map(([ledger, totals]) => ({
+      ledger,
+      debit: totals.debit,
+      credit: totals.credit,
+      net: totals.net
+    })).sort((a, b) => b.debit + b.credit - (a.debit + a.credit)); // Sort by volume
+
+    return { summary: summaryArray, details };
   }
 
   async vendorAnalysisReport(filters: { startDate: string, endDate: string, vendorId?: string, sortField?: string, sortDirection?: 'ASC' | 'DESC' }) {
