@@ -114,7 +114,7 @@ export class ReportService {
       .createQueryBuilder('si')
       .select([
         'COUNT(si.id) as "invoiceCount"',
-        'SUM(si.net_payable) as "totalSales"',
+        'SUM(ROUND(si.net_payable)) as "totalSales"',
         'SUM(si.total_mrp) as "totalMRP"',
         'SUM(si.total_gst) as "totalGST"',
         'SUM(si.taxable_value) as "taxableValue"',
@@ -126,7 +126,8 @@ export class ReportService {
         'SUM(si.sgst_5) as "sgst_5"',
         'SUM(si.cgst_18) as "cgst_18"',
         'SUM(si.sgst_18) as "sgst_18"',
-        'SUM(si.additional_charges_total) as "additionalCharges"'
+        'SUM(si.additional_charges_total) as "additionalCharges"',
+        'SUM(si.additional_charges_gst) as "additionalChargesGST"'
       ])
       .where('si.invoice_date BETWEEN :start AND :end', { start, end });
 
@@ -205,23 +206,39 @@ export class ReportService {
     // This perfectly bypasses historical data pollution in si.total_discount.
     const baseTotalDiscount = Math.max(0, totalDiscountAll - totalSpecialDiscount - totalLoyalty - totalVoucher);
 
+    // ANCHOR: Proportional Tax Adjustment
+    // The raw `taxable_value` and `total_gst` in the database are calculated BEFORE Header Discounts
+    // (Special Discount, Voucher Discount, Loyalty) are applied.
+    // To ensure the Financial Breakdown UI perfectly balances (Taxable + GST = Gross Sales),
+    // we must proportionally reduce these values by the overall Header Discount ratio.
+    const rawTaxable = parseFloat(rawSummary.taxableValue) || 0;
+    const rawGST = parseFloat(rawSummary.totalGST) || 0;
+    const rawGross = rawTaxable + rawGST;
+    
+    const ratio = rawGross > 0 ? (trueGrossSales / rawGross) : 1;
+
+    const additionalChargesGST = parseFloat(rawSummary.additionalChargesGST) || 0;
+
     const result = {
       totalSales: netSales, // This is the Net Sales
       grossSales: trueGrossSales,
       totalReturnAmount: returnAmount,
       totalMRP: totalMRP,
       totalDiscount: baseTotalDiscount,
-      totalGST: parseFloat(rawSummary.totalGST) || 0,
-      taxableValue: parseFloat(rawSummary.taxableValue) || 0,
+      totalGST: rawGST * ratio,
+      taxableValue: rawTaxable * ratio,
       totalSpecialDiscount: totalSpecialDiscount,
       totalLoyalty: totalLoyalty,
       totalVoucher: totalVoucher,
+      // Other Charges (additional charges on invoices e.g. packing, handling)
+      additionalCharges: additionalCharges,
+      additionalChargesGST: additionalChargesGST,
       totalPending: 0,
       invoiceCount: parseInt(rawSummary.invoiceCount) || 0,
-      cgst_5: parseFloat(rawSummary.cgst_5) || 0,
-      sgst_5: parseFloat(rawSummary.sgst_5) || 0,
-      cgst_18: parseFloat(rawSummary.cgst_18) || 0,
-      sgst_18: parseFloat(rawSummary.sgst_18) || 0,
+      cgst_5: (parseFloat(rawSummary.cgst_5) || 0) * ratio,
+      sgst_5: (parseFloat(rawSummary.sgst_5) || 0) * ratio,
+      cgst_18: (parseFloat(rawSummary.cgst_18) || 0) * ratio,
+      sgst_18: (parseFloat(rawSummary.sgst_18) || 0) * ratio,
       paymentBreakdown: {
         Cash: 0, UPI: 0, Card: 0, Online: 0, Advance: 0, Approval: 0,
         'Credit Coupon': 0, 'Exchange': 0, 'Others': 0, 'Return Credit': 0
@@ -313,7 +330,7 @@ export class ReportService {
 
       allSources.forEach((pd: any) => {
         const rawMode = (pd.mode || '').toString().toUpperCase();
-        const amount = parseFloat(pd.amount) || 0;
+        const amount = Math.round(parseFloat(pd.amount) || 0);
         if (amount <= 0) return;
         if (rawMode.includes('CASH')) invBreakdown.Cash += amount;
         else if (rawMode.includes('UPI') || rawMode.includes('PHONEPE') || rawMode.includes('GPAY') || rawMode.includes('PAYTM') || rawMode.includes('G PAY') || rawMode.includes('BHIM')) invBreakdown.UPI += amount;
@@ -384,11 +401,11 @@ export class ReportService {
       const reconstructedMRP = invoiceItems.reduce((s, i) => s + (Number(i.mrp || i.selling_price || 0) * Number(i.quantity || 1)), 0);
       const reconstructedItemDisc = invoiceItems.reduce((s, i) => s + (Number(i.discount || 0) * Number(i.quantity || 1)), 0);
       
-      const returnsAmt = (inv.sales_returns || []).reduce((s: number, r: any) => s + (Number(r.total_return_amount) || 0), 0);
+      const returnsAmt = (inv.sales_returns || []).reduce((s: number, r: any) => s + Math.round(Number(r.total_return_amount) || 0), 0);
       
       // Net Amount (Before Returns) is accurately derived from the DB's true net_payable
       // We already know net_payable = MRP - Discount - Returns + Charges
-      const finalNet = Number(inv.net_payable) + returnsAmt;
+      const finalNet = Math.round(Number(inv.net_payable)) + returnsAmt;
       const originalNet = finalNet;
 
       // Mathematical Ground Truth for ALL discounts given on this invoice:
@@ -448,7 +465,7 @@ export class ReportService {
 
       allPaymentSources.forEach((pd: any) => {
         const rawMode = (pd.mode || '').toString().toUpperCase();
-        const amount = parseFloat(pd.amount) || 0;
+        const amount = Math.round(parseFloat(pd.amount) || 0);
         if (amount <= 0) return;
         if (rawMode.includes('CASH')) invoicePaymentBreakdown.Cash += amount;
         else if (rawMode.includes('UPI') || rawMode.includes('PHONEPE') || rawMode.includes('GPAY') || rawMode.includes('PAYTM') || rawMode.includes('G PAY') || rawMode.includes('BHIM')) invoicePaymentBreakdown.UPI += amount;
@@ -462,9 +479,17 @@ export class ReportService {
         else invoicePaymentBreakdown.Others += amount;
       });
 
-      const finalRealPaid = invoicePaymentBreakdown.Cash + invoicePaymentBreakdown.UPI + invoicePaymentBreakdown.Card + invoicePaymentBreakdown.Online + invoicePaymentBreakdown.Advance + invoicePaymentBreakdown['Credit Coupon'] + invoicePaymentBreakdown['Credit Note'] + invoicePaymentBreakdown.Exchange + invoicePaymentBreakdown.Others;
+      let finalRealPaid = invoicePaymentBreakdown.Cash + invoicePaymentBreakdown.UPI + invoicePaymentBreakdown.Card + invoicePaymentBreakdown.Online + invoicePaymentBreakdown.Advance + invoicePaymentBreakdown['Credit Coupon'] + invoicePaymentBreakdown['Credit Note'] + invoicePaymentBreakdown.Exchange + invoicePaymentBreakdown.Others;
       let adjustedPending = Math.max(0, originalNet - finalRealPaid - returnsAmt);
-      if (adjustedPending < 1) adjustedPending = 0;
+      
+      // Auto-balance fractional differences to match Tally Sync behavior
+      if (adjustedPending > 0 && (adjustedPending <= 5 || ((inv as any).status || (inv as any).payment_status) === 'Paid')) {
+        invoicePaymentBreakdown.Cash += adjustedPending;
+        finalRealPaid += adjustedPending;
+        adjustedPending = 0;
+      } else if (adjustedPending < 1) {
+        adjustedPending = 0;
+      }
 
       const isApprovalInvoice = (inv as any).is_on_approval === true || invoicePaymentBreakdown.Approval > 0;
 
@@ -994,7 +1019,7 @@ export class ReportService {
         'c.card_no as card_no',
         'COALESCE(c.credit_balance, 0) + COALESCE((SELECT SUM(cc.amount::numeric - COALESCE(used.used_amount, 0)) FROM credit_coupons cc LEFT JOIN (SELECT coupon_id, SUM(amount_applied)::numeric as used_amount FROM credit_coupon_applications GROUP BY coupon_id) used ON used.coupon_id = cc.id WHERE cc.customer_mobile = c.mobile), 0) as credit_balance',
         'COALESCE(c.loyalty_points_balance, 0) as loyalty_points',
-        'COALESCE((SELECT SUM(net_payable) FROM sales_invoices WHERE customer_mobile = c.mobile), 0) as total_spent',
+        'COALESCE((SELECT SUM(ROUND(net_payable)) FROM sales_invoices WHERE customer_mobile = c.mobile), 0) as total_spent',
         'COALESCE((SELECT COUNT(*) FROM sales_invoices WHERE customer_mobile = c.mobile), 0) as total_invoices',
         '(SELECT MAX(invoice_date) FROM sales_invoices WHERE customer_mobile = c.mobile) as last_purchase',
         'COALESCE((SELECT SUM(soa.amount) FROM sales_order_advances soa JOIN sales_orders so ON so.id = soa.sales_order_id WHERE so.customer_id = c.id), 0) - COALESCE((SELECT SUM(soaa.amount_applied) FROM sales_order_advance_applications soaa JOIN sales_order_advances soa ON soa.id = soaa.advance_id JOIN sales_orders so ON so.id = soa.sales_order_id WHERE so.customer_id = c.id), 0) as advance_balance'
@@ -1053,7 +1078,7 @@ export class ReportService {
     const summaryRaw = await AppDataSource.getRepository(PurchaseOrder)
       .createQueryBuilder('po')
       .select([
-        'COALESCE(SUM(po.total_amount), 0) as total_purchase',
+        'COALESCE(SUM(ROUND(po.total_amount)), 0) as total_purchase',
         'COALESCE(SUM(po.total_items), 0) as total_items',
         'COALESCE(SUM(po.taxable_value), 0) as total_taxable',
         'COALESCE(SUM(po.total_amount - po.taxable_value - COALESCE(po.ledger_freight, 0)), 0) as total_gst',
@@ -1260,7 +1285,7 @@ export class ReportService {
         'COALESCE(SUM(si.igst_5), 0) as total_igst_5',
         'COALESCE(SUM(si.igst_18), 0) as total_igst_18',
         'COALESCE(SUM(si.total_gst), 0) as total_gst',
-        'COALESCE(SUM(si.net_payable), 0) as total_sales',
+        'COALESCE(SUM(ROUND(si.net_payable)), 0) as total_sales',
       ])
       .where('si.invoice_date BETWEEN :start AND :end', { 
         start: startStr, 
@@ -1694,7 +1719,7 @@ export class ReportService {
         'si.customer_mobile as customer_mobile',
         'si.customer_name as customer_name',
         'COUNT(*) as total_invoices',
-        'COALESCE(SUM(si.net_payable), 0) as total_spent',
+        'COALESCE(SUM(ROUND(si.net_payable)), 0) as total_spent',
         'MIN(si.invoice_date) as first_purchase',
         'MAX(si.invoice_date) as last_purchase',
       ])
@@ -1835,7 +1860,7 @@ export class ReportService {
 
       if (paymentDetails && Array.isArray(paymentDetails)) {
         paymentDetails.forEach((pd: any) => {
-          const amount = parseFloat(pd.amount) || 0;
+          const amount = Math.round(parseFloat(pd.amount) || 0);
           totalPaidFromDetails += amount;
           if ((pd.mode || '').toLowerCase().trim() === 'cash') cashAmount += amount;
         });
@@ -2116,23 +2141,37 @@ export class ReportService {
       where: { return_date: Between(start as any, end as any) }
     });
 
+    // Fetch actual coupon amounts to avoid using full return amount
+    const couponAmountsMap = new Map<string, number>();
+    if (returns.length > 0) {
+      const coupons = await AppDataSource.getRepository(CreditCoupon).find({
+        where: { original_sales_return_id: In(returns.map(r => r.id)) }
+      });
+      coupons.forEach(c => couponAmountsMap.set(c.original_sales_return_id, Number(c.amount)));
+    }
+
     returns.forEach(ret => {
       const totalAmount = Math.round(parseFloat(ret.total_return_amount as any) || 0);
       const isCoupon = !!ret.credit_coupon_no;
       
-      if (isCoupon && totalAmount > 0) {
-        result.summary['Credit Coupon'] = (result.summary['Credit Coupon'] || 0) + totalAmount;
-        result.details.push({
-          id: ret.id,
-          date: ret.return_date,
-          source: 'Credit Coupon Issued',
-          mode: 'Credit Coupon',
-          reference: ret.return_number,
-          customer: ret.customer_name,
-          mobile: ret.customer_mobile,
-          amount: totalAmount,
-          tally_ledger: 'Retail Credit Coupon B2C'
-        });
+      if (isCoupon) {
+        let actualCouponAmt = couponAmountsMap.get(ret.id);
+        if (actualCouponAmt === undefined) actualCouponAmt = totalAmount;
+
+        if (actualCouponAmt > 0) {
+          result.summary['Credit Coupon'] = (result.summary['Credit Coupon'] || 0) + actualCouponAmt;
+          result.details.push({
+            id: ret.id,
+            date: ret.return_date,
+            source: 'Credit Coupon Issued',
+            mode: 'Credit Coupon',
+            reference: ret.return_number,
+            customer: ret.customer_name,
+            mobile: ret.customer_mobile,
+            amount: actualCouponAmt,
+            tally_ledger: 'Retail Credit Coupon B2C'
+          });
+        }
       }
     });
 

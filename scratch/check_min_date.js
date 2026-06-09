@@ -12,9 +12,9 @@ async function run() {
   await client.connect();
   
   const res = await client.query(`
-    SELECT COUNT(*) FROM sales_invoices
+    SELECT MIN(invoice_date) as min_date FROM sales_invoices
   `);
-  console.log('Invoice count:', res.rows[0].count);
+  console.log('Min date:', res.rows[0].min_date);
   
   await client.end();
 }

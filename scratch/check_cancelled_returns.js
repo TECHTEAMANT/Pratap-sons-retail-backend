@@ -12,9 +12,11 @@ async function run() {
   await client.connect();
   
   const res = await client.query(`
-    SELECT COUNT(*) FROM sales_invoices
+    SELECT id, return_number, total_return_amount, status 
+    FROM sales_returns 
+    WHERE status = 'cancelled' OR status != 'completed'
   `);
-  console.log('Invoice count:', res.rows[0].count);
+  console.log('Non-completed Returns:', res.rows);
   
   await client.end();
 }

@@ -12,9 +12,12 @@ async function run() {
   await client.connect();
   
   const res = await client.query(`
-    SELECT COUNT(*) FROM sales_invoices
+    SELECT invoice_number, invoice_date, net_payable 
+    FROM sales_invoices 
+    ORDER BY invoice_date DESC 
+    LIMIT 5
   `);
-  console.log('Invoice count:', res.rows[0].count);
+  console.log('Recent Invoices:', res.rows);
   
   await client.end();
 }

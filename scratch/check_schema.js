@@ -12,9 +12,9 @@ async function run() {
   await client.connect();
   
   const res = await client.query(`
-    SELECT COUNT(*) FROM sales_invoices
+    SELECT column_name FROM information_schema.columns WHERE table_name = 'sales_returns';
   `);
-  console.log('Invoice count:', res.rows[0].count);
+  console.log(res.rows.map(r => r.column_name));
   
   await client.end();
 }
