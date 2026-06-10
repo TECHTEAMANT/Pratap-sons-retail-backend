@@ -13,6 +13,7 @@ import { PaymentReceipt } from '../entities/PaymentReceipt';
 import { PaymentReceiptItem } from '../entities/PaymentReceiptItem';
 import { ProductMaster } from '../entities/ProductMaster';
 import { CreditCoupon } from '../entities/CreditCoupon';
+import { LoyaltyHistory } from '../entities/LoyaltyHistory';
 import { Between, MoreThanOrEqual, LessThanOrEqual, Raw, In, Not, MoreThan } from 'typeorm';
 import logger from '../utils/logger';
 
@@ -113,7 +114,7 @@ export class ReportService {
       .createQueryBuilder('si')
       .select([
         'COUNT(si.id) as "invoiceCount"',
-        'SUM(si.net_payable) as "totalSales"',
+        'SUM(ROUND(si.net_payable)) as "totalSales"',
         'SUM(si.total_mrp) as "totalMRP"',
         'SUM(si.total_gst) as "totalGST"',
         'SUM(si.taxable_value) as "taxableValue"',
@@ -124,7 +125,9 @@ export class ReportService {
         'SUM(si.cgst_5) as "cgst_5"',
         'SUM(si.sgst_5) as "sgst_5"',
         'SUM(si.cgst_18) as "cgst_18"',
-        'SUM(si.sgst_18) as "sgst_18"'
+        'SUM(si.sgst_18) as "sgst_18"',
+        'SUM(si.additional_charges_total) as "additionalCharges"',
+        'SUM(si.additional_charges_gst) as "additionalChargesGST"'
       ])
       .where('si.invoice_date BETWEEN :start AND :end', { start, end });
 
@@ -176,29 +179,66 @@ export class ReportService {
       returnQtyQB.getRawOne()
     ]);
     
-    const grossSales = parseFloat(rawSummary.totalSales) || 0;
+    // The raw 'totalSales' is SUM(si.net_payable).
+    // Because the application auto-corrects net_payable to be Post-Return (MRP - Discount - Returns + Charges),
+    // SUM(si.net_payable) is actually the True NET Sales (after returns).
+    const netSales = parseFloat(rawSummary.totalSales) || 0; 
     const returnAmount = parseFloat(rawRetSummary?.totalReturnAmount) || 0;
+    
+    // Therefore, True Gross Sales (before returns) is Net Sales + Returns
+    const trueGrossSales = netSales + returnAmount;
     
     const grossQty = parseInt(rawQty?.grossQuantity) || 0;
     const netReturnQty = parseInt(rawRetQty?.returnQuantity) || 0;
 
+    const totalMRP = parseFloat(rawSummary.totalMRP) || 0;
+    const additionalCharges = parseFloat(rawSummary.additionalCharges) || 0;
+    
+    const totalSpecialDiscount = parseFloat(rawSummary.totalSpecialDiscount) || 0;
+    const totalLoyalty = parseFloat(rawSummary.totalLoyalty) || 0;
+    const totalVoucher = parseFloat(rawSummary.totalVoucher) || 0;
+
+    // Mathematical Ground Truth for ALL discounts given:
+    // Total Discount = Total MRP - True Gross Sales + Additional Charges
+    const totalDiscountAll = totalMRP - trueGrossSales + additionalCharges;
+    
+    // The "Base" Item discount is whatever is left after explicitly named discounts.
+    // This perfectly bypasses historical data pollution in si.total_discount.
+    const baseTotalDiscount = Math.max(0, totalDiscountAll - totalSpecialDiscount - totalLoyalty - totalVoucher);
+
+    // ANCHOR: Proportional Tax Adjustment
+    // The raw `taxable_value` and `total_gst` in the database are calculated BEFORE Header Discounts
+    // (Special Discount, Voucher Discount, Loyalty) are applied.
+    // To ensure the Financial Breakdown UI perfectly balances (Taxable + GST = Gross Sales),
+    // we must proportionally reduce these values by the overall Header Discount ratio.
+    const rawTaxable = parseFloat(rawSummary.taxableValue) || 0;
+    const rawGST = parseFloat(rawSummary.totalGST) || 0;
+    const rawGross = rawTaxable + rawGST;
+    
+    const ratio = rawGross > 0 ? (trueGrossSales / rawGross) : 1;
+
+    const additionalChargesGST = parseFloat(rawSummary.additionalChargesGST) || 0;
+
     const result = {
-      totalSales: grossSales - returnAmount,
-      grossSales: grossSales,
+      totalSales: netSales, // This is the Net Sales
+      grossSales: trueGrossSales,
       totalReturnAmount: returnAmount,
-      totalMRP: parseFloat(rawSummary.totalMRP) || 0,
-      totalDiscount: parseFloat(rawSummary.totalDiscount) || 0,
-      totalGST: parseFloat(rawSummary.totalGST) || 0,
-      taxableValue: parseFloat(rawSummary.taxableValue) || 0,
-      totalSpecialDiscount: parseFloat(rawSummary.totalSpecialDiscount) || 0,
-      totalLoyalty: parseFloat(rawSummary.totalLoyalty) || 0,
-      totalVoucher: parseFloat(rawSummary.totalVoucher) || 0,
+      totalMRP: totalMRP,
+      totalDiscount: baseTotalDiscount,
+      totalGST: rawGST * ratio,
+      taxableValue: rawTaxable * ratio,
+      totalSpecialDiscount: totalSpecialDiscount,
+      totalLoyalty: totalLoyalty,
+      totalVoucher: totalVoucher,
+      // Other Charges (additional charges on invoices e.g. packing, handling)
+      additionalCharges: additionalCharges,
+      additionalChargesGST: additionalChargesGST,
       totalPending: 0,
       invoiceCount: parseInt(rawSummary.invoiceCount) || 0,
-      cgst_5: parseFloat(rawSummary.cgst_5) || 0,
-      sgst_5: parseFloat(rawSummary.sgst_5) || 0,
-      cgst_18: parseFloat(rawSummary.cgst_18) || 0,
-      sgst_18: parseFloat(rawSummary.sgst_18) || 0,
+      cgst_5: (parseFloat(rawSummary.cgst_5) || 0) * ratio,
+      sgst_5: (parseFloat(rawSummary.sgst_5) || 0) * ratio,
+      cgst_18: (parseFloat(rawSummary.cgst_18) || 0) * ratio,
+      sgst_18: (parseFloat(rawSummary.sgst_18) || 0) * ratio,
       paymentBreakdown: {
         Cash: 0, UPI: 0, Card: 0, Online: 0, Advance: 0, Approval: 0,
         'Credit Coupon': 0, 'Exchange': 0, 'Others': 0, 'Return Credit': 0
@@ -290,7 +330,7 @@ export class ReportService {
 
       allSources.forEach((pd: any) => {
         const rawMode = (pd.mode || '').toString().toUpperCase();
-        const amount = parseFloat(pd.amount) || 0;
+        const amount = Math.round(parseFloat(pd.amount) || 0);
         if (amount <= 0) return;
         if (rawMode.includes('CASH')) invBreakdown.Cash += amount;
         else if (rawMode.includes('UPI') || rawMode.includes('PHONEPE') || rawMode.includes('GPAY') || rawMode.includes('PAYTM') || rawMode.includes('G PAY') || rawMode.includes('BHIM')) invBreakdown.UPI += amount;
@@ -333,7 +373,8 @@ export class ReportService {
     const qb = AppDataSource.getRepository(SalesInvoice)
       .createQueryBuilder('si')
       .leftJoinAndSelect('si.items', 'items')
-      .leftJoinAndSelect('items.product_item', 'bb')
+      .leftJoin('items.product_item', 'bb')
+      .addSelect(['bb.id', 'bb.vendor'])
       .leftJoinAndSelect('si.receipt_items', 'ri')
       .leftJoinAndSelect('ri.receipt', 'receipt')
       .leftJoinAndSelect('si.sales_returns', 'sr')
@@ -346,19 +387,10 @@ export class ReportService {
     if (filters.floorId) qb.andWhere('si.floor_id::text = :floorId', { floorId: filters.floorId });
     if (filters.vendorId) qb.andWhere('bb.vendor::text = :vendorId', { vendorId: filters.vendorId });
 
-    // Handle Pagination
-    if (!exportMode) {
-      qb.orderBy('si.created_at', 'DESC')
-        .skip((page - 1) * limit)
-        .take(limit);
-    } else {
-      qb.orderBy('si.created_at', 'ASC');
-    }
-
-    const invoices = await qb.getMany();
-
     const detailedList: any[] = [];
-    invoices.forEach(inv => {
+
+    const processInvoices = (invoiceBatch: SalesInvoice[]) => {
+      invoiceBatch.forEach(inv => {
       // Re-use existing complex business logic for data integrity
       let invoiceItems = inv.items || [];
       if (filters.vendorId) {
@@ -369,16 +401,22 @@ export class ReportService {
       const reconstructedMRP = invoiceItems.reduce((s, i) => s + (Number(i.mrp || i.selling_price || 0) * Number(i.quantity || 1)), 0);
       const reconstructedItemDisc = invoiceItems.reduce((s, i) => s + (Number(i.discount || 0) * Number(i.quantity || 1)), 0);
       
-      const totalHeaderBundle = (parseFloat(inv.total_discount as any) || 0) + 
-                               (parseFloat(inv.special_discount as any) || 0) + 
-                               (parseFloat(inv.voucher_discount as any) || 0) + 
-                               (parseFloat(inv.loyalty_redemption_amount as any) || 0);
+      const returnsAmt = (inv.sales_returns || []).reduce((s: number, r: any) => s + Math.round(Number(r.total_return_amount) || 0), 0);
+      
+      // Net Amount (Before Returns) is accurately derived from the DB's true net_payable
+      // We already know net_payable = MRP - Discount - Returns + Charges
+      const finalNet = Math.round(Number(inv.net_payable)) + returnsAmt;
+      const originalNet = finalNet;
 
-      const totalDisc = (reconstructedItemDisc > 0.01) ? reconstructedItemDisc : totalHeaderBundle;
-      const visualItemDiscount = Math.max(0, reconstructedItemDisc - (parseFloat(inv.special_discount as any) || 0) - (parseFloat(inv.loyalty_redemption_amount as any) || 0) - (parseFloat(inv.voucher_discount as any) || 0));
-      const returnsAmt = (inv.sales_returns || []).reduce((s: number, r: any) => s + (Number(r.total_return_amount) || 0), 0);
-      const originalNet = Math.round(reconstructedMRP - totalDisc + (parseFloat(inv.additional_charges_total as any) || 0));
-      const finalNet = originalNet;
+      // Mathematical Ground Truth for ALL discounts given on this invoice:
+      // Total Discount = MRP - Gross Net Amount + Additional Charges
+      const totalDiscountAll = reconstructedMRP - finalNet + (parseFloat(inv.additional_charges_total as any) || 0);
+
+      // Base Item Discount is whatever is left after explicitly named discounts are removed.
+      const visualItemDiscount = Math.max(0, totalDiscountAll - 
+                                             (parseFloat(inv.special_discount as any) || 0) - 
+                                             (parseFloat(inv.loyalty_redemption_amount as any) || 0) - 
+                                             (parseFloat(inv.voucher_discount as any) || 0));
 
       // Payment Breakdown Logic (Existing)
       let paymentDetails = inv.payment_details;
@@ -427,7 +465,7 @@ export class ReportService {
 
       allPaymentSources.forEach((pd: any) => {
         const rawMode = (pd.mode || '').toString().toUpperCase();
-        const amount = parseFloat(pd.amount) || 0;
+        const amount = Math.round(parseFloat(pd.amount) || 0);
         if (amount <= 0) return;
         if (rawMode.includes('CASH')) invoicePaymentBreakdown.Cash += amount;
         else if (rawMode.includes('UPI') || rawMode.includes('PHONEPE') || rawMode.includes('GPAY') || rawMode.includes('PAYTM') || rawMode.includes('G PAY') || rawMode.includes('BHIM')) invoicePaymentBreakdown.UPI += amount;
@@ -441,14 +479,25 @@ export class ReportService {
         else invoicePaymentBreakdown.Others += amount;
       });
 
-      const finalRealPaid = invoicePaymentBreakdown.Cash + invoicePaymentBreakdown.UPI + invoicePaymentBreakdown.Card + invoicePaymentBreakdown.Online + invoicePaymentBreakdown.Advance + invoicePaymentBreakdown['Credit Coupon'] + invoicePaymentBreakdown['Credit Note'] + invoicePaymentBreakdown.Exchange + invoicePaymentBreakdown.Others;
+      let finalRealPaid = invoicePaymentBreakdown.Cash + invoicePaymentBreakdown.UPI + invoicePaymentBreakdown.Card + invoicePaymentBreakdown.Online + invoicePaymentBreakdown.Advance + invoicePaymentBreakdown['Credit Coupon'] + invoicePaymentBreakdown['Credit Note'] + invoicePaymentBreakdown.Exchange + invoicePaymentBreakdown.Others;
       let adjustedPending = Math.max(0, originalNet - finalRealPaid - returnsAmt);
-      if (adjustedPending < 1) adjustedPending = 0;
+      
+      // Auto-balance fractional differences to match Tally Sync behavior
+      if (adjustedPending > 0 && (adjustedPending <= 5 || ((inv as any).status || (inv as any).payment_status) === 'Paid')) {
+        invoicePaymentBreakdown.Cash += adjustedPending;
+        finalRealPaid += adjustedPending;
+        adjustedPending = 0;
+      } else if (adjustedPending < 1) {
+        adjustedPending = 0;
+      }
 
       const isApprovalInvoice = (inv as any).is_on_approval === true || invoicePaymentBreakdown.Approval > 0;
 
+      // Strip heavy nested relations (like items containing base64 photos) to prevent Invalid String Length crash
+      const { items, receipt_items, sales_returns, coupon_applications, advance_applications, credit_note_applications, salesman, ...cleanInv } = inv as any;
+
       detailedList.push({
-        ...inv,
+        ...cleanInv,
         salesman_name_display: inv.salesman?.name || (inv.items && inv.items[0] && (inv.items[0] as any).salesman?.name) || '-',
         gross_mrp: reconstructedMRP,
         base_discount: visualItemDiscount,
@@ -466,10 +515,35 @@ export class ReportService {
         is_on_approval: isApprovalInvoice,
         payment_breakdown: invoicePaymentBreakdown,
         payment_status: (adjustedPending <= 0.05) ? 'paid' : (finalRealPaid > 0.1 ? 'partial' : 'pending'),
-        total_qty: inv.items ? inv.items.reduce((sum, i) => sum + (Number(i.quantity) || 0), 0) : 0,
+        total_quantity: inv.items ? inv.items.reduce((sum: any, i: any) => sum + (Number(i.quantity) || 0), 0) : 0,
         return_credit: returnsAmt
       });
     });
+    };
+
+    // Handle Pagination
+    if (!exportMode) {
+      qb.orderBy('si.created_at', 'DESC')
+        .skip((page - 1) * limit)
+        .take(limit);
+      const invoices = await qb.getMany();
+      processInvoices(invoices);
+    } else {
+      qb.orderBy('si.created_at', 'ASC');
+      // Fetch in chunks to avoid Join Inflation Memory Crash (Invalid string length)
+      const chunkSize = 100;
+      let currentSkip = 0;
+      let chunk: SalesInvoice[] = [];
+      do {
+        const chunkQb = qb.clone();
+        chunkQb.skip(currentSkip).take(chunkSize);
+        chunk = await chunkQb.getMany();
+        if (chunk.length > 0) {
+          processInvoices(chunk);
+          currentSkip += chunkSize;
+        }
+      } while (chunk.length === chunkSize);
+    }
 
     return {
       ...result,
@@ -945,7 +1019,7 @@ export class ReportService {
         'c.card_no as card_no',
         'COALESCE(c.credit_balance, 0) + COALESCE((SELECT SUM(cc.amount::numeric - COALESCE(used.used_amount, 0)) FROM credit_coupons cc LEFT JOIN (SELECT coupon_id, SUM(amount_applied)::numeric as used_amount FROM credit_coupon_applications GROUP BY coupon_id) used ON used.coupon_id = cc.id WHERE cc.customer_mobile = c.mobile), 0) as credit_balance',
         'COALESCE(c.loyalty_points_balance, 0) as loyalty_points',
-        'COALESCE((SELECT SUM(net_payable) FROM sales_invoices WHERE customer_mobile = c.mobile), 0) as total_spent',
+        'COALESCE((SELECT SUM(ROUND(net_payable)) FROM sales_invoices WHERE customer_mobile = c.mobile), 0) as total_spent',
         'COALESCE((SELECT COUNT(*) FROM sales_invoices WHERE customer_mobile = c.mobile), 0) as total_invoices',
         '(SELECT MAX(invoice_date) FROM sales_invoices WHERE customer_mobile = c.mobile) as last_purchase',
         'COALESCE((SELECT SUM(soa.amount) FROM sales_order_advances soa JOIN sales_orders so ON so.id = soa.sales_order_id WHERE so.customer_id = c.id), 0) - COALESCE((SELECT SUM(soaa.amount_applied) FROM sales_order_advance_applications soaa JOIN sales_order_advances soa ON soa.id = soaa.advance_id JOIN sales_orders so ON so.id = soa.sales_order_id WHERE so.customer_id = c.id), 0) as advance_balance'
@@ -1004,7 +1078,7 @@ export class ReportService {
     const summaryRaw = await AppDataSource.getRepository(PurchaseOrder)
       .createQueryBuilder('po')
       .select([
-        'COALESCE(SUM(po.total_amount), 0) as total_purchase',
+        'COALESCE(SUM(ROUND(po.total_amount)), 0) as total_purchase',
         'COALESCE(SUM(po.total_items), 0) as total_items',
         'COALESCE(SUM(po.taxable_value), 0) as total_taxable',
         'COALESCE(SUM(po.total_amount - po.taxable_value - COALESCE(po.ledger_freight, 0)), 0) as total_gst',
@@ -1059,7 +1133,7 @@ export class ReportService {
         SELECT 
           po.id as po_id,
           pi.quantity,
-          (pi.cost_per_item * pi.quantity) as cost_val,
+          ((pi.cost_per_item * pi.quantity) * (COALESCE(po.total_amount, 0) / COALESCE(NULLIF((COALESCE(po.taxable_value, 0) + COALESCE(po.ledger_discount, 0)), 0), 1))) as cost_val,
           (pi.mrp * pi.quantity) as mrp_val
         FROM purchase_items pi
         INNER JOIN purchase_orders po ON po.id = pi.po_id
@@ -1108,7 +1182,7 @@ export class ReportService {
           po.order_date as date,
           pi.quantity,
           v.name as vendor_name,
-          pi.cost_per_item as cost,
+          (pi.cost_per_item * (COALESCE(po.total_amount, 0) / COALESCE(NULLIF((COALESCE(po.taxable_value, 0) + COALESCE(po.ledger_discount, 0)), 0), 1))) as cost,
           pi.mrp,
           po.po_number,
           po.invoice_number as po_invoice_number,
@@ -1211,7 +1285,7 @@ export class ReportService {
         'COALESCE(SUM(si.igst_5), 0) as total_igst_5',
         'COALESCE(SUM(si.igst_18), 0) as total_igst_18',
         'COALESCE(SUM(si.total_gst), 0) as total_gst',
-        'COALESCE(SUM(si.net_payable), 0) as total_sales',
+        'COALESCE(SUM(ROUND(si.net_payable)), 0) as total_sales',
       ])
       .where('si.invoice_date BETWEEN :start AND :end', { 
         start: startStr, 
@@ -1645,7 +1719,7 @@ export class ReportService {
         'si.customer_mobile as customer_mobile',
         'si.customer_name as customer_name',
         'COUNT(*) as total_invoices',
-        'COALESCE(SUM(si.net_payable), 0) as total_spent',
+        'COALESCE(SUM(ROUND(si.net_payable)), 0) as total_spent',
         'MIN(si.invoice_date) as first_purchase',
         'MAX(si.invoice_date) as last_purchase',
       ])
@@ -1705,6 +1779,7 @@ export class ReportService {
       .leftJoin('sr.salesman', 's')
       .leftJoin(SalesReturnItem, 'sri', 'sri.return_id = sr.id')
       .leftJoin('sri.product_item', 'bb')
+      .leftJoin(CreditCoupon, 'cc', 'cc.original_sales_return_id = sr.id')
       .select([
         'sr.id as id',
         'sr.return_number as return_number',
@@ -1717,6 +1792,7 @@ export class ReportService {
         'sr.status as status',
         's.name as salesman_name',
         'sr.credit_coupon_no as credit_coupon_no',
+        'cc.amount as credit_coupon_amount',
         'sr.credit_note_number as credit_note_number',
         'COALESCE(SUM(sri.quantity), 0) as total_quantity',
         'sr.total_discount_amount as total_discount_amount',
@@ -1736,6 +1812,7 @@ export class ReportService {
       .addGroupBy('s.name')
       .addGroupBy('sr.credit_coupon_no')
       .addGroupBy('sr.credit_note_number')
+      .addGroupBy('cc.amount')
       .addGroupBy('sr.total_discount_amount')
       .addGroupBy('sr.total_loyalty_amount')
       .orderBy('sr.return_date', 'DESC')
@@ -1761,7 +1838,8 @@ export class ReportService {
         totalCash: 0,
         salesCash: 0,
         receiptCash: 0,
-        advanceCash: 0
+        advanceCash: 0,
+        refundCash: 0
       },
       details: [] as any[]
     };
@@ -1782,9 +1860,9 @@ export class ReportService {
 
       if (paymentDetails && Array.isArray(paymentDetails)) {
         paymentDetails.forEach((pd: any) => {
-          const amount = parseFloat(pd.amount) || 0;
+          const amount = Math.round(parseFloat(pd.amount) || 0);
           totalPaidFromDetails += amount;
-          if (pd.mode === 'Cash') cashAmount += amount;
+          if ((pd.mode || '').toLowerCase().trim() === 'cash') cashAmount += amount;
         });
       }
 
@@ -1821,9 +1899,9 @@ export class ReportService {
       let cashAmount = 0;
       if (paymentDetails && Array.isArray(paymentDetails)) {
         paymentDetails.forEach((pd: any) => {
-          if (pd.mode === 'Cash') cashAmount += parseFloat(pd.amount) || 0;
+          if ((pd.mode || '').toLowerCase().trim() === 'cash') cashAmount += parseFloat(pd.amount) || 0;
         });
-      } else if (receipt.payment_mode === 'Cash') {
+      } else if ((receipt.payment_mode || '').toLowerCase().trim() === 'cash') {
         cashAmount = parseFloat(receipt.amount_received as any) || 0;
       }
 
@@ -1845,7 +1923,7 @@ export class ReportService {
     const advances = await AppDataSource.getRepository(SalesOrderAdvance).find({
       where: {
         created_at: Between(start as any, end as any),
-        payment_mode: 'Cash'
+        payment_mode: Raw(alias => `LOWER(TRIM(${alias})) = 'cash'`)
       },
       relations: ['salesOrder', 'salesOrder.customer']
     });
@@ -1864,12 +1942,324 @@ export class ReportService {
       });
     });
 
-    result.summary.totalCash = result.summary.salesCash + result.summary.receiptCash + result.summary.advanceCash;
+    // 4. Cash Refunds (Payouts for Coupons and Advances)
+    const refunds = await AppDataSource.query(`
+      SELECT 'Credit Coupon' as source, ccr.id, ccr.amount, ccr.created_at as date, cc.coupon_no as reference, cc.customer_mobile as mobile, c.name as customer
+      FROM credit_coupon_refunds ccr
+      INNER JOIN credit_coupons cc ON cc.id = ccr.coupon_id
+      LEFT JOIN customers c ON c.mobile = cc.customer_mobile
+      WHERE LOWER(TRIM(ccr.payment_mode)) = 'cash' AND ccr.created_at BETWEEN $1 AND $2
+
+      UNION ALL
+
+      SELECT 'Advance' as source, soar.id, soar.amount, soar.created_at as date, COALESCE(soa.receipt_number, so.order_number) as reference, c.mobile as mobile, c.name as customer
+      FROM sales_order_advance_refunds soar
+      INNER JOIN sales_order_advances soa ON soa.id = soar.advance_id
+      INNER JOIN sales_orders so ON so.id = soa.sales_order_id
+      LEFT JOIN customers c ON c.id = so.customer_id
+      WHERE LOWER(TRIM(soar.payment_mode)) = 'cash' AND soar.created_at BETWEEN $1 AND $2
+    `, [start, end]);
+
+    refunds.forEach((ref: any) => {
+      const amount = parseFloat(ref.amount) || 0;
+      result.summary.refundCash += amount;
+      result.details.push({
+        id: ref.id,
+        date: ref.date,
+        source: `${ref.source} Refund`,
+        reference: ref.reference || 'N/A',
+        customer: ref.customer || 'Customer',
+        mobile: ref.mobile || '',
+        amount: -amount // Negative for cash out
+      });
+    });
+
+    result.summary.totalCash = result.summary.salesCash + result.summary.receiptCash + result.summary.advanceCash - result.summary.refundCash;
     
     // Sort details by date descending
     result.details.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
     return result;
+  }
+
+  async paymentModeReport(filters: { startDate: string, endDate: string }) {
+    const start = new Date(`${filters.startDate.split('T')[0]}T00:00:00.000Z`);
+    const end = new Date(`${filters.endDate.split('T')[0]}T23:59:59.999Z`);
+
+    const classifyMode = (raw: string): 'Cash' | 'Card' | 'UPI' | 'Bank' | 'Cheque' | 'Advance' | 'Credit Coupon' | 'Exchange' | 'Others' => {
+      const m = (raw || '').toLowerCase().trim();
+      if (m === 'cash') return 'Cash';
+      if (m.includes('card') || m.includes('visa') || m.includes('master') || m.includes('debit') || m.includes('pos')) return 'Card';
+      if (m.includes('upi') || m.includes('gpay') || m.includes('g-pay') || m.includes('phonepe') || m.includes('paytm') || m.includes('bhim')) return 'UPI';
+      if (m.includes('cheque')) return 'Cheque';
+      if (m.includes('bank') || m.includes('transfer') || m.includes('neft') || m.includes('rtgs') || m.includes('online') || m.includes('hdfc') || m.includes('icici')) return 'Bank';
+      if (m.includes('advance')) return 'Advance';
+      if (m.includes('coupon') || m.includes('credit note') || m.includes('return')) return 'Credit Coupon';
+      if (m.includes('exchange')) return 'Exchange';
+      return 'Others';
+    };
+
+    type ModeKey = 'Cash' | 'Card' | 'UPI' | 'Bank' | 'Cheque' | 'Advance' | 'Credit Coupon' | 'Exchange' | 'Others';
+    const zeroBreakdown = () => ({ Cash: 0, Card: 0, UPI: 0, Bank: 0, Cheque: 0, Advance: 0, 'Credit Coupon': 0, Exchange: 0, Others: 0 });
+
+    const result = {
+      summary: zeroBreakdown(),
+      details: [] as any[]
+    };
+
+    // 1. Sales Invoices (billing-time payments)
+    const invoices = await AppDataSource.getRepository(SalesInvoice).find({
+      where: { invoice_date: Between(start as any, end as any) }
+    });
+
+    invoices.forEach(inv => {
+      let paymentDetails = inv.payment_details;
+      if (typeof paymentDetails === 'string') {
+        try { paymentDetails = JSON.parse(paymentDetails); } catch { paymentDetails = null; }
+      }
+
+      const breakdown: Record<ModeKey, number> = zeroBreakdown() as Record<ModeKey, number>;
+
+      if (paymentDetails && Array.isArray(paymentDetails)) {
+        paymentDetails.forEach((pd: any) => {
+          const bucket = classifyMode(pd.mode || '');
+          // CRITICAL: Use Math.round() to match exactly what mapInvoiceToReceipt sends to Tally
+          const amt = Math.round(parseFloat(pd.amount) || 0);
+          if (amt > 0) breakdown[bucket] += amt;
+        });
+      } else if (paymentDetails && typeof paymentDetails === 'object') {
+        Object.entries(paymentDetails).forEach(([key, val]: any) => {
+          const bucket = classifyMode(key);
+          const amt = Math.round(parseFloat(val) || 0);
+          if (amt > 0) breakdown[bucket] += amt;
+        });
+      } else if (inv.payment_mode) {
+        // No payment_details — entire invoice amount in one mode (matches Tally fallback)
+        const bucket = classifyMode(inv.payment_mode);
+        const amt = Math.round(parseFloat(inv.net_payable as any) || 0);
+        if (amt > 0) breakdown[bucket] += amt;
+      }
+
+      const hasAny = (Object.values(breakdown) as number[]).some(v => v > 0);
+      if (hasAny) {
+        (Object.keys(breakdown) as ModeKey[]).forEach(k => {
+          if (breakdown[k] > 0) {
+            result.summary[k] = (result.summary[k] || 0) + breakdown[k];
+            
+            let ref = inv.invoice_number;
+            if (k === 'Credit Coupon' && inv.coupon_no) {
+              ref += ` (CPN: ${inv.coupon_no})`;
+            }
+
+            result.details.push({
+              id: inv.id,
+              date: inv.invoice_date,
+              source: 'Sales Invoice',
+              mode: k,
+              reference: ref,
+              customer: inv.customer_name,
+              mobile: inv.customer_mobile,
+              amount: breakdown[k],
+              tally_ledger: k === 'Card' ? 'Retail Card' : k === 'UPI' ? 'Retail UPI' : k === 'Bank' ? 'Retail Bank Transfer' : k === 'Advance' ? 'Retail Advance B2C' : k === 'Credit Coupon' ? 'Retail Credit Coupon B2C' : 'Retail Cash'
+            });
+          }
+        });
+      }
+    });
+
+
+    // 2. Pending Payment Receipts
+    const receipts = await AppDataSource.getRepository(PaymentReceipt).find({
+      where: { receipt_date: Between(start as any, end as any) }
+    });
+
+    receipts.forEach(receipt => {
+      let paymentDetails = receipt.payment_details;
+      if (typeof paymentDetails === 'string') {
+        try { paymentDetails = JSON.parse(paymentDetails); } catch { paymentDetails = null; }
+      }
+
+      const breakdown: Record<ModeKey, number> = zeroBreakdown() as Record<ModeKey, number>;
+
+      if (paymentDetails && Array.isArray(paymentDetails)) {
+        paymentDetails.forEach((pd: any) => {
+          const bucket = classifyMode(pd.mode || '');
+          const amt = Math.round(parseFloat(pd.amount) || 0);
+          if (amt > 0) breakdown[bucket] += amt;
+        });
+      } else {
+        const bucket = classifyMode(receipt.payment_mode || '');
+        const amt = Math.round(parseFloat(receipt.amount_received as any) || 0);
+        if (amt > 0) breakdown[bucket] += amt;
+      }
+
+      (Object.keys(breakdown) as ModeKey[]).forEach(k => {
+        if (breakdown[k] > 0) {
+          result.summary[k] = (result.summary[k] || 0) + breakdown[k];
+          result.details.push({
+            id: receipt.id,
+            date: receipt.receipt_date,
+            source: 'Pending Receipt',
+            mode: k,
+            reference: receipt.receipt_number,
+            customer: receipt.customer_name,
+            mobile: receipt.customer_mobile,
+            amount: breakdown[k],
+            tally_ledger: k === 'Card' ? 'Retail Card' : k === 'UPI' ? 'Retail UPI' : k === 'Bank' ? 'Retail Bank Transfer' : 'Retail Cash'
+          });
+        }
+      });
+    });
+
+    // 3. Sales Order Advances
+    const advances = await AppDataSource.getRepository(SalesOrderAdvance).find({
+      where: { created_at: Between(start as any, end as any) },
+      relations: ['salesOrder', 'salesOrder.customer']
+    });
+
+    advances.forEach(adv => {
+      const bucket = classifyMode(adv.payment_mode || '');
+      const amt = Math.round(parseFloat(adv.amount as any) || 0);
+      if (amt > 0) {
+        result.summary[bucket] = (result.summary[bucket] || 0) + amt;
+        result.details.push({
+          id: adv.id,
+          date: adv.created_at,
+          source: 'Order Advance',
+          mode: bucket,
+          reference: (adv as any).salesOrder?.order_number || 'N/A',
+          customer: (adv as any).salesOrder?.customer?.name || 'Customer',
+          mobile: (adv as any).salesOrder?.customer?.mobile || '',
+          amount: amt,
+          tally_ledger: bucket === 'Card' ? 'Retail Card' : bucket === 'UPI' ? 'Retail UPI' : bucket === 'Bank' ? 'Retail Bank Transfer' : 'Retail Advance B2C'
+        });
+      }
+    });
+
+    // 4. Sales Returns (Coupon Issuances)
+    const returns = await AppDataSource.getRepository(SalesReturn).find({
+      where: { return_date: Between(start as any, end as any) }
+    });
+
+    // Fetch actual coupon amounts to avoid using full return amount
+    const couponAmountsMap = new Map<string, number>();
+    if (returns.length > 0) {
+      const coupons = await AppDataSource.getRepository(CreditCoupon).find({
+        where: { original_sales_return_id: In(returns.map(r => r.id)) }
+      });
+      coupons.forEach(c => couponAmountsMap.set(c.original_sales_return_id, Number(c.amount)));
+    }
+
+    returns.forEach(ret => {
+      const totalAmount = Math.round(parseFloat(ret.total_return_amount as any) || 0);
+      const isCoupon = !!ret.credit_coupon_no;
+      
+      if (isCoupon) {
+        let actualCouponAmt = couponAmountsMap.get(ret.id);
+        if (actualCouponAmt === undefined) actualCouponAmt = totalAmount;
+
+        if (actualCouponAmt > 0) {
+          result.summary['Credit Coupon'] = (result.summary['Credit Coupon'] || 0) + actualCouponAmt;
+          result.details.push({
+            id: ret.id,
+            date: ret.return_date,
+            source: 'Credit Coupon Issued',
+            mode: 'Credit Coupon',
+            reference: ret.return_number,
+            customer: ret.customer_name,
+            mobile: ret.customer_mobile,
+            amount: actualCouponAmt,
+            tally_ledger: 'Retail Credit Coupon B2C'
+          });
+        }
+      }
+    });
+
+    result.details.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+    // Build Tally-equivalent summary by directly querying the exact synced payloads!
+    // This guarantees the "Tally-Equivalent View" matches the Tally Payload Audit tab 100%.
+    const tallyAuditData = await this.tallyPayloadAuditReport(filters);
+    const tally_summary: Record<string, number> = {};
+    
+    tallyAuditData.summary.forEach((s: any) => {
+      tally_summary[s.ledger] = Math.abs(s.net); // Tally view usually shows absolute balance
+    });
+
+    return { summary: result.summary, tally_summary, details: result.details };
+  }
+
+  async tallyPayloadAuditReport(filters: { startDate: string, endDate: string }) {
+    const start = `${filters.startDate.split('T')[0]}T00:00:00.000Z`;
+    const end = `${filters.endDate.split('T')[0]}T23:59:59.999Z`;
+
+    const tallyRecords = await AppDataSource.query(`
+      SELECT sync_data, record_type, invoice_date, invoice_number 
+      FROM tally_sync 
+      WHERE sync_status = 'synced' 
+        AND invoice_date >= $1 
+        AND invoice_date <= $2
+        AND sync_data IS NOT NULL
+    `, [start, end]);
+
+    const ledgerSummary: Record<string, { debit: number, credit: number, net: number }> = {};
+    const details: any[] = [];
+
+    tallyRecords.forEach((record: any) => {
+      const data = record.sync_data;
+      if (!data || !data.partyDetail || !Array.isArray(data.partyDetail)) return;
+
+      const voucherType = data.voucherType || record.record_type;
+      const voucherNumber = data.voucherNumber || record.invoice_number;
+      const date = data.date || record.invoice_date;
+
+      data.partyDetail.forEach((pd: any) => {
+        const ledger = pd.ledger;
+        if (!ledger) return;
+        
+        // Ignore the main sales/purchase ledgers, focus on the payment/cash ledgers
+        // Wait, the user wants to see what we sent. We should show all.
+        // Actually, Tally trial balance is net. Let's just track everything.
+        
+        const amount = Math.round(parseFloat(pd.entryAmount) || 0);
+        if (amount === 0) return;
+
+        if (!ledgerSummary[ledger]) {
+          ledgerSummary[ledger] = { debit: 0, credit: 0, net: 0 };
+        }
+
+        const isDebit = pd.transactionType === 'debit';
+        
+        if (isDebit) {
+          ledgerSummary[ledger].debit += amount;
+          ledgerSummary[ledger].net += amount;
+        } else {
+          ledgerSummary[ledger].credit += amount;
+          ledgerSummary[ledger].net -= amount; // credit reduces net for assets, but increases for liabilities. We just show raw net (debit - credit)
+        }
+
+        details.push({
+          date: date,
+          voucherNumber: voucherNumber,
+          voucherType: voucherType,
+          ledger: ledger,
+          transactionType: pd.transactionType,
+          amount: amount
+        });
+      });
+    });
+
+    details.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+    // Convert ledgerSummary to array for easier frontend rendering
+    const summaryArray = Object.entries(ledgerSummary).map(([ledger, totals]) => ({
+      ledger,
+      debit: totals.debit,
+      credit: totals.credit,
+      net: totals.net
+    })).sort((a, b) => b.debit + b.credit - (a.debit + a.credit)); // Sort by volume
+
+    return { summary: summaryArray, details };
   }
 
   async vendorAnalysisReport(filters: { startDate: string, endDate: string, vendorId?: string, sortField?: string, sortDirection?: 'ASC' | 'DESC' }) {
@@ -2137,6 +2527,46 @@ export class ReportService {
     return results;
   }
 
+  async loyaltyAnalysis(filters: { startDate: string, endDate: string }) {
+    const start = filters.startDate.split('T')[0];
+    const end = filters.endDate.split('T')[0] + ' 23:59:59';
+
+    const history = await AppDataSource.getRepository(LoyaltyHistory)
+      .createQueryBuilder('lh')
+      .leftJoinAndSelect('lh.customer', 'c')
+      .where('lh.created_at BETWEEN :start AND :end', { start, end })
+      .orderBy('lh.created_at', 'DESC')
+      .getMany();
+
+    const summary = {
+      total_earned: 0,
+      total_redeemed: 0,
+      count: history.length
+    };
+
+    const details = history.map(h => {
+      const points = Number(h.points) || 0;
+      if (points > 0) summary.total_earned += points;
+      else summary.total_redeemed += Math.abs(points);
+
+      return {
+        id: h.id,
+        created_at: h.created_at,
+        customer_name: h.customer?.name || 'Unknown',
+        customer_mobile: h.customer?.mobile || 'N/A',
+        type: h.type,
+        points: points,
+        reference_id: h.reference_id,
+        notes: h.notes
+      };
+    });
+
+    return {
+      summary,
+      details
+    };
+  }
+
   async advanceAnalysis(filters: { startDate: string, endDate: string }) {
     const start = filters.startDate.split('T')[0];
     const end = filters.endDate.split('T')[0] + ' 23:59:59';
@@ -2375,6 +2805,7 @@ export class ReportService {
       WITH raw_data AS (
         -- Credit Coupons: Issuance (Credit)
         SELECT
+          cc.id::text AS instrument_id,
           'Credit'::text AS entry_type,
           'Credit Coupon'::text AS type,
           cc.customer_mobile::text AS mobile,
@@ -2394,8 +2825,8 @@ export class ReportService {
 
         UNION ALL
 
-        -- Credit Coupons: Usage (Debit)
         SELECT
+          cc.id::text AS instrument_id,
           'Debit'::text AS entry_type,
           'Credit Coupon'::text AS type,
           cc.customer_mobile::text AS mobile,
@@ -2415,6 +2846,7 @@ export class ReportService {
 
         -- Advance: Issuance (Credit)
         SELECT
+          soa.id::text AS instrument_id,
           'Credit'::text AS entry_type,
           'Advance'::text AS type,
           COALESCE(c.mobile, '-')::text AS mobile,
@@ -2431,8 +2863,8 @@ export class ReportService {
 
         UNION ALL
 
-        -- Advance: Usage (Debit)
         SELECT
+          soa.id::text AS instrument_id,
           'Debit'::text AS entry_type,
           'Advance'::text AS type,
           COALESCE(c.mobile, '-')::text AS mobile,
@@ -2446,6 +2878,43 @@ export class ReportService {
         FROM sales_order_advance_applications soaa
         INNER JOIN sales_order_advances soa ON soa.id = soaa.advance_id
         INNER JOIN sales_invoices si ON si.id = soaa.invoice_id
+        INNER JOIN sales_orders so ON so.id = soa.sales_order_id
+        LEFT JOIN customers c ON c.id = so.customer_id
+
+        UNION ALL
+
+        SELECT
+          cc.id::text AS instrument_id,
+          'Debit'::text AS entry_type,
+          'Credit Coupon'::text AS type,
+          cc.customer_mobile::text AS mobile,
+          COALESCE(c.name, '-')::text AS name,
+          ccr.created_at::timestamptz AS transaction_date,
+          cc.coupon_no::text AS external_no,
+          (-1 * ccr.amount)::numeric AS transaction_amount,
+          cc.amount::numeric AS original_amount,
+          '-'::text AS invoice_no,
+          ('Refund: ' || ccr.payment_mode)::text AS reference
+        FROM credit_coupon_refunds ccr
+        INNER JOIN credit_coupons cc ON cc.id = ccr.coupon_id
+        LEFT JOIN customers c ON c.mobile = cc.customer_mobile
+
+        UNION ALL
+
+        SELECT
+          soa.id::text AS instrument_id,
+          'Debit'::text AS entry_type,
+          'Advance'::text AS type,
+          COALESCE(c.mobile, '-')::text AS mobile,
+          COALESCE(c.name, '-')::text AS name,
+          soar.created_at::timestamptz AS transaction_date,
+          COALESCE(soa.receipt_number, so.order_number)::text AS external_no,
+          (-1 * soar.amount)::numeric AS transaction_amount,
+          soa.amount::numeric AS original_amount,
+          '-'::text AS invoice_no,
+          ('Refund: ' || soar.payment_mode)::text AS reference
+        FROM sales_order_advance_refunds soar
+        INNER JOIN sales_order_advances soa ON soa.id = soar.advance_id
         INNER JOIN sales_orders so ON so.id = soa.sales_order_id
         LEFT JOIN customers c ON c.id = so.customer_id
       ),
@@ -2501,6 +2970,25 @@ export class ReportService {
         INNER JOIN sales_order_advances soa ON soa.id = soaa.advance_id 
         INNER JOIN sales_orders so ON so.id = soa.sales_order_id 
         INNER JOIN sales_invoices si ON si.id = soaa.invoice_id
+        LEFT JOIN customers c ON c.id = so.customer_id
+
+        UNION ALL
+
+        -- Credit Coupon Refund
+        SELECT 
+           'Credit Coupon'::text AS type, cc.customer_mobile::text AS mobile, COALESCE(cust.name, '-')::text AS name, cc.coupon_no::text AS external_no, ccr.created_at::timestamptz AS transaction_date, '-'::text AS invoice_no, 'Refund'::text AS reference
+        FROM credit_coupon_refunds ccr 
+        INNER JOIN credit_coupons cc ON cc.id = ccr.coupon_id
+        LEFT JOIN customers cust ON cust.mobile = cc.customer_mobile
+
+        UNION ALL
+
+        -- Advance Refund
+        SELECT 
+           'Advance'::text AS type, c.mobile::text AS mobile, COALESCE(c.name, '-')::text AS name, soa.receipt_number::text AS external_no, soar.created_at::timestamptz AS transaction_date, '-'::text AS invoice_no, 'Refund'::text AS reference 
+        FROM sales_order_advance_refunds soar 
+        INNER JOIN sales_order_advances soa ON soa.id = soar.advance_id 
+        INNER JOIN sales_orders so ON so.id = soa.sales_order_id 
         LEFT JOIN customers c ON c.id = so.customer_id
       )
       SELECT COUNT(*)::int AS total

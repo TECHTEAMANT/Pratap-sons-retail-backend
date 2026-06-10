@@ -54,6 +54,9 @@ export class SalesReturnItem {
   @CreateDateColumn({ type: 'timestamptz' })
   created_at: Date;
 
+  @Column({ type: 'uuid', nullable: true })
+  return_id: string;
+
   // Relations
   @Index()
   @ManyToOne(() => SalesReturn, ret => ret.items, { onDelete: 'CASCADE' })

@@ -40,7 +40,11 @@ export class CreditCouponController {
         `SELECT COALESCE(SUM(amount_applied)::numeric, 0) as used FROM credit_coupon_applications WHERE coupon_id = $1`,
         [coupon.id]
       );
-      const remaining = Math.max(0, Number(coupon.amount) - Number(used || 0));
+      const [{ refunded }] = await AppDataSource.query(
+        `SELECT COALESCE(SUM(amount)::numeric, 0) as refunded FROM credit_coupon_refunds WHERE coupon_id = $1`,
+        [coupon.id]
+      );
+      const remaining = Math.max(0, Number(coupon.amount) - Number(used || 0) - Number(refunded || 0));
       
       if (remaining <= 0) return sendError(res, 'Coupon balance is zero', 400);
 
@@ -69,6 +73,23 @@ export class CreditCouponController {
         await creditCouponService.apply(coupon_no, invoice_id, remaining, manager);
       });
       sendSuccess(res, null, 'Coupon applied successfully');
+    } catch (e: any) {
+      sendError(res, e.message, 400);
+    }
+  }
+
+  async adjust(req: Request, res: Response) {
+    try {
+      const { coupon_no } = req.params;
+      const { amount, payment_mode, notes } = req.body;
+      const userId = (req as any).user?.id; // Assuming auth middleware sets this
+
+      if (!amount || !payment_mode) {
+        return sendError(res, 'Amount and payment mode are required', 400);
+      }
+
+      const result = await creditCouponService.adjust(coupon_no, Number(amount), payment_mode, notes, userId);
+      sendSuccess(res, result, 'Coupon adjusted successfully');
     } catch (e: any) {
       sendError(res, e.message, 400);
     }

@@ -42,4 +42,6 @@ export { LoyaltyHistory, LoyaltyTransactionType } from './LoyaltyHistory';
 export { Voucher } from './Voucher';
 export { CreditCoupon } from './CreditCoupon';
 export { CreditCouponApplication } from './CreditCouponApplication';
+export { CreditCouponRefund } from './CreditCouponRefund';
 export { SalesOrderAdvanceApplication } from './SalesOrderAdvanceApplication';
+export { SalesOrderAdvanceRefund } from './SalesOrderAdvanceRefund';

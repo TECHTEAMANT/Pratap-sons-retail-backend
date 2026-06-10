@@ -5,7 +5,7 @@ import { SalesInvoice } from '../entities/SalesInvoice';
 import { CreditNote } from '../entities/CreditNote';
 import { CreditNoteApplication } from '../entities/CreditNoteApplication';
 import { BarcodeBatch } from '../entities/BarcodeBatch';
-import { Customer, LoyaltyConfig, LoyaltyHistory, LoyaltyTransactionType } from '../entities';
+import { Customer, LoyaltyConfig, LoyaltyHistory, LoyaltyTransactionType, User, CreditCouponApplication } from '../entities';
 import { ILike, In } from 'typeorm';
 import { CreditCoupon } from '../entities/CreditCoupon';
 import { creditCouponService } from './creditCoupon.service';
@@ -187,12 +187,14 @@ export class SalesReturnService {
             directPaid = pd.reduce((sum: number, p: any) => {
               const mode = (p.mode || '').toString().toUpperCase();
               if (mode.includes('APPROVAL')) return sum;
+              if (mode.includes('ADVANCE') || mode.includes('COUPON') || mode.includes('COUPAN') || mode.includes('CREDIT NOTE')) return sum;
               return sum + (Number(p.amount || 0));
             }, 0);
           } else if (pd && typeof pd === 'object') {
             directPaid = Object.entries(pd).reduce((sum: number, [key, val]: [string, any]) => {
               const mode = key.toUpperCase();
               if (mode.includes('APPROVAL')) return sum;
+              if (mode.includes('ADVANCE') || mode.includes('COUPON') || mode.includes('COUPAN') || mode.includes('CREDIT NOTE')) return sum;
               return sum + (Number(val) || 0);
             }, 0);
           }
@@ -319,7 +321,33 @@ export class SalesReturnService {
       if (oldReturn.credit_coupon_no) {
         const coupon = await manager.findOne(CreditCoupon, { where: { coupon_no: oldReturn.credit_coupon_no } });
         if (coupon && coupon.status === 'redeemed') {
-          throw new Error('This return cannot be edited because the associated Credit Coupon has already been redeemed.');
+          const user = await manager.findOne(User, { where: { id: userId }, relations: ['roles'] });
+          const roleName = user?.roles?.name || user?.role || '';
+          const isAdmin = roleName.toLowerCase().includes('admin');
+          
+          if (!isAdmin) {
+            throw new Error('This return cannot be edited because the associated Credit Coupon has already been redeemed. Only Administrators can edit this return.');
+          }
+
+          // Admin override: Revert the applications on the target invoices before deleting the coupon
+          const applications = await manager.find(CreditCouponApplication, { where: { coupon_id: coupon.id } });
+          for (const app of applications) {
+            const targetInv = await manager.findOne(SalesInvoice, { where: { id: app.invoice_id } });
+            if (targetInv) {
+              targetInv.amount_paid = Math.max(0, Number(targetInv.amount_paid) - Number(app.amount_applied));
+              targetInv.amount_pending = Number(targetInv.amount_pending) + Number(app.amount_applied);
+              
+              if (Number(targetInv.amount_pending) <= 0.05) {
+                targetInv.payment_status = 'paid';
+              } else if (Number(targetInv.amount_paid) > 0.01) {
+                targetInv.payment_status = 'partial';
+              } else {
+                targetInv.payment_status = 'pending';
+              }
+              
+              await manager.save(SalesInvoice, targetInv);
+            }
+          }
         }
         if (coupon) await manager.remove(CreditCoupon, coupon);
       }
@@ -380,10 +408,8 @@ export class SalesReturnService {
       await manager.delete(SalesReturnItem, { salesReturn: { id: oldReturn.id } });
       await manager.delete(CreditNote, { return_id: oldReturn.id });
 
-      // Preserve the original return date - it should not change on edit
-      // oldReturn.return_date = data.return_date || oldReturn.return_date; 
-      // We explicitly keep the old date to prevent "today's date" from overwriting historical data
-      oldReturn.return_date = oldReturn.return_date;
+      // Allow user to change the return date explicitly on edit
+      oldReturn.return_date = data.return_date || oldReturn.return_date;
       oldReturn.return_reason = data.return_reason || oldReturn.return_reason;
       oldReturn.total_return_amount = data.total_return_amount;
       oldReturn.total_discount_amount = data.total_discount_amount || 0;
@@ -489,12 +515,14 @@ export class SalesReturnService {
             directPaid = pd.reduce((sum: number, p: any) => {
               const mode = (p.mode || '').toString().toUpperCase();
               if (mode.includes('APPROVAL')) return sum;
+              if (mode.includes('ADVANCE') || mode.includes('COUPON') || mode.includes('COUPAN') || mode.includes('CREDIT NOTE')) return sum;
               return sum + (Number(p.amount || 0));
             }, 0);
           } else if (pd && typeof pd === 'object') {
             directPaid = Object.entries(pd).reduce((sum: number, [key, val]: [string, any]) => {
               const mode = key.toUpperCase();
               if (mode.includes('APPROVAL')) return sum;
+              if (mode.includes('ADVANCE') || mode.includes('COUPON') || mode.includes('COUPAN') || mode.includes('CREDIT NOTE')) return sum;
               return sum + (Number(val) || 0);
             }, 0);
           }
