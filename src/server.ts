@@ -3,6 +3,7 @@ import { config, validateConfig } from './config';
 import { initializeDatabase, closeDatabase } from './config/data-source';
 import app from './app';
 import logger from './utils/logger';
+// Connected to database: invento_retail_new
 import { customerService } from './services/customer.service';
 import { loyaltyService } from './services/loyalty.service';
 
