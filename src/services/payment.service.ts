@@ -3,6 +3,9 @@ import { AppDataSource } from '../config/data-source';
 import { PaymentReceipt } from '../entities/PaymentReceipt';
 import { PaymentReceiptItem } from '../entities/PaymentReceiptItem';
 import { SalesInvoice } from '../entities/SalesInvoice';
+import { CreditCoupon } from '../entities/CreditCoupon';
+import { CreditCouponApplication } from '../entities/CreditCouponApplication';
+import { creditCouponService } from './creditCoupon.service';
 
 export class PaymentService {
   private repo = AppDataSource.getRepository(PaymentReceipt);
@@ -50,6 +53,7 @@ export class PaymentService {
       const savedReceipt = await manager.save(receipt);
 
       // 2. Handle items and update invoice balances
+      const savedItems: { invoice_id: string; amount_paid: number }[] = [];
       if (data.items && Array.isArray(data.items)) {
         for (const itemData of data.items) {
           // Update invoice balance
@@ -82,6 +86,46 @@ export class PaymentService {
             amount_paid: actualToPay,
           });
           await manager.save(item);
+          savedItems.push({ invoice_id: itemData.invoice_id, amount_paid: actualToPay });
+        }
+      }
+
+      // 3. Process any Credit Coupon payments
+      const rawDetails = data.payment_details;
+      let paymentDetails: any[] = [];
+      if (Array.isArray(rawDetails)) {
+        paymentDetails = rawDetails;
+      } else if (typeof rawDetails === 'string') {
+        try { paymentDetails = JSON.parse(rawDetails); } catch { paymentDetails = []; }
+      } else if (data.payment_mode) {
+        paymentDetails = [{ mode: data.payment_mode, amount: data.amount_received, reference: data.reference_number }];
+      }
+
+      for (const pd of paymentDetails) {
+        const modeUpper = String(pd.mode || '').trim().toUpperCase();
+        const isCouponMode = modeUpper.includes('COUPON') || modeUpper === 'CN' || modeUpper.includes('CREDIT NOTE');
+        const couponRef = String(pd.reference || '').trim();
+        const couponAmount = Number(pd.amount || 0);
+
+        if (isCouponMode && couponRef && couponAmount > 0) {
+          const couponRepo = manager.getRepository(CreditCoupon);
+          const coupon = await couponRepo.findOne({ where: { coupon_no: couponRef } });
+          if (coupon) {
+            let remCoupon = couponAmount;
+            for (const sItem of savedItems) {
+              if (remCoupon <= 0.001) break;
+              if (sItem.amount_paid <= 0) continue;
+              const applyToInv = Math.min(remCoupon, sItem.amount_paid);
+              await creditCouponService.apply(couponRef, sItem.invoice_id, applyToInv, manager);
+              remCoupon -= applyToInv;
+            }
+            if (remCoupon > 0.001) {
+              const fallbackInvId = savedItems[0]?.invoice_id || data.invoice_id;
+              if (fallbackInvId) {
+                await creditCouponService.apply(couponRef, fallbackInvId, remCoupon, manager);
+              }
+            }
+          }
         }
       }
 
@@ -119,6 +163,60 @@ export class PaymentService {
           }
           // 2. Delete the item
           await manager.remove(item);
+        }
+      }
+
+      // 2. Reverse any Credit Coupon applications made through this receipt
+      const rawDetails = receipt.payment_details;
+      let paymentDetails: any[] = [];
+      if (Array.isArray(rawDetails)) {
+        paymentDetails = rawDetails;
+      } else if (typeof rawDetails === 'string') {
+        try { paymentDetails = JSON.parse(rawDetails); } catch { paymentDetails = []; }
+      } else if (receipt.payment_mode) {
+        paymentDetails = [{ mode: receipt.payment_mode, amount: receipt.amount_received, reference: receipt.reference_number }];
+      }
+
+      for (const pd of paymentDetails) {
+        const modeUpper = String(pd.mode || '').trim().toUpperCase();
+        const isCouponMode = modeUpper.includes('COUPON') || modeUpper === 'CN' || modeUpper.includes('CREDIT NOTE');
+        const couponRef = String(pd.reference || '').trim();
+        const couponAmount = Number(pd.amount || 0);
+
+        if (isCouponMode && couponRef && couponAmount > 0) {
+          const couponRepo = manager.getRepository(CreditCoupon);
+          const appRepo = manager.getRepository(CreditCouponApplication);
+          const coupon = await couponRepo.findOne({ where: { coupon_no: couponRef } });
+          if (coupon) {
+            const apps = await appRepo.find({ where: { coupon_id: coupon.id } });
+            let toReverse = couponAmount;
+            for (const app of apps) {
+              if (toReverse <= 0.001) break;
+              const curApplied = Number(app.amount_applied || 0);
+              const deduct = Math.min(toReverse, curApplied);
+              if (curApplied - deduct <= 0.001) {
+                await appRepo.remove(app);
+              } else {
+                app.amount_applied = curApplied - deduct;
+                await appRepo.save(app);
+              }
+              toReverse -= deduct;
+            }
+
+            // Recalculate coupon status
+            const [{ used }] = await manager.query(
+              `SELECT COALESCE(SUM(amount_applied)::numeric, 0) as used FROM credit_coupon_applications WHERE coupon_id = $1`,
+              [coupon.id]
+            );
+            const [{ refunded }] = await manager.query(
+              `SELECT COALESCE(SUM(amount)::numeric, 0) as refunded FROM credit_coupon_refunds WHERE coupon_id = $1`,
+              [coupon.id]
+            );
+            const remaining = Math.max(0, Number(coupon.amount) - Number(used || 0) - Number(refunded || 0));
+            coupon.status = remaining <= 0 ? 'redeemed' : 'active';
+            coupon.updated_at = new Date();
+            await couponRepo.save(coupon);
+          }
         }
       }
 

@@ -20,14 +20,14 @@ export class WalletService {
           cc.amount::numeric AS original_amount,
           GREATEST(
             0,
-            cc.amount::numeric - COALESCE(SUM(cca.amount_applied::numeric), 0)
+            cc.amount::numeric - COALESCE(SUM(cca.amount_applied::numeric), 0) - COALESCE((SELECT SUM(ccr.amount::numeric) FROM credit_coupon_refunds ccr WHERE ccr.coupon_id = cc.id), 0)
           ) AS remaining_amount
         FROM credit_coupons cc
         LEFT JOIN credit_coupon_applications cca
           ON cca.coupon_id = cc.id
         WHERE cc.customer_mobile = $1
         GROUP BY cc.id, cc.coupon_no, cc.customer_mobile, cc.created_at
-        HAVING (cc.amount::numeric - COALESCE(SUM(cca.amount_applied::numeric), 0)) > 0
+        HAVING (cc.amount::numeric - COALESCE(SUM(cca.amount_applied::numeric), 0) - COALESCE((SELECT SUM(ccr.amount::numeric) FROM credit_coupon_refunds ccr WHERE ccr.coupon_id = cc.id), 0)) > 0
         ORDER BY cc.created_at DESC
       `,
       [mobile]

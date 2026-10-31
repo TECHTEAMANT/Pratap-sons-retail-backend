@@ -282,6 +282,9 @@ export class SalesReturnService {
 
           await manager.save(SalesInvoice, invoice);
 
+          savedReturn.amount_reduced_pending = amountToReducePending;
+          savedReturn.refund_amount = refundAmount;
+
           if (refundAmount > 0) {
             const coupon = await creditCouponService.generate({
               amount: refundAmount,
@@ -290,8 +293,8 @@ export class SalesReturnService {
             }, manager);
             
             savedReturn.credit_coupon_no = coupon.coupon_no;
-            await manager.save(SalesReturn, savedReturn);
           }
+          await manager.save(SalesReturn, savedReturn);
 
           if (cn) {
             cn.credit_amount = refundAmount;
@@ -303,6 +306,14 @@ export class SalesReturnService {
             customer.credit_balance = Number(customer.credit_balance || 0) + refundAmount;
             await manager.save(customer);
           }
+
+          (savedReturn as any).financial_breakdown = {
+            return_amount: returnAmount,
+            amount_reduced_pending: amountToReducePending,
+            remaining_pending: invoice.amount_pending,
+            refund_amount: refundAmount,
+            credit_coupon_no: savedReturn.credit_coupon_no || null,
+          };
         }
       }
 
@@ -318,9 +329,10 @@ export class SalesReturnService {
       });
       if (!oldReturn) throw new Error('Sales return not found');
 
+      let existingCoupon: CreditCoupon | null = null;
       if (oldReturn.credit_coupon_no) {
-        const coupon = await manager.findOne(CreditCoupon, { where: { coupon_no: oldReturn.credit_coupon_no } });
-        if (coupon && coupon.status === 'redeemed') {
+        existingCoupon = await manager.findOne(CreditCoupon, { where: { coupon_no: oldReturn.credit_coupon_no } });
+        if (existingCoupon && existingCoupon.status === 'redeemed') {
           const user = await manager.findOne(User, { where: { id: userId }, relations: ['roles'] });
           const roleName = user?.roles?.name || user?.role || '';
           const isAdmin = roleName.toLowerCase().includes('admin');
@@ -329,8 +341,8 @@ export class SalesReturnService {
             throw new Error('This return cannot be edited because the associated Credit Coupon has already been redeemed. Only Administrators can edit this return.');
           }
 
-          // Admin override: Revert the applications on the target invoices before deleting the coupon
-          const applications = await manager.find(CreditCouponApplication, { where: { coupon_id: coupon.id } });
+          // Admin override: Revert the applications on the target invoices
+          const applications = await manager.find(CreditCouponApplication, { where: { coupon_id: existingCoupon.id } });
           for (const app of applications) {
             const targetInv = await manager.findOne(SalesInvoice, { where: { id: app.invoice_id } });
             if (targetInv) {
@@ -348,8 +360,9 @@ export class SalesReturnService {
               await manager.save(SalesInvoice, targetInv);
             }
           }
+          await manager.delete(CreditCouponApplication, { coupon_id: existingCoupon.id });
         }
-        if (coupon) await manager.remove(CreditCoupon, coupon);
+        // Do NOT remove existingCoupon; preserve the coupon code so customer's printed voucher remains valid
       }
 
       for (const oldItem of oldReturn.items) {
@@ -418,8 +431,7 @@ export class SalesReturnService {
       oldReturn.additional_charges_gst_returned = data.additional_charges_gst_returned || 0;
       oldReturn.additional_charges_total_returned = data.additional_charges_total_returned || 0;
       oldReturn.salesman_id = data.salesman_id || oldReturn.salesman_id;
-      oldReturn.items = []; 
-      oldReturn.credit_coupon_no = null as any; 
+      oldReturn.credit_coupon_no = existingCoupon ? existingCoupon.coupon_no : (null as any); 
       const savedReturn = await manager.save(oldReturn);
 
       const createdItems: SalesReturnItem[] = [];
@@ -598,21 +610,45 @@ export class SalesReturnService {
             await manager.save(cn);
           }
 
+          savedReturn.amount_reduced_pending = amountToReducePending;
+          savedReturn.refund_amount = refundAmount;
+
           if (refundAmount > 0) {
-            const coupon = await creditCouponService.generate({
-              amount: refundAmount,
-              customer_mobile: data.customer_mobile,
-              return_id: savedReturn.id
-            }, manager);
-            savedReturn.credit_coupon_no = coupon.coupon_no;
+            if (existingCoupon) {
+              existingCoupon.amount = refundAmount;
+              existingCoupon.customer_mobile = data.customer_mobile;
+              existingCoupon.status = 'active';
+              existingCoupon.updated_at = new Date();
+              await manager.save(CreditCoupon, existingCoupon);
+              savedReturn.credit_coupon_no = existingCoupon.coupon_no;
+            } else {
+              const coupon = await creditCouponService.generate({
+                amount: refundAmount,
+                customer_mobile: data.customer_mobile,
+                return_id: savedReturn.id
+              }, manager);
+              savedReturn.credit_coupon_no = coupon.coupon_no;
+            }
             await manager.save(SalesReturn, savedReturn);
           } else {
-            // No coupon generated, but if a refund exists and no coupon is used, update credit_balance
-            if (refundAmount > 0) {
-               updatedCustomer.credit_balance = Number(updatedCustomer.credit_balance || 0) + refundAmount;
-               await manager.save(updatedCustomer);
+            // refundAmount is 0 (all return value went to settle unpaid invoice debt)
+            if (existingCoupon) {
+              existingCoupon.amount = 0;
+              existingCoupon.status = 'redeemed';
+              existingCoupon.updated_at = new Date();
+              await manager.save(CreditCoupon, existingCoupon);
             }
+            savedReturn.credit_coupon_no = null as any;
+            await manager.save(SalesReturn, savedReturn);
           }
+
+          (savedReturn as any).financial_breakdown = {
+            return_amount: returnAmount,
+            amount_reduced_pending: amountToReducePending,
+            remaining_pending: invoice.amount_pending,
+            refund_amount: refundAmount,
+            credit_coupon_no: savedReturn.credit_coupon_no || null,
+          };
         }
       }
 

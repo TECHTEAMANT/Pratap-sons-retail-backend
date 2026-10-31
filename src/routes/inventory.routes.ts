@@ -10,12 +10,14 @@ router.use(authenticate);
 router.get('/', requirePermissionOrVendor('can_manage_inventory'), (req, res) => inventoryController.findAll(req, res));
 router.get('/search', requirePermissionOrVendor('can_manage_inventory'), (req, res) => inventoryController.search(req, res));
 router.get('/grouped', requirePermissionOrVendor('can_manage_inventory'), (req, res) => inventoryController.getGrouped(req, res));
+router.get('/transfers', requirePermissionOrVendor('can_manage_inventory'), (req, res) => inventoryController.getTransferHistory(req, res));
 router.get('/:id', requirePermissionOrVendor('can_manage_inventory'), (req, res) => inventoryController.findById(req, res));
 
 // Non-GET routes strictly require permission
 router.use(requirePermission('can_manage_inventory'));
 
 router.post('/', (req, res) => inventoryController.create(req, res));
+router.post('/transfer', (req, res) => inventoryController.transferStock(req, res));
 router.put('/', (req, res) => inventoryController.updateByFilter(req, res));
 router.put('/:id', (req, res) => inventoryController.update(req, res));
 router.put('/:id/adjust-quantity', (req, res) => inventoryController.adjustQuantity(req, res));

@@ -28,6 +28,8 @@ interface SizeQty {
   size: string;
   quantity: number;
   print_quantity?: number;
+  cost?: number;
+  mrp?: number;
 }
 
 interface BulkItem {
@@ -584,13 +586,15 @@ export class PurchaseService {
 
         for (const sq of item.sizes) {
           if (!sq.quantity || sq.quantity <= 0) continue;
+          const effectiveCost = (sq.cost !== undefined && sq.cost !== null && Number(sq.cost) > 0) ? Number(sq.cost) : item.cost_per_item;
+          const effectiveMrp = (sq.mrp !== undefined && sq.mrp !== null && Number(sq.mrp) > 0) ? Number(sq.mrp) : item.mrp;
           piPlaceholders.push(
             `($${piIdx},$${piIdx+1},$${piIdx+2},$${piIdx+3},$${piIdx+4},$${piIdx+5},$${piIdx+6},$${piIdx+7},$${piIdx+8},$${piIdx+9},$${piIdx+10},$${piIdx+11},$${piIdx+12},$${piIdx+13},$${piIdx+14})`
           );
           piValues.push(
             po.id, item.design_no, item.product_group,
             item.color || null, sq.size, sq.quantity,
-            item.cost_per_item, item.mrp, item.mrp_markup_percent,
+            effectiveCost, effectiveMrp, item.mrp_markup_percent,
             item.gst_logic, item.description || null,
             item.order_number || null, item.hsn_code || null,
             effectiveFloor, item.barcodes_per_item || 1
@@ -660,9 +664,15 @@ export class PurchaseService {
         for (const sq of item.sizes) {
           const qtyVal = Number(sq.quantity);
           if (isNaN(qtyVal) || qtyVal <= 0) continue;
+          const effectiveCost = (sq.cost !== undefined && sq.cost !== null && Number(sq.cost) > 0) ? Number(sq.cost) : item.cost_per_item;
+          const effectiveMrp = (sq.mrp !== undefined && sq.mrp !== null && Number(sq.mrp) > 0) ? Number(sq.mrp) : item.mrp;
+          const costEncoded = encodeCost ? encodeCost(effectiveCost) : null;
           const alias = aliases[aliasIdx++];
-          const structured = buildStructuredBarcode(groupCode, item.design_no, colorCode, vendor_code, item.mrp, alias);
-          const printQty = sq.print_quantity ?? sq.quantity * (item.barcodes_per_item ?? 1);
+          const structured = buildStructuredBarcode(groupCode, item.design_no, colorCode, vendor_code, effectiveMrp, alias);
+          const multiplier = Math.max(1, Number(item.barcodes_per_item) || 1);
+          const printQty = (Number(sq.print_quantity) > 0 && Number(sq.print_quantity) === qtyVal * multiplier)
+            ? Number(sq.print_quantity)
+            : (qtyVal * multiplier);
 
           bbPlaceholders.push(
             `($${bbIdx},$${bbIdx+1},$${bbIdx+2},$${bbIdx+3},$${bbIdx+4},$${bbIdx+5},$${bbIdx+6},$${bbIdx+7},$${bbIdx+8},$${bbIdx+9},$${bbIdx+10},$${bbIdx+11},$${bbIdx+12},$${bbIdx+13},$${bbIdx+14},$${bbIdx+15},'active',$${bbIdx+16},$${bbIdx+17},$${bbIdx+18},$${bbIdx+19},$${bbIdx+20},$${bbIdx+21},$${bbIdx+22})`
@@ -670,7 +680,7 @@ export class PurchaseService {
           bbValues.push(
             alias, structured, item.design_no, item.product_group,
             sq.size, item.color || null, vendor,
-            item.cost_per_item, costEncoded, item.mrp, item.mrp_markup_percent,
+            effectiveCost, costEncoded, effectiveMrp, item.mrp_markup_percent,
             item.gst_logic, sq.quantity, sq.quantity,
             effectiveFloor, printQty,
             po.id,
@@ -964,12 +974,15 @@ export class PurchaseService {
             const gInfo = groupMap.get(pgId);
             const effectiveFloor = ensureId(itemForCombo.floor_id) || b.floor || gInfo?.floorId || null;
             const sqMatch = itemForCombo.sizes.find(s => ensureId(s.size) === sizeId);
+            const mult = Math.max(1, Number(itemForCombo.barcodes_per_item) || 1);
             const printQty = sqMatch
-              ? (sqMatch.print_quantity ?? sqMatch.quantity * (itemForCombo.barcodes_per_item ?? 1))
+              ? (Number(sqMatch.print_quantity) > 0 ? Number(sqMatch.print_quantity) : Number(sqMatch.quantity) * mult)
               : null;
+            const effectiveCost = (sqMatch?.cost !== undefined && sqMatch?.cost !== null && Number(sqMatch.cost) > 0) ? Number(sqMatch.cost) : itemForCombo.cost_per_item;
+            const effectiveMrp = (sqMatch?.mrp !== undefined && sqMatch?.mrp !== null && Number(sqMatch.mrp) > 0) ? Number(sqMatch.mrp) : itemForCombo.mrp;
             bbUpdateRows.push({
               id: b.id, tq, aq,
-              ca: itemForCombo.cost_per_item, mrp: itemForCombo.mrp,
+              ca: effectiveCost, mrp: effectiveMrp,
               mmp: itemForCombo.mrp_markup_percent, gl: itemForCombo.gst_logic,
               fl: effectiveFloor, desc: itemForCombo.description || null,
               onVal: itemForCombo.order_number || null,
@@ -992,13 +1005,16 @@ export class PurchaseService {
           const groupCode = gInfo?.groupCode || 'PG';
           const colorCode = colorMap.get(cId) || '';
           const effectiveFloor = ensureId(itemForCombo.floor_id) || gInfo?.floorId || null;
+          const sqMatchItem = itemForCombo.sizes.find(s => s.size === sizeId);
+          const effectiveCost = (sqMatchItem?.cost !== undefined && sqMatchItem?.cost !== null && Number(sqMatchItem.cost) > 0) ? Number(sqMatchItem.cost) : itemForCombo.cost_per_item;
+          const effectiveMrp = (sqMatchItem?.mrp !== undefined && sqMatchItem?.mrp !== null && Number(sqMatchItem.mrp) > 0) ? Number(sqMatchItem.mrp) : itemForCombo.mrp;
+          const costEncoded = encodeCost ? encodeCost(effectiveCost) : null;
           const alias = newAliases[newAliasIdx++];
-          const structured = buildStructuredBarcode(groupCode, designNo, colorCode, vendor_code, itemForCombo.mrp, alias);
-          const sqMatch = itemForCombo.sizes.find(s => s.size === sizeId);
-          const printQty = sqMatch
-            ? (sqMatch.print_quantity ?? delta * (itemForCombo.barcodes_per_item ?? 1))
-            : delta;
-          const costEncoded = encodeCost ? encodeCost(itemForCombo.cost_per_item) : null;
+          const structured = buildStructuredBarcode(groupCode, designNo, colorCode, vendor_code, effectiveMrp, alias);
+          const mult = Math.max(1, Number(itemForCombo.barcodes_per_item) || 1);
+          const printQty = sqMatchItem
+            ? (Number(sqMatchItem.print_quantity) > 0 ? Number(sqMatchItem.print_quantity) : delta * mult)
+            : delta * mult;
 
           newBbPlaceholders.push(
             `($${newBbIdx},$${newBbIdx+1},$${newBbIdx+2},$${newBbIdx+3},$${newBbIdx+4},$${newBbIdx+5},$${newBbIdx+6},$${newBbIdx+7},$${newBbIdx+8},$${newBbIdx+9},$${newBbIdx+10},$${newBbIdx+11},$${newBbIdx+12},$${newBbIdx+13},$${newBbIdx+14},$${newBbIdx+15},'active',$${newBbIdx+16},$${newBbIdx+17},$${newBbIdx+18},$${newBbIdx+19},$${newBbIdx+20},$${newBbIdx+21},$${newBbIdx+22})`
@@ -1006,8 +1022,8 @@ export class PurchaseService {
           newBbValues.push(
             alias, structured, designNo, productGroupId,
             sizeId, colorId || null, vendorId,
-            itemForCombo.cost_per_item, costEncoded,
-            itemForCombo.mrp, itemForCombo.mrp_markup_percent,
+            effectiveCost, costEncoded,
+            effectiveMrp, itemForCombo.mrp_markup_percent,
             itemForCombo.gst_logic, delta, delta,
             effectiveFloor, printQty, poId,
             itemForCombo.image_url ? [itemForCombo.image_url] : [],
@@ -1093,13 +1109,15 @@ export class PurchaseService {
         for (const sq of item.sizes) {
           const qtyVal = Number(sq.quantity);
           if (isNaN(qtyVal) || qtyVal <= 0) continue;
+          const effectiveCost = (sq.cost !== undefined && sq.cost !== null && Number(sq.cost) > 0) ? Number(sq.cost) : item.cost_per_item;
+          const effectiveMrp = (sq.mrp !== undefined && sq.mrp !== null && Number(sq.mrp) > 0) ? Number(sq.mrp) : item.mrp;
           piPlaceholders.push(
             `($${piIdx},$${piIdx+1},$${piIdx+2},$${piIdx+3},$${piIdx+4},$${piIdx+5},$${piIdx+6},$${piIdx+7},$${piIdx+8},$${piIdx+9},$${piIdx+10},$${piIdx+11},$${piIdx+12},$${piIdx+13},$${piIdx+14})`
           );
           piValues.push(
             poId, item.design_no, item.product_group,
             item.color || null, sq.size, sq.quantity,
-            item.cost_per_item, item.mrp, item.mrp_markup_percent,
+            effectiveCost, effectiveMrp, item.mrp_markup_percent,
             item.gst_logic, item.description || null,
             item.order_number || null, item.hsn_code || null,
             effectiveFloor, item.barcodes_per_item || 1
