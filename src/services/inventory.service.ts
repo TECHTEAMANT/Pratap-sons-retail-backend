@@ -81,11 +81,15 @@ export class InventoryService {
     }
 
     if (filters.floor) {
-      const ids = filters.floor.split(',').filter(Boolean);
-      if (ids.length > 1) {
-        qb.andWhere('bb.floor_id IN (:...flIds)', { flIds: ids });
+      if (filters.floor === 'null' || filters.floor === 'unassigned' || filters.floor === 'warehouse' || filters.floor === 'godown') {
+        qb.andWhere('bb.floor_id IS NULL');
       } else {
-        qb.andWhere('bb.floor_id = :floor', { floor: filters.floor });
+        const ids = filters.floor.split(',').filter(Boolean);
+        if (ids.length > 1) {
+          qb.andWhere('bb.floor_id IN (:...flIds)', { flIds: ids });
+        } else {
+          qb.andWhere('bb.floor_id = :floor', { floor: filters.floor });
+        }
       }
     }
 
@@ -160,10 +164,40 @@ export class InventoryService {
 
     const [data, total] = await qb.getManyAndCount();
 
-    // Remove heavy photos array from list response to prevent massive JSON payloads
+    // Retain only the primary thumbnail photo (first element) to allow modal/card previews
+    // while keeping JSON payloads compact and preventing memory spikes
     data.forEach((item: any) => {
-      delete item.photos;
+      if (item.photos && Array.isArray(item.photos) && item.photos.length > 0) {
+        item.photos = [item.photos[0]];
+      } else {
+        item.photos = [];
+      }
     });
+
+    // Fallback: For items without photos on barcode_batches, lookup photo from product_masters
+    const missingPhotoDesigns = data
+      .filter((i: any) => (!i.photos || i.photos.length === 0) && i.design_no)
+      .map((i: any) => i.design_no);
+
+    if (missingPhotoDesigns.length > 0) {
+      try {
+        const pmRows = await this.batchRepo.manager.query(
+          `SELECT design_no, photos[1] as primary_photo FROM product_masters WHERE design_no = ANY($1) AND photos IS NOT NULL AND cardinality(photos) > 0`,
+          [[...new Set(missingPhotoDesigns)]]
+        );
+        const pmMap = new Map(pmRows.map((r: any) => [r.design_no, r.primary_photo]));
+        data.forEach((item: any) => {
+          if ((!item.photos || item.photos.length === 0) && pmMap.has(item.design_no)) {
+            const pmPhoto = pmMap.get(item.design_no);
+            if (pmPhoto) {
+              item.photos = [pmPhoto];
+            }
+          }
+        });
+      } catch (err) {
+        // Non-blocking fallback
+      }
+    }
 
     return { data, total, page, limit };
   }
@@ -555,6 +589,124 @@ export class InventoryService {
 
     const result = await qb.execute();
     return { updated: result.affected || 0 };
+  }
+
+  /**
+   * Internal Stock Transfer between floors/warehouse.
+   */
+  async transferStock(payload: {
+    from_floor_id?: string | null;
+    to_floor_id?: string | null;
+    from_floor_name?: string;
+    to_floor_name?: string;
+    batch_ids: string[];
+    notes?: string;
+  }, userId?: string) {
+    return AppDataSource.transaction(async (manager) => {
+      const { from_floor_id, to_floor_id, from_floor_name, to_floor_name, batch_ids, notes } = payload;
+      if (!batch_ids || batch_ids.length === 0) {
+        throw new Error('No items selected for transfer');
+      }
+
+      // 1. Fetch batches
+      const batches = await manager.query(
+        `SELECT bb.id, bb.barcode_alias_8digit, bb.design_no, bb.available_quantity,
+                bb.cost_actual, bb.mrp, pg.name as product_group_name, cl.name as color_name, sz.name as size_name
+         FROM barcode_batches bb
+         LEFT JOIN product_groups pg ON bb.product_group = pg.id
+         LEFT JOIN colors cl ON bb.color = cl.id
+         LEFT JOIN sizes sz ON bb.size = sz.id
+         WHERE bb.id = ANY($1)`,
+        [batch_ids]
+      );
+
+      if (batches.length === 0) {
+        throw new Error('Selected items not found in inventory');
+      }
+
+      // 2. Generate Transfer Number (TRF-YYYYMMDD-XXXX)
+      const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      const countRes = await manager.query(
+        `SELECT COUNT(*) as count FROM stock_transfers WHERE transfer_number LIKE $1`,
+        [`TRF-${dateStr}-%`]
+      );
+      const nextSeq = (parseInt(countRes[0]?.count || '0', 10) + 1).toString().padStart(4, '0');
+      const transferNumber = `TRF-${dateStr}-${nextSeq}`;
+
+      const totalQuantity = batches.reduce((sum: number, b: any) => sum + (Number(b.available_quantity) || 1), 0);
+
+      // 3. Insert into stock_transfers
+      const insertTransfer = await manager.query(
+        `INSERT INTO stock_transfers 
+          (transfer_number, from_floor_id, to_floor_id, from_floor_name, to_floor_name, total_items, total_quantity, notes, transferred_by)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         RETURNING id`,
+        [
+          transferNumber,
+          from_floor_id || null,
+          to_floor_id || null,
+          from_floor_name || 'Main Warehouse',
+          to_floor_name || 'Main Warehouse',
+          batches.length,
+          totalQuantity,
+          notes || null,
+          userId || null
+        ]
+      );
+      const transferId = insertTransfer[0].id;
+
+      // 4. Insert items into stock_transfer_items
+      for (const b of batches) {
+        await manager.query(
+          `INSERT INTO stock_transfer_items
+            (transfer_id, barcode_batch_id, barcode_alias_8digit, design_no, product_group_name, color_name, size_name, quantity, cost, mrp)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+          [
+            transferId,
+            b.id,
+            b.barcode_alias_8digit,
+            b.design_no,
+            b.product_group_name || null,
+            b.color_name || null,
+            b.size_name || null,
+            Number(b.available_quantity) || 1,
+            Number(b.cost_actual) || 0,
+            Number(b.mrp) || 0
+          ]
+        );
+      }
+
+      // 5. Update barcode_batches floor_id to destination floor
+      await manager.query(
+        `UPDATE barcode_batches 
+         SET floor = $1, modified_by = $2, updated_at = NOW()
+         WHERE id = ANY($3)`,
+        [to_floor_id || null, userId || null, batch_ids]
+      );
+
+      return {
+        success: true,
+        transfer_number: transferNumber,
+        transfer_id: transferId,
+        moved_count: batches.length,
+        total_quantity: totalQuantity
+      };
+    });
+  }
+
+  /**
+   * Fetch recent transfer history
+   */
+  async getTransferHistory(limit = 50) {
+    const transfers = await this.batchRepo.manager.query(
+      `SELECT st.*, 
+              (SELECT json_agg(sti.*) FROM stock_transfer_items sti WHERE sti.transfer_id = st.id) as items
+       FROM stock_transfers st
+       ORDER BY st.created_at DESC
+       LIMIT $1`,
+      [limit]
+    );
+    return transfers;
   }
 }
 

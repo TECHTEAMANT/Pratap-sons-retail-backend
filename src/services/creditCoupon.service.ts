@@ -48,7 +48,11 @@ export class CreditCouponService {
       `SELECT COALESCE(SUM(amount_applied)::numeric, 0) as used FROM credit_coupon_applications WHERE coupon_id = $1`,
       [coupon.id]
     );
-    const remaining = Math.max(0, Number(coupon.amount) - Number(used || 0));
+    const [{ refunded }] = await manager.query(
+      `SELECT COALESCE(SUM(amount)::numeric, 0) as refunded FROM credit_coupon_refunds WHERE coupon_id = $1`,
+      [coupon.id]
+    );
+    const remaining = Math.max(0, Number(coupon.amount) - Number(used || 0) - Number(refunded || 0));
 
     const amt = Number(amountToApply || 0);
     if (amt <= 0) return;
@@ -162,10 +166,22 @@ export class CreditCouponService {
    * Find coupon by number
    */
   async getByCouponNo(couponNo: string) {
-    return this.repo.findOne({ 
+    const coupon = await this.repo.findOne({ 
       where: { coupon_no: couponNo },
       relations: ['customer']
     });
+    if (!coupon) return null;
+
+    const [{ used }] = await AppDataSource.query(
+      `SELECT COALESCE(SUM(amount_applied)::numeric, 0) as used FROM credit_coupon_applications WHERE coupon_id = $1`,
+      [coupon.id]
+    );
+    const [{ refunded }] = await AppDataSource.query(
+      `SELECT COALESCE(SUM(amount)::numeric, 0) as refunded FROM credit_coupon_refunds WHERE coupon_id = $1`,
+      [coupon.id]
+    );
+    const remaining = Math.max(0, Number(coupon.amount) - Number(used || 0) - Number(refunded || 0));
+    return { ...coupon, amount: remaining, original_amount: coupon.amount };
   }
 
   /**

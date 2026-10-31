@@ -56,6 +56,12 @@ export class SalesReturn {
   @Column({ type: 'text', nullable: true })
   credit_coupon_no: string;
 
+  @Column({ type: 'numeric', default: 0, nullable: true })
+  amount_reduced_pending: number;
+
+  @Column({ type: 'numeric', default: 0, nullable: true })
+  refund_amount: number;
+
   @Column({ type: 'uuid', nullable: true })
   created_by: string;
 

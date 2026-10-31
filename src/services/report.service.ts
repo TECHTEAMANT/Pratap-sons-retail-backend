@@ -152,41 +152,102 @@ export class ReportService {
       .select('SUM(sri.quantity) as "returnQuantity"')
       .where('sr.return_date BETWEEN :start AND :end', { start, end });
 
-    if (filters.floorId) {
-      invoiceSummaryQB.andWhere('si.floor_id::text = :floorId', { floorId: filters.floorId });
-      quantityQB.andWhere('si.floor_id::text = :floorId', { floorId: filters.floorId });
-      // Returns do not have direct floor mappings, but keeping consistency where possible
-    }
+    let rawSummary: any = {};
+    let rawQty: any = {};
+    let rawRetSummary: any = {};
+    let rawRetQty: any = {};
 
     if (filters.vendorId) {
-      // If filtering by vendor, we only count the contribution of THAT vendor's items
-      invoiceSummaryQB.innerJoin('si.items', 'agg_items')
-                      .innerJoin('agg_items.product_item', 'agg_bb')
-                      .andWhere('agg_bb.vendor::text = :vendorId', { vendorId: filters.vendorId });
-      
-      quantityQB.innerJoin('sii.product_item', 'bb')
-                .andWhere('bb.vendor::text = :vendorId', { vendorId: filters.vendorId });
-      
-      // Note: For vendor-specific sales, si.net_payable is not accurate because it's the whole invoice.
-      // However, for the high-level summary cards, we show the invoices that CONTAIN that vendor's items.
-      // If we want item-level precision, it will be calculated in Phase 1.5.
-    }
+      // Vendor-specific item aggregation: precise and eliminates whole-invoice join inflation
+      const vendorItemsQB = AppDataSource.getRepository(SalesInvoiceItem)
+        .createQueryBuilder('sii')
+        .innerJoin('sii.invoice', 'si')
+        .innerJoin('sii.product_item', 'bb')
+        .select([
+          'COUNT(DISTINCT si.id) as "invoiceCount"',
+          'COALESCE(SUM(sii.selling_price * sii.quantity), 0) as "totalSales"',
+          'COALESCE(SUM(sii.mrp * sii.quantity), 0) as "totalMRP"',
+          'COALESCE(SUM(sii.cgst_amount + sii.sgst_amount + sii.igst_amount), 0) as "totalGST"',
+          'COALESCE(SUM(sii.taxable_value), 0) as "taxableValue"',
+          'COALESCE(SUM(sii.discount * sii.quantity), 0) as "totalDiscount"',
+          '0 as "totalSpecialDiscount"',
+          '0 as "totalLoyalty"',
+          '0 as "totalVoucher"',
+          'COALESCE(SUM(CASE WHEN sii.gst_percentage = 5 THEN sii.cgst_amount ELSE 0 END), 0) as "cgst_5"',
+          'COALESCE(SUM(CASE WHEN sii.gst_percentage = 5 THEN sii.sgst_amount ELSE 0 END), 0) as "sgst_5"',
+          'COALESCE(SUM(CASE WHEN sii.gst_percentage = 18 THEN sii.cgst_amount ELSE 0 END), 0) as "cgst_18"',
+          'COALESCE(SUM(CASE WHEN sii.gst_percentage = 18 THEN sii.sgst_amount ELSE 0 END), 0) as "sgst_18"',
+          '0 as "additionalCharges"',
+          '0 as "additionalChargesGST"'
+        ])
+        .where('si.invoice_date BETWEEN :start AND :end', { start, end })
+        .andWhere('bb.vendor::text = :vendorId', { vendorId: filters.vendorId });
 
-    const [rawSummary, rawQty, rawRetSummary, rawRetQty] = await Promise.all([
-      invoiceSummaryQB.getRawOne(),
-      quantityQB.getRawOne(),
-      returnSummaryQB.getRawOne(),
-      returnQtyQB.getRawOne()
-    ]);
+      if (filters.floorId) {
+        vendorItemsQB.andWhere('si.floor_id::text = :floorId', { floorId: filters.floorId });
+      }
+
+      const vendorQtyQB = AppDataSource.getRepository(SalesInvoiceItem)
+        .createQueryBuilder('sii')
+        .innerJoin('sii.invoice', 'si')
+        .innerJoin('sii.product_item', 'bb')
+        .select('COALESCE(SUM(sii.quantity), 0) as "grossQuantity"')
+        .where('si.invoice_date BETWEEN :start AND :end', { start, end })
+        .andWhere('bb.vendor::text = :vendorId', { vendorId: filters.vendorId });
+
+      if (filters.floorId) {
+        vendorQtyQB.andWhere('si.floor_id::text = :floorId', { floorId: filters.floorId });
+      }
+
+      const vendorRetQB = AppDataSource.getRepository(SalesReturnItem)
+        .createQueryBuilder('sri')
+        .innerJoin('sri.salesReturn', 'sr')
+        .innerJoin(BarcodeBatch, 'bb', 'bb.barcode_alias_8digit = sri.barcode_8digit')
+        .select([
+          'COUNT(DISTINCT sr.id) as "returnCount"',
+          'COALESCE(SUM(sri.return_amount), 0) as "totalReturnAmount"',
+          'COALESCE(SUM(sri.discount_amount), 0) as "totalReturnDiscount"',
+          'COALESCE(SUM(sri.quantity), 0) as "returnQuantity"'
+        ])
+        .where('sr.return_date BETWEEN :start AND :end', { start, end })
+        .andWhere('bb.vendor::text = :vendorId', { vendorId: filters.vendorId });
+
+      const [vSummary, vQty, vRet] = await Promise.all([
+        vendorItemsQB.getRawOne(),
+        vendorQtyQB.getRawOne(),
+        vendorRetQB.getRawOne()
+      ]);
+
+      rawSummary = vSummary || {};
+      rawQty = vQty || {};
+      rawRetSummary = vRet || {};
+      rawRetQty = { returnQuantity: vRet?.returnQuantity || 0 };
+    } else {
+      if (filters.floorId) {
+        invoiceSummaryQB.andWhere('si.floor_id::text = :floorId', { floorId: filters.floorId });
+        quantityQB.andWhere('si.floor_id::text = :floorId', { floorId: filters.floorId });
+      }
+
+      const [gSummary, gQty, gRetSummary, gRetQty] = await Promise.all([
+        invoiceSummaryQB.getRawOne(),
+        quantityQB.getRawOne(),
+        returnSummaryQB.getRawOne(),
+        returnQtyQB.getRawOne()
+      ]);
+
+      rawSummary = gSummary || {};
+      rawQty = gQty || {};
+      rawRetSummary = gRetSummary || {};
+      rawRetQty = gRetQty || {};
+    }
     
-    // The raw 'totalSales' is SUM(si.net_payable).
-    // Because the application auto-corrects net_payable to be Post-Return (MRP - Discount - Returns + Charges),
-    // SUM(si.net_payable) is actually the True NET Sales (after returns).
-    const netSales = parseFloat(rawSummary.totalSales) || 0; 
+    // Gross Sales = Total Billed Sales in period
+    const grossBilledSales = parseFloat(rawSummary.totalSales) || 0; 
     const returnAmount = parseFloat(rawRetSummary?.totalReturnAmount) || 0;
     
-    // Therefore, True Gross Sales (before returns) is Net Sales + Returns
-    const trueGrossSales = netSales + returnAmount;
+    // Net Sales = Gross Billed Sales - Returns in period
+    const netSales = Math.max(0, grossBilledSales - returnAmount);
+    const trueGrossSales = grossBilledSales;
     
     const grossQty = parseInt(rawQty?.grossQuantity) || 0;
     const netReturnQty = parseInt(rawRetQty?.returnQuantity) || 0;
@@ -200,17 +261,11 @@ export class ReportService {
 
     // Mathematical Ground Truth for ALL discounts given:
     // Total Discount = Total MRP - True Gross Sales + Additional Charges
-    const totalDiscountAll = totalMRP - trueGrossSales + additionalCharges;
+    const totalDiscountAll = Math.max(0, totalMRP - trueGrossSales + additionalCharges);
     
     // The "Base" Item discount is whatever is left after explicitly named discounts.
-    // This perfectly bypasses historical data pollution in si.total_discount.
     const baseTotalDiscount = Math.max(0, totalDiscountAll - totalSpecialDiscount - totalLoyalty - totalVoucher);
 
-    // ANCHOR: Proportional Tax Adjustment
-    // The raw `taxable_value` and `total_gst` in the database are calculated BEFORE Header Discounts
-    // (Special Discount, Voucher Discount, Loyalty) are applied.
-    // To ensure the Financial Breakdown UI perfectly balances (Taxable + GST = Gross Sales),
-    // we must proportionally reduce these values by the overall Header Discount ratio.
     const rawTaxable = parseFloat(rawSummary.taxableValue) || 0;
     const rawGST = parseFloat(rawSummary.totalGST) || 0;
     const rawGross = rawTaxable + rawGST;
@@ -220,8 +275,8 @@ export class ReportService {
     const additionalChargesGST = parseFloat(rawSummary.additionalChargesGST) || 0;
 
     const result = {
-      totalSales: netSales, // This is the Net Sales
-      grossSales: trueGrossSales,
+      totalSales: netSales, // True Net Sales (after deducting returns)
+      grossSales: trueGrossSales, // Gross Billed Sales
       totalReturnAmount: returnAmount,
       totalMRP: totalMRP,
       totalDiscount: baseTotalDiscount,
@@ -241,7 +296,7 @@ export class ReportService {
       sgst_18: (parseFloat(rawSummary.sgst_18) || 0) * ratio,
       paymentBreakdown: {
         Cash: 0, UPI: 0, Card: 0, Online: 0, Advance: 0, Approval: 0,
-        'Credit Coupon': 0, 'Exchange': 0, 'Others': 0, 'Return Credit': 0
+        'Credit Coupon': 0, 'Exchange': 0, 'Others': 0
       },
       returnCreditNotes: 0,
       totalQuantity: grossQty - netReturnQty,
@@ -361,7 +416,6 @@ export class ReportService {
       result.paymentBreakdown['Credit Coupon'] += invBreakdown['Credit Coupon'];
       (result.paymentBreakdown as any).Exchange += invBreakdown.Exchange;
       (result.paymentBreakdown as any).Others += invBreakdown.Others;
-      (result.paymentBreakdown as any)['Return Credit'] += returnsAmt;
       result.totalPending += pending;
     });
 
@@ -591,10 +645,10 @@ export class ReportService {
       // 1. Build dynamic WHERE sql clauses
       const whereClauses: string[] = ["1=1"];
       
-      whereClauses.push(`po.order_date BETWEEN '${startDateStr}' AND '${endDateStr}'`);
+      whereClauses.push(`pi.order_date BETWEEN '${startDateStr}' AND '${endDateStr}'`);
       
       if (filters.vendorId) {
-        whereClauses.push(`po.vendor::text = '${filters.vendorId}'`);
+        whereClauses.push(`pi.vendor::text = '${filters.vendorId}'`);
       }
       if (filters.floorId) {
         whereClauses.push(`pi.floor_id::text = '${filters.floorId}'`);
@@ -605,7 +659,7 @@ export class ReportService {
       if (filters.barcode) {
         whereClauses.push(`EXISTS (
           SELECT 1 FROM barcode_batches bb 
-          WHERE bb.po_id = pi.po_id AND bb.design_no = pi.design_no AND bb.status != 'deleted'
+          WHERE (bb.po_id = pi.po_id OR (bb.po_id IS NULL AND pi.po_id IS NULL)) AND bb.design_no = pi.design_no AND bb.status != 'deleted'
             AND (bb.barcode_alias_8digit ILIKE '%${filters.barcode}%' OR bb.barcode_structured ILIKE '%${filters.barcode}%')
         )`);
       }
@@ -619,43 +673,83 @@ export class ReportService {
         whereClauses.push(`cl.name ILIKE '%${filters.color}%'`);
       }
       if (filters.poInvoiceNumber) {
-        whereClauses.push(`po.invoice_number ILIKE '%${filters.poInvoiceNumber}%'`);
+        whereClauses.push(`pi.invoice_number ILIKE '%${filters.poInvoiceNumber}%'`);
       }
 
       const whereSql = whereClauses.join(' AND ');
+
+      // Base query for unified inventory: PO purchases + Opening Stock
+      const baseItemsCTE = `
+        SELECT 
+          pi.id::text as id,
+          pi.design_no,
+          pi.quantity,
+          pi.cost_per_item,
+          pi.mrp,
+          pi.hsn_code,
+          po.invoice_number,
+          po.order_date,
+          po.vendor,
+          pi.product_group,
+          pi.color,
+          pi.size,
+          pi.po_id,
+          pi.floor_id
+        FROM purchase_items pi
+        INNER JOIN purchase_orders po ON po.id = pi.po_id
+        WHERE LOWER(po.status) IN ('completed', 'received')
+
+        UNION ALL
+
+        SELECT 
+          bb.id::text as id,
+          bb.design_no,
+          bb.total_quantity as quantity,
+          bb.cost_actual as cost_per_item,
+          bb.mrp,
+          COALESCE(bb.hsn_code, '') as hsn_code,
+          'OPENING-STOCK' as invoice_number,
+          bb.created_at as order_date,
+          bb.vendor,
+          bb.product_group,
+          bb.color,
+          bb.size,
+          NULL::uuid as po_id,
+          NULL::uuid as floor_id
+        FROM barcode_batches bb
+        WHERE bb.po_id IS NULL AND bb.status != 'deleted'
+      `;
 
       // 2. Query total count for pagination
       const totalCountRes = await AppDataSource.query(`
         SELECT COUNT(*) as count FROM (
           SELECT 1
-          FROM purchase_items pi
-          INNER JOIN purchase_orders po ON po.id = pi.po_id
-          LEFT JOIN vendors v ON v.id = po.vendor
+          FROM (${baseItemsCTE}) pi
+          LEFT JOIN vendors v ON v.id = pi.vendor
           LEFT JOIN product_groups pg ON pg.id = pi.product_group
           LEFT JOIN colors cl ON cl.id = pi.color
           LEFT JOIN sizes sz ON sz.id = pi.size
           WHERE ${whereSql}
           GROUP BY 
             pi.po_id, pi.design_no, pi.color, pi.size, pi.cost_per_item, pi.mrp,
-            po.invoice_number, po.order_date, v.name, pg.name, cl.name, sz.name
+            pi.invoice_number, pi.order_date, v.name, pg.name, cl.name, sz.name
         ) as sub
       `);
       const total = Number(totalCountRes[0]?.count || 0);
 
       // 3. Resolve sorting
       const sortDir = filters.sortDirection === 'desc' ? 'DESC' : 'ASC';
-      let orderByField = 'po.order_date';
-      if (filters.sortField === 'availableQty') orderByField = 'po.order_date'; // fallback since availableQty is computed in JS
+      let orderByField = 'pi.order_date';
+      if (filters.sortField === 'availableQty') orderByField = 'pi.order_date'; // fallback since availableQty is computed in JS
       else if (filters.sortField === 'total_qty' || filters.sortField === 'totalQty') orderByField = 'SUM(pi.quantity)';
       else if (filters.sortField === 'design') orderByField = 'pi.design_no';
       else if (filters.sortField === 'color') orderByField = 'cl.name';
       else if (filters.sortField === 'size') orderByField = 'sz.name';
       else if (filters.sortField === 'mrp') orderByField = 'pi.mrp';
       else if (filters.sortField === 'cost') orderByField = 'pi.cost_per_item';
-      else if (filters.sortField === 'invoice_date') orderByField = 'po.order_date';
+      else if (filters.sortField === 'invoice_date') orderByField = 'pi.order_date';
 
       // 4. Fetch detailed data — FAST BATCH APPROACH
-      // Step 4a: Fetch paginated purchase items (fast: uses indexes on po_id, joins are small tables)
       const detailedItemsRes = await AppDataSource.query(`
         SELECT 
           MIN(pi.id::text) as "id",
@@ -664,8 +758,8 @@ export class ReportService {
           pi.cost_per_item as "cost",
           pi.mrp as "mrp",
           MAX(pi.hsn_code) as "hsn",
-          po.invoice_number as "po_no",
-          po.order_date as "po_date",
+          pi.invoice_number as "po_no",
+          pi.order_date as "po_date",
           v.name as "vendorName",
           pg.name as "productGroup",
           cl.name as "color",
@@ -673,27 +767,33 @@ export class ReportService {
           pi.po_id as "po_id",
           pi.color as "color_id",
           pi.size as "size_id"
-        FROM purchase_items pi
-        INNER JOIN purchase_orders po ON po.id = pi.po_id
-        LEFT JOIN vendors v ON v.id = po.vendor
+        FROM (${baseItemsCTE}) pi
+        LEFT JOIN vendors v ON v.id = pi.vendor
         LEFT JOIN product_groups pg ON pg.id = pi.product_group
         LEFT JOIN colors cl ON cl.id = pi.color
         LEFT JOIN sizes sz ON sz.id = pi.size
         WHERE ${whereSql}
         GROUP BY 
           pi.po_id, pi.design_no, pi.color, pi.size, pi.cost_per_item, pi.mrp,
-          po.invoice_number, po.order_date, v.name, pg.name, cl.name, sz.name
+          pi.invoice_number, pi.order_date, v.name, pg.name, cl.name, sz.name
         ORDER BY ${orderByField} ${sortDir}, pi.design_no ASC
         LIMIT ${limit} OFFSET ${(page - 1) * limit}
       `);
 
-      // Step 4b: Batch-fetch barcode batches for only those POs
-      // KEY OPTIMIZATION: Only fetch photos when explicitly requested (photos avg 225KB each = ~2GB for full export)
+      // Step 4b: Batch-fetch barcode batches for POs and Opening items
       const poIds = Array.from(new Set(detailedItemsRes.map((pi: any) => pi.po_id))).filter(Boolean);
+      const hasOpening = detailedItemsRes.some((pi: any) => !pi.po_id);
       const photoColumn = includePhotos ? 'bb.photos[1] as photo,' : 'NULL as photo,';
       let barcodeBatches: any[] = [];
+      const poConditions: string[] = [];
       if (poIds.length > 0) {
         const poIdList = poIds.map((id: any) => `'${id}'`).join(',');
+        poConditions.push(`bb.po_id IN (${poIdList})`);
+      }
+      if (hasOpening) {
+        poConditions.push(`bb.po_id IS NULL`);
+      }
+      if (poConditions.length > 0) {
         barcodeBatches = await AppDataSource.query(`
           SELECT 
             bb.barcode_alias_8digit,
@@ -705,79 +805,8 @@ export class ReportService {
             bb.size
           FROM barcode_batches bb
           WHERE bb.status != 'deleted'
-            AND bb.po_id IN (${poIdList})
+            AND (${poConditions.join(' OR ')})
         `);
-      }
-
-      // Step 4c: Batch-fetch sales aggregates for those barcode aliases (fast: uses new index on barcode_8digit)
-      // Step 4b.5: Append orphaned sales (items sold but never purchased)
-      if (page === 1) {
-        const orphanedSalesRes = await AppDataSource.query(`
-            SELECT 
-              MIN(sii.id::text) as "id",
-              bb.design_no as "design",
-              0 as "total_qty",
-              bb.cost_actual as "cost",
-              MAX(sii.mrp) as "mrp",
-              '' as "hsn",
-              'OPENING-STOCK' as "po_no",
-              MIN(sii.created_at) as "po_date",
-              v.name as "vendorName",
-              pg.name as "productGroup",
-              c.name as "color",
-              s.name as "size",
-              'OPENING-STOCK' as "po_id",
-              bb.color as "color_id",
-              bb.size as "size_id",
-              bb.barcode_alias_8digit as "barcode_alias_8digit",
-              bb.barcode_structured as "barcode_structured"
-            FROM (
-               SELECT barcode_8digit, created_at, id::text, mrp FROM sales_invoice_items
-               UNION ALL
-               SELECT barcode_8digit, created_at, id::text, 0 as mrp FROM sales_return_items
-               UNION ALL
-               SELECT barcode_id as barcode_8digit, created_at, id::text, 0 as mrp FROM purchase_return_items
-            ) sii
-            LEFT JOIN barcode_batches bb ON bb.barcode_alias_8digit = sii.barcode_8digit
-            LEFT JOIN vendors v ON v.id = bb.vendor
-            LEFT JOIN product_groups pg ON pg.id = bb.product_group
-            LEFT JOIN colors c ON c.id = bb.color
-            LEFT JOIN sizes s ON s.id = bb.size
-            WHERE sii.barcode_8digit NOT IN (
-               SELECT bb2.barcode_alias_8digit 
-               FROM barcode_batches bb2 
-               INNER JOIN purchase_items pi2 ON pi2.po_id = bb2.po_id AND pi2.design_no = bb2.design_no 
-                  AND COALESCE(pi2.color::text, '') = COALESCE(bb2.color::text, '') 
-                  AND pi2.size = bb2.size
-               WHERE bb2.status != 'deleted' AND bb2.barcode_alias_8digit IS NOT NULL
-            )
-            ${(() => {
-              const clauses = [];
-              if (filters.vendorId) clauses.push(`bb.vendor::text = '${filters.vendorId}'`);
-              if (filters.design) clauses.push(`bb.design_no ILIKE '%${filters.design}%'`);
-              if (filters.barcode) clauses.push(`(bb.barcode_alias_8digit ILIKE '%${filters.barcode}%' OR bb.barcode_structured ILIKE '%${filters.barcode}%')`);
-              if (filters.productGroup) clauses.push(`pg.name ILIKE '%${filters.productGroup}%'`);
-              if (filters.size) clauses.push(`s.name ILIKE '%${filters.size}%'`);
-              if (filters.color) clauses.push(`c.name ILIKE '%${filters.color}%'`);
-              if (filters.poInvoiceNumber) clauses.push(`'OPENING-STOCK' ILIKE '%${filters.poInvoiceNumber}%'`);
-              return clauses.length > 0 ? ' AND ' + clauses.join(' AND ') : '';
-            })()}
-            GROUP BY bb.barcode_alias_8digit, bb.barcode_structured, bb.design_no, bb.cost_actual, v.name, pg.name, c.name, s.name, bb.color, bb.size
-        `);
-        
-        console.log(`Found ${orphanedSalesRes.length} orphaned sales!`);
-        orphanedSalesRes.forEach((row: any) => {
-            detailedItemsRes.push(row);
-            barcodeBatches.push({
-               barcode_alias_8digit: row.barcode_alias_8digit,
-               barcode_structured: row.barcode_structured,
-               photo: null,
-               po_id: row.po_id,
-               design_no: row.design,
-               color: row.color_id,
-               size: row.size_id
-            });
-        });
       }
 
       const aliases = Array.from(new Set(barcodeBatches.map((bb: any) => bb.barcode_alias_8digit))).filter(Boolean);
@@ -803,7 +832,7 @@ export class ReportService {
 
       const barcodesByKey = new Map<string, any[]>();
       barcodeBatches.forEach((bb: any) => {
-        const key = `${bb.po_id}_${bb.design_no}_${bb.color || ''}_${bb.size || ''}`;
+        const key = `${bb.po_id || 'OPENING'}_${bb.design_no}_${bb.color || ''}_${bb.size || ''}`;
         if (!barcodesByKey.has(key)) barcodesByKey.set(key, []);
         barcodesByKey.get(key)!.push(bb);
       });
@@ -827,7 +856,7 @@ export class ReportService {
 
       // Step 4e: Enrich purchase items with barcode/sales data in memory
       const enrichedItemsRes = detailedItemsRes.map((pi: any) => {
-        const key = `${pi.po_id}_${pi.design}_${pi.color_id || ''}_${pi.size_id || ''}`;
+        const key = `${pi.po_id || 'OPENING'}_${pi.design}_${pi.color_id || ''}_${pi.size_id || ''}`;
         const matchingBarcodes = barcodesByKey.get(key) || [];
         let barcode_alias = 'NO BARCODE';
         let barcode = 'NO BARCODE';
@@ -940,7 +969,7 @@ export class ReportService {
             LEFT JOIN sales_by_barcode s ON s.barcode_8digit = bb.barcode_alias_8digit
             LEFT JOIN returns_by_barcode r ON r.barcode_8digit = bb.barcode_alias_8digit
             LEFT JOIN purchase_returns_by_barcode pr ON pr.barcode_id = bb.barcode_alias_8digit
-            WHERE bb.status != 'deleted' AND bb.po_id IS NOT NULL
+            WHERE bb.status != 'deleted'
             GROUP BY bb.po_id, bb.design_no
           ),
           grouped_purchases AS (
@@ -949,9 +978,8 @@ export class ReportService {
               pi.design_no,
               SUM(pi.quantity) as quantity,
               pi.cost_per_item
-            FROM purchase_items pi
-            INNER JOIN purchase_orders po ON po.id = pi.po_id
-            LEFT JOIN vendors v ON v.id = po.vendor
+            FROM (${baseItemsCTE}) pi
+            LEFT JOIN vendors v ON v.id = pi.vendor
             LEFT JOIN product_groups pg ON pg.id = pi.product_group
             LEFT JOIN colors cl ON cl.id = pi.color
             LEFT JOIN sizes sz ON sz.id = pi.size
@@ -960,8 +988,8 @@ export class ReportService {
           )
           SELECT 
             SUM(gp.quantity) as "totalItems",
-            (SELECT SUM(bs.sold_qty) FROM barcode_stats bs WHERE EXISTS (SELECT 1 FROM grouped_purchases gp2 WHERE gp2.po_id = bs.po_id AND gp2.design_no = bs.design_no)) as "totalSold",
-            (SELECT SUM(bs.returned_qty) FROM barcode_stats bs WHERE EXISTS (SELECT 1 FROM grouped_purchases gp2 WHERE gp2.po_id = bs.po_id AND gp2.design_no = bs.design_no)) as "totalReturned",
+            (SELECT SUM(bs.sold_qty) FROM barcode_stats bs WHERE EXISTS (SELECT 1 FROM grouped_purchases gp2 WHERE (gp2.po_id = bs.po_id OR (gp2.po_id IS NULL AND bs.po_id IS NULL)) AND gp2.design_no = bs.design_no)) as "totalSold",
+            (SELECT SUM(bs.returned_qty) FROM barcode_stats bs WHERE EXISTS (SELECT 1 FROM grouped_purchases gp2 WHERE (gp2.po_id = bs.po_id OR (gp2.po_id IS NULL AND bs.po_id IS NULL)) AND gp2.design_no = bs.design_no)) as "totalReturned",
             SUM(gp.quantity * gp.cost_per_item) as "totalCostValue"
           FROM grouped_purchases gp
         `);
@@ -1137,7 +1165,7 @@ export class ReportService {
           (pi.mrp * pi.quantity) as mrp_val
         FROM purchase_items pi
         INNER JOIN purchase_orders po ON po.id = pi.po_id
-        WHERE po.status = 'Completed'
+        WHERE LOWER(po.status) IN ('completed', 'received')
         AND po.order_date BETWEEN '${startDateStr}' AND '${endDateStr}'
         ${filters.vendorId ? "AND po.vendor::text = '" + filters.vendorId + "'" : ""}
         
@@ -1201,7 +1229,7 @@ export class ReportService {
         LEFT JOIN barcode_agg ba ON ba.po_id = pi.po_id AND ba.design_no = pi.design_no
           AND COALESCE(ba.color::text, '') = COALESCE(pi.color::text, '')
           AND COALESCE(ba.size::text, '') = COALESCE(pi.size::text, '')
-        WHERE po.status = 'Completed'
+        WHERE LOWER(po.status) IN ('completed', 'received')
         AND po.order_date BETWEEN '${startDateStr}' AND '${endDateStr}'
         ${filters.vendorId ? "AND po.vendor::text = '" + filters.vendorId + "'" : ""}
         
@@ -1526,7 +1554,7 @@ export class ReportService {
         FROM purchase_items pi
         INNER JOIN purchase_orders po ON po.id = pi.po_id
         LEFT JOIN vendors v ON v.id = po.vendor
-        WHERE po.status = 'Completed'
+        WHERE LOWER(po.status) IN ('completed', 'received')
         AND po.order_date BETWEEN '${start}' AND '${end}'
         ${filters.vendorId ? "AND po.vendor::text = '" + filters.vendorId + "'" : ""}
         GROUP BY COALESCE(v.name, 'Direct/Unknown')
@@ -2159,12 +2187,13 @@ export class ReportService {
         if (actualCouponAmt === undefined) actualCouponAmt = totalAmount;
 
         if (actualCouponAmt > 0) {
-          result.summary['Credit Coupon'] = (result.summary['Credit Coupon'] || 0) + actualCouponAmt;
+          // Do NOT add to result.summary['Credit Coupon']. That summary is for Collections (payments received).
+          // Coupons issued upon return are credit liabilities, not revenue collections.
           result.details.push({
             id: ret.id,
             date: ret.return_date,
             source: 'Credit Coupon Issued',
-            mode: 'Credit Coupon',
+            mode: 'Credit Coupon Issued',
             reference: ret.return_number,
             customer: ret.customer_name,
             mobile: ret.customer_mobile,
@@ -3238,8 +3267,12 @@ export class ReportService {
           SUM(COALESCE(spent.spent_amount, 0)) as total_spent
         FROM credit_coupons cc
         LEFT JOIN (
-          SELECT coupon_id, SUM(amount_applied) as spent_amount
-          FROM credit_coupon_applications
+          SELECT coupon_id, SUM(amount) as spent_amount
+          FROM (
+            SELECT coupon_id, amount_applied as amount FROM credit_coupon_applications
+            UNION ALL
+            SELECT coupon_id, amount FROM credit_coupon_refunds
+          ) all_spent
           GROUP BY coupon_id
         ) spent ON spent.coupon_id = cc.id
         WHERE cc.created_at BETWEEN '${startDateStr}' AND '${endDateStr}'
@@ -3255,8 +3288,12 @@ export class ReportService {
         INNER JOIN sales_orders so ON so.id = soa.sales_order_id
         INNER JOIN customers c ON c.id = so.customer_id
         LEFT JOIN (
-          SELECT advance_id, SUM(amount_applied) as spent_amount
-          FROM sales_order_advance_applications
+          SELECT advance_id, SUM(amount) as spent_amount
+          FROM (
+            SELECT advance_id, amount_applied as amount FROM sales_order_advance_applications
+            UNION ALL
+            SELECT advance_id, amount FROM sales_order_advance_refunds
+          ) all_spent
           GROUP BY advance_id
         ) spent ON spent.advance_id = soa.id
         WHERE soa.created_at BETWEEN '${startDateStr}' AND '${endDateStr}'
@@ -3294,8 +3331,12 @@ export class ReportService {
       FROM credit_coupons cc
       LEFT JOIN customers c ON c.mobile = cc.customer_mobile
       LEFT JOIN (
-        SELECT coupon_id, SUM(amount_applied) as spent_amount
-        FROM credit_coupon_applications
+        SELECT coupon_id, SUM(amount) as spent_amount
+        FROM (
+          SELECT coupon_id, amount_applied as amount FROM credit_coupon_applications
+          UNION ALL
+          SELECT coupon_id, amount FROM credit_coupon_refunds
+        ) all_spent
         GROUP BY coupon_id
       ) spent ON spent.coupon_id = cc.id
       WHERE cc.created_at BETWEEN '${startDateStr}' AND '${endDateStr}'
@@ -3316,7 +3357,16 @@ export class ReportService {
         FROM credit_coupon_applications cca
         LEFT JOIN sales_invoices si ON si.id = cca.invoice_id
         WHERE cca.coupon_id IN (${couponIds})
-        ORDER BY cca.created_at DESC
+        UNION ALL
+        SELECT
+          ccr.coupon_id,
+          ccr.amount as amount_applied,
+          ccr.created_at as applied_at,
+          'REFUND (' || ccr.mode || ')' as invoice_number,
+          NULL as invoice_id
+        FROM credit_coupon_refunds ccr
+        WHERE ccr.coupon_id IN (${couponIds})
+        ORDER BY applied_at DESC
       `);
     }
 
@@ -3358,8 +3408,12 @@ export class ReportService {
       INNER JOIN sales_orders so ON so.id = soa.sales_order_id
       INNER JOIN customers c ON c.id = so.customer_id
       LEFT JOIN (
-        SELECT advance_id, SUM(amount_applied) as spent_amount
-        FROM sales_order_advance_applications
+        SELECT advance_id, SUM(amount) as spent_amount
+        FROM (
+          SELECT advance_id, amount_applied as amount FROM sales_order_advance_applications
+          UNION ALL
+          SELECT advance_id, amount FROM sales_order_advance_refunds
+        ) all_spent
         GROUP BY advance_id
       ) spent ON spent.advance_id = soa.id
       WHERE soa.created_at BETWEEN '${startDateStr}' AND '${endDateStr}'
@@ -3380,7 +3434,16 @@ export class ReportService {
         FROM sales_order_advance_applications soaa
         LEFT JOIN sales_invoices si ON si.id = soaa.invoice_id
         WHERE soaa.advance_id IN (${advanceIds})
-        ORDER BY soaa.created_at DESC
+        UNION ALL
+        SELECT
+          soar.advance_id,
+          soar.amount as amount_applied,
+          soar.created_at as applied_at,
+          'REFUND (' || soar.mode || ')' as invoice_number,
+          NULL as invoice_id
+        FROM sales_order_advance_refunds soar
+        WHERE soar.advance_id IN (${advanceIds})
+        ORDER BY applied_at DESC
       `);
     }
 
@@ -3565,7 +3628,7 @@ export class ReportService {
           pi.hsn_code as hsn
         FROM purchase_items pi
         INNER JOIN purchase_orders po ON po.id = pi.po_id
-        WHERE po.status = 'Completed'
+        WHERE LOWER(po.status) IN ('completed', 'received')
           AND NOT EXISTS (
             SELECT 1 FROM barcode_batches bb
             WHERE bb.po_id = pi.po_id 
@@ -3833,7 +3896,7 @@ export class ReportService {
     
     // Support both 'vendor' (legacy) and 'vendorId' (frontend standard)
     const targetVendor = filters.vendorId || filters.vendor;
-    if (targetVendor) whereClauses.push(`po.vendor = '${targetVendor}'`);
+    if (targetVendor) whereClauses.push(`COALESCE(po.vendor::text, bb_info.vendor::text) = '${targetVendor}'`);
     
     if (filters.productGroup) whereClauses.push(`bb_info.product_group = '${filters.productGroup}'`);
     if (filters.color) whereClauses.push(`bb_info.color = '${filters.color}'`);
@@ -3853,11 +3916,11 @@ export class ReportService {
         MAX(cl.name) as color,
         MAX(sz.name) as size,
         MAX(pi.hsn_code) as hsn,
-        MAX(pi.cost_per_item) as cost,
-        MAX(pi.mrp) as mrp,
+        COALESCE(MAX(pi.cost_per_item), MAX(bb_info.cost_actual)) as cost,
+        COALESCE(MAX(pi.mrp), MAX(bb_info.mrp)) as mrp,
         MAX(v.name) as vendor,
-        COALESCE(MAX(po.invoice_number), MAX(agg.po_no)) as po_no,
-        MAX(po.order_date) as po_date,
+        COALESCE(MAX(po.invoice_number), MAX(agg.po_no), 'OPENING-STOCK') as po_no,
+        COALESCE(MAX(po.order_date), MAX(bb_info.created_at)) as po_date,
         agg.opening_stock,
         agg.purchased_qty,
         agg.sales_return_qty,
@@ -3892,9 +3955,24 @@ export class ReportService {
         FROM barcode_batches bb
         LEFT JOIN product_groups pg ON pg.id = bb.product_group
         INNER JOIN purchase_orders po ON po.id = bb.po_id
-        WHERE po.order_date < '${start}' AND po.status = 'Completed' AND bb.status != 'deleted' AND bb.barcode_alias_8digit IS NOT NULL
+        WHERE po.order_date < '${start}' AND LOWER(po.status) IN ('completed', 'received') AND bb.status != 'deleted' AND bb.barcode_alias_8digit IS NOT NULL
         GROUP BY bb.barcode_alias_8digit, bb.design_no, pg.name, po.invoice_number, po.po_number, po.id, bb.color, bb.size
         
+        UNION ALL
+        -- Purchases (opening) - OPENING STOCK (No PO)
+        SELECT 
+           bb.barcode_alias_8digit as barcode, 
+           bb.design_no, pg.name as product_group,
+           SUM(bb.total_quantity) as opening_qty, 0 as purchased_qty, 0 as sales_return_qty, 0 as sold_qty, 0 as purchase_return_qty,
+           'OPENING-STOCK' as po_no,
+           NULL::uuid as po_id,
+           bb.color as color_id,
+           bb.size as size_id
+        FROM barcode_batches bb
+        LEFT JOIN product_groups pg ON pg.id = bb.product_group
+        WHERE bb.po_id IS NULL AND bb.status != 'deleted' AND bb.barcode_alias_8digit IS NOT NULL
+        GROUP BY bb.barcode_alias_8digit, bb.design_no, pg.name, bb.color, bb.size
+
         UNION ALL
         -- Purchases (opening) - ORPHANED (No barcodes)
         SELECT barcode, design_no, product_group, SUM(remainder) as opening_qty, 0 as purchased_qty, 0 as sales_return_qty, 0 as sold_qty, 0 as purchase_return_qty, po_no, po_id, color_id, size_id
@@ -3912,7 +3990,7 @@ export class ReportService {
           FROM purchase_items pi
           LEFT JOIN product_groups pg ON pg.id = pi.product_group
           INNER JOIN purchase_orders po ON po.id = pi.po_id
-          WHERE po.order_date < '${start}' AND po.status = 'Completed'
+          WHERE po.order_date < '${start}' AND LOWER(po.status) IN ('completed', 'received')
         ) as sub
         WHERE remainder > 0
         GROUP BY barcode, design_no, product_group, po_no, po_id, color_id, size_id
@@ -3930,7 +4008,7 @@ export class ReportService {
         FROM barcode_batches bb
         LEFT JOIN product_groups pg ON pg.id = bb.product_group
         INNER JOIN purchase_orders po ON po.id = bb.po_id
-        WHERE po.order_date BETWEEN '${start}' AND '${end}' AND po.status = 'Completed' AND bb.status != 'deleted' AND bb.barcode_alias_8digit IS NOT NULL
+        WHERE po.order_date BETWEEN '${start}' AND '${end}' AND LOWER(po.status) IN ('completed', 'received') AND bb.status != 'deleted' AND bb.barcode_alias_8digit IS NOT NULL
         GROUP BY bb.barcode_alias_8digit, bb.design_no, pg.name, po.invoice_number, po.po_number, po.id, bb.color, bb.size
         
         UNION ALL
@@ -3950,7 +4028,7 @@ export class ReportService {
           FROM purchase_items pi
           LEFT JOIN product_groups pg ON pg.id = pi.product_group
           INNER JOIN purchase_orders po ON po.id = pi.po_id
-          WHERE po.order_date BETWEEN '${start}' AND '${end}' AND po.status = 'Completed'
+          WHERE po.order_date BETWEEN '${start}' AND '${end}' AND LOWER(po.status) IN ('completed', 'received')
         ) as sub
         WHERE remainder > 0
         GROUP BY barcode, design_no, product_group, po_no, po_id, color_id, size_id
@@ -4050,7 +4128,7 @@ export class ReportService {
       ) agg
       LEFT JOIN (
          SELECT DISTINCT ON (barcode_alias_8digit) 
-            barcode_alias_8digit, barcode_structured, po_id, design_no, color, size, product_group
+            barcode_alias_8digit, barcode_structured, po_id, design_no, color, size, product_group, vendor, cost_actual, mrp, created_at
          FROM barcode_batches
       ) bb_info ON bb_info.barcode_alias_8digit = agg.barcode
       LEFT JOIN purchase_orders po ON po.id = COALESCE(bb_info.po_id, agg.po_id)
@@ -4059,7 +4137,7 @@ export class ReportService {
          AND (pi.size = COALESCE(bb_info.size, agg.size_id) OR (pi.size IS NULL AND COALESCE(bb_info.size, agg.size_id) IS NULL))
       LEFT JOIN colors cl ON cl.id = COALESCE(bb_info.color, agg.color_id)
       LEFT JOIN sizes sz ON sz.id = COALESCE(bb_info.size, agg.size_id)
-      LEFT JOIN vendors v ON v.id = po.vendor
+      LEFT JOIN vendors v ON v.id = COALESCE(po.vendor, bb_info.vendor)
       WHERE ${whereSql.replace(/t\.barcode/g, 'agg.barcode')}
       GROUP BY agg.barcode, agg.design_no, agg.product_group, agg.opening_stock, agg.purchased_qty, agg.sales_return_qty, agg.sold_qty, agg.purchase_return_qty, agg.closing_stock
       HAVING agg.opening_stock != 0 OR agg.purchased_qty != 0 OR agg.sales_return_qty != 0 OR agg.sold_qty != 0 OR agg.purchase_return_qty != 0
@@ -4073,14 +4151,14 @@ export class ReportService {
       const countQuery = `
         SELECT COUNT(*) as count FROM (
           SELECT t.barcode FROM (
-            SELECT bb.barcode_alias_8digit as barcode FROM barcode_batches bb LEFT JOIN purchase_orders po ON po.id = bb.po_id WHERE po.order_date <= '${end}' AND bb.status != 'deleted'
+            SELECT bb.barcode_alias_8digit as barcode FROM barcode_batches bb LEFT JOIN purchase_orders po ON po.id = bb.po_id WHERE (po.order_date <= '${end}' OR bb.po_id IS NULL) AND bb.status != 'deleted'
             UNION ALL SELECT bb.barcode_alias_8digit as barcode FROM sales_invoice_items sii INNER JOIN sales_invoices si ON si.id = sii.invoice_id LEFT JOIN barcode_batches bb ON bb.barcode_alias_8digit = sii.barcode_8digit WHERE si.invoice_date <= '${end}'
             UNION ALL SELECT bb.barcode_alias_8digit as barcode FROM sales_return_items sri INNER JOIN sales_returns sr ON sr.id = sri.return_id LEFT JOIN barcode_batches bb ON bb.barcode_alias_8digit = sri.barcode_8digit WHERE sr.return_date <= '${end}'
             UNION ALL SELECT bb.barcode_alias_8digit as barcode FROM purchase_return_items pri INNER JOIN purchase_returns pr ON pr.id = pri.return_id LEFT JOIN barcode_batches bb ON bb.id = pri.item_id WHERE pr.return_date <= '${end}'
           ) as t
           LEFT JOIN (
              SELECT DISTINCT ON (barcode_alias_8digit) 
-                barcode_alias_8digit, barcode_structured, po_id, design_no, color, size, product_group
+                barcode_alias_8digit, barcode_structured, po_id, design_no, color, size, product_group, vendor
              FROM barcode_batches
           ) bb_info ON bb_info.barcode_alias_8digit = t.barcode
           LEFT JOIN purchase_orders po ON po.id = bb_info.po_id

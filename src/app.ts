@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import compression from 'compression';
 import { config } from './config';
 import { generalLimiter } from './middleware/rateLimiter';
 import { errorHandler } from './middleware/errorHandler';
@@ -9,6 +10,9 @@ import logger from './utils/logger';
 
 const app = express();
 app.set('trust proxy', true);
+
+// ===== Compression & Performance =====
+app.use(compression());
 
 // ===== Security Middleware =====
 app.use(helmet());

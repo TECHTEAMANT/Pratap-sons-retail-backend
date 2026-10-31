@@ -129,6 +129,22 @@ export class InventoryController {
     } catch (e: any) { sendError(res, e.message, 400); }
   }
 
+  async transferStock(req: AuthenticatedRequest, res: Response) {
+    if (req.user?.role === 'Vendor') return sendError(res, 'Read-only access for vendors', 403);
+    try {
+      const result = await inventoryService.transferStock(req.body, req.user!.id);
+      sendSuccess(res, result, 'Stock transferred successfully');
+    } catch (e: any) { sendError(res, e.message, 400); }
+  }
+
+  async getTransferHistory(req: AuthenticatedRequest, res: Response) {
+    try {
+      const limit = Number(req.query.limit) || 50;
+      const result = await inventoryService.getTransferHistory(limit);
+      sendSuccess(res, result);
+    } catch (e: any) { sendError(res, e.message, 400); }
+  }
+
   private redactSensitiveData(item: any, canViewCost: boolean, canViewMrp: boolean) {
     const redacted = { ...item };
     if (!canViewCost) {
