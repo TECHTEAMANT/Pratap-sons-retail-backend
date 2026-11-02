@@ -2,14 +2,18 @@ import { Request, Response } from 'express';
 import { authService } from '../services/auth.service';
 import { sendSuccess, sendError, sendUnauthorized } from '../utils/response';
 import { AuthenticatedRequest } from '../middleware/auth';
+import logger from '../utils/logger';
 
 export class AuthController {
   async login(req: Request, res: Response) {
     try {
       const { mobile, password } = req.body;
+      logger.info(`[Auth] Login attempt received for mobile: ${mobile}`);
       const result = await authService.login(mobile, password);
+      logger.info(`[Auth] Login SUCCESS for user: ${result.user?.name || mobile} (${result.user?.role_name || result.user?.role || 'User'})`);
       sendSuccess(res, result, 'Login successful');
     } catch (error: any) {
+      logger.warn(`[Auth] Login FAILED for mobile ${req.body?.mobile}: ${error.message}`);
       sendUnauthorized(res, error.message);
     }
   }
