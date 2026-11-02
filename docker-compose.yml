@@ -12,10 +12,8 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD:-Root@123}
     volumes:
       - postgres_data:/var/lib/postgresql/data
-    ports:
-      # Use port 5433 on the host to avoid colliding with any host PostgreSQL running on 5432
-      # The backend container connects internally via postgres:5432 on invento_backend_net
-      - "${DB_EXTERNAL_PORT:-5433}:5432"
+    # Note: Host ports are not exposed to avoid collisions with host PostgreSQL services (5432/5433).
+    # The backend container connects internally via 'postgres:5432' over the private Docker network.
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-invento_retail_new}"]
       interval: 5s
