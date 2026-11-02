@@ -2,6 +2,7 @@ import { AppDataSource } from '../config/data-source';
 import { CreditCoupon } from '../entities/CreditCoupon';
 import { CreditCouponApplication } from '../entities/CreditCouponApplication';
 import { CreditCouponRefund } from '../entities/CreditCouponRefund';
+import { SalesInvoice } from '../entities/SalesInvoice';
 import { EntityManager } from 'typeorm';
 
 export class CreditCouponService {
@@ -41,8 +42,36 @@ export class CreditCouponService {
     const couponRepo = manager.getRepository(CreditCoupon);
     const appRepo = manager.getRepository(CreditCouponApplication);
 
-    const coupon = await couponRepo.findOne({ where: { coupon_no: couponNo } });
+    // Pessimistic write lock to serialize concurrent checkouts and eliminate double-spend race conditions
+    const coupon = await couponRepo.findOne({ 
+      where: { coupon_no: couponNo },
+      lock: { mode: 'pessimistic_write' }
+    });
     if (!coupon) throw new Error(`Invalid coupon: ${couponNo}`);
+    if (coupon.status !== 'active') {
+      throw new Error(`Coupon ${couponNo} is not active (Status: ${coupon.status})`);
+    }
+
+    const amt = Number(amountToApply || 0);
+    if (amt <= 0) {
+      throw new Error('Coupon application amount must be greater than zero.');
+    }
+
+    // Verify invoice ownership and ensure coupon isn't applied across mismatched customers
+    const invoice = await manager.findOne(SalesInvoice, { where: { id: invoiceId } });
+    if (invoice) {
+      if (invoice.customer_mobile && coupon.customer_mobile) {
+        const invMobile = invoice.customer_mobile.trim().replace(/[\s\-\+]/g, '');
+        const cpnMobile = coupon.customer_mobile.trim().replace(/[\s\-\+]/g, '');
+        if (invMobile !== cpnMobile) {
+          throw new Error(`Unauthorized coupon redemption: Coupon ${couponNo} belongs to customer ${coupon.customer_mobile}, but invoice is for customer ${invoice.customer_mobile}.`);
+        }
+      }
+
+      if (amt > Number(invoice.net_payable)) {
+        throw new Error(`Coupon application amount ₹${amt} cannot exceed invoice net payable ₹${invoice.net_payable}.`);
+      }
+    }
 
     const [{ used }] = await manager.query(
       `SELECT COALESCE(SUM(amount_applied)::numeric, 0) as used FROM credit_coupon_applications WHERE coupon_id = $1`,
@@ -53,9 +82,6 @@ export class CreditCouponService {
       [coupon.id]
     );
     const remaining = Math.max(0, Number(coupon.amount) - Number(used || 0) - Number(refunded || 0));
-
-    const amt = Number(amountToApply || 0);
-    if (amt <= 0) return;
 
     // Use a small epsilon or round to 2 decimal places to avoid floating point precision errors
     const roundedAmt = Math.round(amt * 100);
@@ -118,8 +144,14 @@ export class CreditCouponService {
       const couponRepo = manager.getRepository(CreditCoupon);
       const refundRepo = manager.getRepository(CreditCouponRefund);
 
-      const coupon = await couponRepo.findOne({ where: { coupon_no: couponNo } });
+      const coupon = await couponRepo.findOne({ 
+        where: { coupon_no: couponNo },
+        lock: { mode: 'pessimistic_write' }
+      });
       if (!coupon) throw new Error(`Invalid coupon: ${couponNo}`);
+      if (coupon.status !== 'active') {
+        throw new Error(`Coupon ${couponNo} is not active (Status: ${coupon.status})`);
+      }
 
       // Calculate remaining balance
       const [{ used }] = await manager.query(

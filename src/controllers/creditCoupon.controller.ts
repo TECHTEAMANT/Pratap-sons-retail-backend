@@ -36,19 +36,10 @@ export class CreditCouponController {
       if (!coupon) return sendNotFound(res, 'Coupon');
       if (coupon.status !== 'active') return sendError(res, 'Coupon is not active', 400);
 
-      const [{ used }] = await AppDataSource.query(
-        `SELECT COALESCE(SUM(amount_applied)::numeric, 0) as used FROM credit_coupon_applications WHERE coupon_id = $1`,
-        [coupon.id]
-      );
-      const [{ refunded }] = await AppDataSource.query(
-        `SELECT COALESCE(SUM(amount)::numeric, 0) as refunded FROM credit_coupon_refunds WHERE coupon_id = $1`,
-        [coupon.id]
-      );
-      const remaining = Math.max(0, Number(coupon.amount) - Number(used || 0) - Number(refunded || 0));
-      
+      const remaining = Number(coupon.amount || 0);
       if (remaining <= 0) return sendError(res, 'Coupon balance is zero', 400);
 
-      sendSuccess(res, { ...coupon, amount: remaining, original_amount: coupon.amount });
+      sendSuccess(res, coupon);
     } catch (e: any) {
       sendError(res, e.message);
     }
@@ -65,11 +56,7 @@ export class CreditCouponController {
         }
         const coupon = await creditCouponService.getByCouponNo(coupon_no);
         if (!coupon) throw new Error('Invalid coupon');
-        const [{ used }] = await manager.query(
-          `SELECT COALESCE(SUM(amount_applied)::numeric, 0) as used FROM credit_coupon_applications WHERE coupon_id = $1`,
-          [coupon.id]
-        );
-        const remaining = Math.max(0, Number(coupon.amount) - Number(used || 0));
+        const remaining = Number(coupon.amount || 0);
         await creditCouponService.apply(coupon_no, invoice_id, remaining, manager);
       });
       sendSuccess(res, null, 'Coupon applied successfully');

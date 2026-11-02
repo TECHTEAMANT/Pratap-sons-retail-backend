@@ -214,6 +214,56 @@ export class SalesService {
           }
       }
 
+      // 2a. Strict Bounds & Non-Negative Validation on Discounts, Charges & Line Items
+      if (
+        Number(data.special_discount || 0) < 0 ||
+        Number(data.voucher_discount || 0) < 0 ||
+        Number(data.coupon_amount || 0) < 0 ||
+        Number(data.loyalty_redemption_amount || 0) < 0 ||
+        Number(data.additional_charges_total || 0) < 0 ||
+        Number(data.additional_charges_base || 0) < 0
+      ) {
+        throw new Error('Discounts, coupons, and additional charges cannot be negative numbers.');
+      }
+
+      if (data.items && Array.isArray(data.items)) {
+        for (const it of data.items) {
+          if (Number(it.discount || 0) < 0) {
+            throw new Error(`Item discount cannot be negative for item ${it.design_no || it.barcode_8digit || ''}`);
+          }
+          if (Number(it.mrp || 0) < 0) {
+            throw new Error(`Item MRP cannot be negative for item ${it.design_no || it.barcode_8digit || ''}`);
+          }
+          if (Number(it.quantity || 0) <= 0) {
+            throw new Error(`Item quantity must be greater than zero.`);
+          }
+        }
+      }
+
+      // 2b. Zero-Trust Financial Integrity Recomputation & Anti-Tampering Check
+      if (data.items && data.items.length > 0) {
+        const calcTotalMrp = data.items.reduce((sum: number, it: any) => sum + (Number(it.mrp || 0) * Number(it.quantity || 1)), 0);
+        const calcItemDiscount = data.items.reduce((sum: number, it: any) => sum + (Number(it.discount || 0) * Number(it.quantity || 1)), 0);
+        const headerDiscount = Number(data.special_discount || 0) + 
+                              Number(data.loyalty_redemption_amount || 0) + 
+                              Number(data.voucher_discount || 0) + 
+                              Number(data.coupon_amount || 0);
+        
+        const calcFinalDiscount = (Math.round(calcItemDiscount) >= Math.round(headerDiscount) && headerDiscount > 0)
+          ? calcItemDiscount
+          : (calcItemDiscount + headerDiscount);
+
+        const charges = Number(data.additional_charges_total || 0);
+        const expectedNet = Math.max(0, Math.round(calcTotalMrp - calcFinalDiscount + charges));
+
+        // Enforce server math: if submitted net_payable differs by more than ₹2 (rounding tolerance), abort!
+        if (data.net_payable !== undefined && Math.abs(Number(data.net_payable) - expectedNet) > 2.0) {
+          throw new Error(`Financial Integrity Violation: Submitted net payable (₹${data.net_payable}) does not match server-calculated total (₹${expectedNet}). Transaction aborted.`);
+        }
+
+        data.total_mrp = calcTotalMrp;
+        data.net_payable = expectedNet;
+      }
 
       // 3. Create the main invoice record
       const invoice = manager.create(SalesInvoice, {
@@ -263,11 +313,17 @@ export class SalesService {
 
       const savedInvoice = await manager.save(invoice);
 
-      // 4. Create line items & deduct inventory
+      // 4. Create line items & deduct inventory with Pessimistic Row Locking
       if (data.items && data.items.length > 0) {
         for (const item of data.items) {
           if (item.barcode_8digit) {
-            const batch = await manager.findOne(BarcodeBatch, { where: { barcode_alias_8digit: item.barcode_8digit } });
+            // Pessimistic write lock (SELECT FOR UPDATE) prevents multi-terminal overselling
+            const batch = await manager.getRepository(BarcodeBatch)
+              .createQueryBuilder('bb')
+              .setLock('pessimistic_write')
+              .where('bb.barcode_alias_8digit = :barcode', { barcode: item.barcode_8digit })
+              .getOne();
+
             if (batch) {
               const qty = item.quantity || 1;
               if (batch.available_quantity < qty) {
