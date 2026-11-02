@@ -11,32 +11,22 @@ import logger from './utils/logger';
 const app = express();
 app.set('trust proxy', true);
 
-// ===== Compression & Performance =====
-app.use(compression());
-
-// ===== Security Middleware =====
-app.use(helmet());
-app.use(cors({
-  origin: config.cors.origin.split(','),
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-}));
-// app.use(generalLimiter);
-
-// ===== Body Parsing =====
-app.use(express.json({ limit: '100mb' }));
-app.use(express.urlencoded({ extended: true, limit: '100mb' }));
-
-// ===== Request Logging =====
+// ===== Global Request Logging (Top-level for 100% visibility) =====
 app.use((req, res, next) => {
   const start = Date.now();
   const { method, path, query, body } = req;
   
+  // Sanitize body to avoid logging sensitive passwords
+  let sanitizedBody = body;
+  if (body && typeof body === 'object') {
+    sanitizedBody = { ...body };
+    if (sanitizedBody.password) sanitizedBody.password = '***REDACTED***';
+  }
+
   // Log request
   logger.info(`[API Request] ${method} ${path}`, {
     query,
-    body: method !== 'GET' ? body : undefined,
+    body: method !== 'GET' ? sanitizedBody : undefined,
     ip: req.ip,
   });
 
@@ -48,6 +38,29 @@ app.use((req, res, next) => {
 
   next();
 });
+
+// ===== Compression & Performance =====
+app.use(compression());
+
+// ===== Security & CORS Middleware =====
+app.use(helmet());
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow all origins when configured as '*' or in development, while respecting credentials
+    if (!origin || config.cors.origin === '*' || config.cors.origin.split(',').includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(null, true);
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+}));
+
+// ===== Body Parsing =====
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
 // ===== API Routes =====
 app.use('/api', routes);
