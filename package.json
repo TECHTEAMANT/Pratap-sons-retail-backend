@@ -13,7 +13,11 @@
     "db:import-csv": "ts-node src/database/import-csv.ts",
     "lint": "eslint src/**/*.ts",
     "lint:fix": "eslint src/**/*.ts --fix",
-    "fix:net-payable": "ts-node src/scripts/fixNetPayable.ts"
+    "fix:net-payable": "ts-node src/scripts/fixNetPayable.ts",
+    "user:manage": "ts-node src/scripts/manageUser.ts",
+    "user:create": "ts-node src/scripts/manageUser.ts create",
+    "user:reset": "ts-node src/scripts/manageUser.ts reset",
+    "user:list": "ts-node src/scripts/manageUser.ts list"
   },
   "keywords": [
     "erp",

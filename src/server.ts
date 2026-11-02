@@ -6,6 +6,7 @@ import logger from './utils/logger';
 // Connected to database: invento_retail_new
 import { customerService } from './services/customer.service';
 import { loyaltyService } from './services/loyalty.service';
+import { authService } from './services/auth.service';
 
 async function startServer() {
   try {
@@ -17,6 +18,9 @@ async function startServer() {
     await initializeDatabase();
     logger.info('TypeORM DataSource initialized ✓ (auto-sync ran)');
     logger.info('PostgreSQL connected ✓');
+
+    // Ensure default roles and initial admin user exist
+    await authService.ensureDefaultAdmin();
 
     // Initialize loyalty config
     await loyaltyService.initializeLoyaltyConfig();

@@ -98,6 +98,102 @@ export class AuthService {
     logger.info(`Password changed for user: ${user.mobile}`);
     return true;
   }
+
+  /**
+   * Ensures default roles and the initial Administrator user exist on application startup.
+   */
+  async ensureDefaultAdmin() {
+    try {
+      const defaultRoles = [
+        {
+          name: 'Admin',
+          description: 'Full access to all features',
+          can_view_cost: true,
+          can_view_mrp: true,
+          can_manage_purchases: true,
+          can_manage_sales: true,
+          can_view_reports: true,
+          can_manage_inventory: true,
+          can_manage_masters: true,
+          can_manage_users: true,
+          can_view_dashboard: true,
+        },
+        {
+          name: 'Manager',
+          description: 'Manage sales, inventory, and view reports',
+          can_view_cost: true,
+          can_view_mrp: true,
+          can_manage_purchases: false,
+          can_manage_sales: true,
+          can_view_reports: true,
+          can_manage_inventory: true,
+          can_manage_masters: true,
+          can_manage_users: false,
+          can_view_dashboard: true,
+        },
+        {
+          name: 'Salesman',
+          description: 'Create sales invoices and manage bookings',
+          can_view_cost: false,
+          can_view_mrp: true,
+          can_manage_purchases: false,
+          can_manage_sales: true,
+          can_view_reports: false,
+          can_manage_inventory: false,
+          can_manage_masters: false,
+          can_manage_users: false,
+          can_view_dashboard: true,
+        },
+        {
+          name: 'Executor',
+          description: 'View-only access',
+          can_view_cost: false,
+          can_view_mrp: true,
+          can_manage_purchases: false,
+          can_manage_sales: false,
+          can_view_reports: false,
+          can_manage_inventory: false,
+          can_manage_masters: false,
+          can_manage_users: false,
+          can_view_dashboard: true,
+        },
+      ];
+
+      let adminRole = await this.roleRepo.findOne({ where: { name: 'Admin' } });
+      if (!adminRole) {
+        for (const roleDef of defaultRoles) {
+          const r = await this.roleRepo.save(this.roleRepo.create(roleDef));
+          if (r.name === 'Admin') adminRole = r;
+        }
+        logger.info('Default roles initialized ✓');
+      }
+
+      const adminMobile = process.env.ADMIN_MOBILE || '9999999999';
+      const adminPassword = process.env.ADMIN_PASSWORD || 'admin123';
+      const adminEmail = process.env.ADMIN_EMAIL || 'admin@pratapsons.com';
+
+      let adminUser = await this.userRepo.findOne({ where: { mobile: adminMobile } });
+      if (!adminUser) {
+        const salt = await bcrypt.genSalt(10);
+        const hash = await bcrypt.hash(adminPassword, salt);
+        await this.userRepo.save(this.userRepo.create({
+          name: 'Administrator',
+          email: adminEmail,
+          mobile: adminMobile,
+          password_hash: hash,
+          role: 'Admin',
+          role_id: adminRole?.id,
+          active: true,
+        }));
+        logger.info(`Default Admin user created ✓ (Mobile: ${adminMobile}, Password: ${adminPassword})`);
+      } else if (!adminUser.active) {
+        adminUser.active = true;
+        await this.userRepo.save(adminUser);
+      }
+    } catch (err: any) {
+      logger.error('Failed to ensure default admin user/roles', { error: err.message });
+    }
+  }
 }
 
 export const authService = new AuthService();
