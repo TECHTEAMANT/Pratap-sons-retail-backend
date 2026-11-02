@@ -269,11 +269,24 @@ export class PurchaseService {
 
   async createInvoice(data: any, userId: string) {
     const repo = AppDataSource.getRepository(PurchaseInvoice);
+    const invoiceNum = data.invoice_number || data.vendor_invoice_number;
+    if (data.vendor_id && invoiceNum) {
+      const existing = await repo.findOne({
+        where: {
+          vendor_id: data.vendor_id,
+          invoice_number: invoiceNum
+        }
+      });
+      if (existing) {
+        throw new Error(`Duplicate Inward Invoice: Invoice "${invoiceNum}" already exists for this vendor.`);
+      }
+    }
+
     const inv = repo.create({
       vendor_id: data.vendor_id,
-      invoice_number: data.invoice_number,
-      invoice_date: data.invoice_date,
-      total_amount: data.total_amount,
+      invoice_number: invoiceNum,
+      invoice_date: data.invoice_date || data.vendor_invoice_date || new Date(),
+      total_amount: data.total_amount || 0,
       notes: data.notes || null,
       created_by: userId,
     });

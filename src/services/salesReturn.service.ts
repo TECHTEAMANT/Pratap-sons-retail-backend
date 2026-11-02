@@ -46,10 +46,93 @@ export class SalesReturnService {
         retNum = `${prefix}${nextNum.toString().padStart(6, '0')}`;
       }
 
+      if (!data.items || !Array.isArray(data.items) || data.items.length === 0) {
+        throw new Error('Return must contain at least one item.');
+      }
+      if (Number(data.total_return_amount) <= 0) {
+        throw new Error('Total return amount must be greater than zero.');
+      }
+
       let invoiceId = data.invoice_id;
-      if (!invoiceId && data.invoice_number) {
-        const inv = await manager.findOne(SalesInvoice, { where: { invoice_number: data.invoice_number } });
-        if (inv) invoiceId = inv.id;
+      let invoice: SalesInvoice | null = null;
+      if (invoiceId) {
+        invoice = await manager.findOne(SalesInvoice, { 
+          where: { id: invoiceId },
+          relations: ['items', 'receipt_items', 'coupon_applications', 'credit_note_applications', 'advance_applications']
+        });
+      } else if (data.invoice_number) {
+        invoice = await manager.findOne(SalesInvoice, { 
+          where: { invoice_number: data.invoice_number },
+          relations: ['items', 'receipt_items', 'coupon_applications', 'credit_note_applications', 'advance_applications']
+        });
+        if (invoice) invoiceId = invoice.id;
+      }
+
+      // Strict validation against original invoice items and previous returns
+      if (invoice) {
+        const previousReturns = await manager.find(SalesReturn, {
+          where: { invoice_id: invoice.id },
+          relations: ['items']
+        });
+        const activePrevReturns = previousReturns.filter(r => r.status !== 'cancelled');
+
+        const totalAlreadyReturned = activePrevReturns.reduce(
+          (sum, r) => sum + Number(r.total_return_amount || 0), 
+          0
+        );
+        const remainingInvoiceValue = Math.max(0, Number(invoice.net_payable) - totalAlreadyReturned);
+
+        if (Number(data.total_return_amount) > remainingInvoiceValue + 1.0) {
+          throw new Error(
+            `Return amount ₹${data.total_return_amount} exceeds maximum returnable balance ₹${remainingInvoiceValue.toFixed(2)} on invoice #${invoice.invoice_number} (Original: ₹${invoice.net_payable}, Already Returned: ₹${totalAlreadyReturned.toFixed(2)})`
+          );
+        }
+
+        for (const item of data.items) {
+          const reqQty = Number(item.quantity) || 1;
+          if (reqQty <= 0) {
+            throw new Error('Return item quantity must be greater than zero.');
+          }
+          if (Number(item.return_amount) < 0) {
+            throw new Error('Return item amount cannot be negative.');
+          }
+
+          // Match item in original invoice
+          const matchingSoldItems = (invoice.items || []).filter(invItem => 
+            (item.barcode_8digit && invItem.barcode_8digit === item.barcode_8digit) ||
+            (item.design_no && invItem.design_no === item.design_no)
+          );
+
+          if (matchingSoldItems.length === 0) {
+            throw new Error(
+              `Item ${item.design_no || item.barcode_8digit || 'unknown'} was not part of invoice #${invoice.invoice_number}. Cannot return unpurchased items.`
+            );
+          }
+
+          const totalSoldQty = matchingSoldItems.reduce(
+            (sum, invItem) => sum + Number(invItem.quantity || 1), 
+            0
+          );
+
+          let alreadyReturnedItemQty = 0;
+          for (const prevRet of activePrevReturns) {
+            for (const prevItem of (prevRet.items || [])) {
+              if (
+                (item.barcode_8digit && prevItem.barcode_8digit === item.barcode_8digit) ||
+                (item.design_no && prevItem.design_no === item.design_no)
+              ) {
+                alreadyReturnedItemQty += Number(prevItem.quantity || 1);
+              }
+            }
+          }
+
+          const remainingReturnableQty = totalSoldQty - alreadyReturnedItemQty;
+          if (reqQty > remainingReturnableQty) {
+            throw new Error(
+              `Cannot return ${reqQty} unit(s) of ${item.design_no || item.barcode_8digit}. Only ${remainingReturnableQty} unit(s) remaining returnable for invoice #${invoice.invoice_number} (Sold: ${totalSoldQty}, Already returned: ${alreadyReturnedItemQty}).`
+            );
+          }
+        }
       }
 
       const ret = manager.create(SalesReturn, {
@@ -136,7 +219,7 @@ export class SalesReturnService {
         customer_mobile: data.customer_mobile,
         customer_name: data.customer_name,
         return_id: savedReturn.id,
-        invoice_id: data.invoice_id,
+        invoice_id: invoiceId,
         credit_amount: 0, // Will be updated after refundAmount is calculated
         balance_remaining: 0, // Will be updated after refundAmount is calculated
         status: 'active',
@@ -152,10 +235,10 @@ export class SalesReturnService {
         customer.return_count = (customer.return_count || 0) + 1;
         await manager.save(Customer, customer);
 
-        const invoice = await manager.findOne(SalesInvoice, { 
-          where: { id: data.invoice_id },
+        const invoice = invoiceId ? await manager.findOne(SalesInvoice, { 
+          where: { id: invoiceId },
           relations: ['items', 'receipt_items', 'coupon_applications', 'credit_note_applications', 'advance_applications']
-        });
+        }) : null;
         
         if (invoice) {
           // 4. RECALCULATE GROUND TRUTH for the invoice before applying return
@@ -197,6 +280,10 @@ export class SalesReturnService {
               if (mode.includes('ADVANCE') || mode.includes('COUPON') || mode.includes('COUPAN') || mode.includes('CREDIT NOTE')) return sum;
               return sum + (Number(val) || 0);
             }, 0);
+          }
+
+          if (directPaid === 0 && (receiptPaid + advancesPaid + couponsApplied + creditNotesApplied) === 0 && Number(invoice.amount_paid || 0) > 0) {
+            directPaid = Number(invoice.amount_paid);
           }
 
           const trueAmountPaid = receiptPaid + directPaid + advancesPaid + couponsApplied + creditNotesApplied;

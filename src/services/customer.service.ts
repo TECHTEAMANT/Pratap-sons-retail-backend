@@ -273,6 +273,10 @@ export class CustomerService {
     let customer = await this.customerRepo.findOneBy({ mobile });
     
     if (customer) {
+      if (!customer.card_no) {
+        customer.card_no = await this.generateCardNo();
+        await this.customerRepo.save(customer);
+      }
       return customer;
     }
     
@@ -299,6 +303,27 @@ export class CustomerService {
 
   async create(data: Partial<Customer>) {
     this.normalizeDates(data);
+    // Support phone alias if mobile is omitted
+    if ((data as any).phone && !data.mobile) {
+      data.mobile = (data as any).phone;
+    }
+    if (!data.mobile || !data.mobile.trim()) {
+      throw new Error('Customer mobile number is required.');
+    }
+    const cleanedMobile = data.mobile.trim().replace(/[\s\-\+]/g, '');
+    if (!/^\d{10,15}$/.test(cleanedMobile)) {
+      throw new Error('Customer mobile number must contain between 10 and 15 numeric digits.');
+    }
+    data.mobile = cleanedMobile;
+
+    const existing = await this.customerRepo.findOneBy({ mobile: data.mobile });
+    if (existing) {
+      if (!existing.card_no) {
+        existing.card_no = await this.generateCardNo();
+        await this.customerRepo.save(existing);
+      }
+      return existing;
+    }
     const customer = this.customerRepo.create(data);
     // Auto-generate card_no if not provided
     if (!customer.card_no) {
@@ -309,6 +334,16 @@ export class CustomerService {
 
   async update(id: string, data: Partial<Customer>) {
     this.normalizeDates(data);
+    if ((data as any).phone && !data.mobile) {
+      data.mobile = (data as any).phone;
+    }
+    if (data.mobile) {
+      const cleanedMobile = data.mobile.trim().replace(/[\s\-\+]/g, '');
+      if (!/^\d{10,15}$/.test(cleanedMobile)) {
+        throw new Error('Customer mobile number must contain between 10 and 15 numeric digits.');
+      }
+      data.mobile = cleanedMobile;
+    }
     const customer = await this.customerRepo.findOneBy({ id });
     if (!customer) return null;
     Object.assign(customer, data);
