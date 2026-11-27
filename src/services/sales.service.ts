@@ -246,8 +246,7 @@ export class SalesService {
         const calcItemDiscount = data.items.reduce((sum: number, it: any) => sum + (Number(it.discount || 0) * Number(it.quantity || 1)), 0);
         const headerDiscount = Number(data.special_discount || 0) + 
                               Number(data.loyalty_redemption_amount || 0) + 
-                              Number(data.voucher_discount || 0) + 
-                              Number(data.coupon_amount || 0);
+                              Number(data.voucher_discount || 0);
         
         const calcFinalDiscount = (Math.round(calcItemDiscount) >= Math.round(headerDiscount) && headerDiscount > 0)
           ? calcItemDiscount
